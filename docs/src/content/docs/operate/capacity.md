@@ -5,30 +5,42 @@ description: How many turns run at once, what waits, and what happens when a par
 
 ## Turns
 
-`runtime.maxConcurrentTurns` is the number of turns that run at once, 50 by
-default. Each of them has a sandbox pod with the resources of its harness,
-which `runtime.harnesses` sets.
+A turn runs in the awake sandbox of its session, of the size of its harness,
+which `runtime.harnesses` sets, so the workers bound the turns that run at
+once: see [Sandboxes](#sandboxes). The turn of a session whose sandbox is
+awake runs at once. Other turns wait in a queue, in the order in which they
+were sent, and each leaves it as soon as a worker has taken its sandbox.
+When no worker has room, the sandbox that has been idle the longest is put
+to sleep to make room, and while every awake sandbox runs a turn, the queue
+waits for one of them to end.
 
-Further turns wait in a queue, in the order in which they were sent. Beyond
-`runtime.maxQueuedTurns`, 500 by default, new messages get 429, and a turn
-that is queued for longer than `runtime.maxQueueWaitSeconds`, 120 by
+Beyond `runtime.maxQueuedTurns`, 500 by default, new messages get 429, and a
+turn that is queued for longer than `runtime.maxQueueWaitSeconds`, 120 by
 default, expires. A turn fails if it takes longer than
-`runtime.maxStartupSeconds` to reach its harness, or runs for longer than
-`runtime.maxTurnSeconds`. See
+`runtime.maxStartupSeconds` to reach its harness after it leaves the queue,
+or runs for longer than `runtime.maxTurnSeconds`. See
 [Configuration](../reference/configuration.md#runtime) for all of them,
 and [Metrics](../reference/metrics.md) for the queue and the turns as
 they are.
 
 ## Sandboxes
 
-Sandbox pods exist for the running turns and for the sessions that were in
-use within the last `sandboxes.idleSeconds`. Volumes exist for the sessions
-that have not ended and whose homes are not archived. Aviary sets no other
-limit on them; to set one, use a ResourceQuota on `aviary-runtime`.
+The workers of Agent Substrate hold the sandboxes while they are awake: the
+running turns, and the sessions that were in use within the last
+`sandboxes.idleSeconds` unless a queued turn needs their room. With `memory`
+snapshots, a turn that waits for a person to answer it is idle as well: its
+sandbox sleeps as an idle session's does, and wakes with the answer. A
+worker has the room of its `workers.resources`, and holds the sandboxes
+whose limits fit in it, so `workers.replicas` and `workers.resources` bound
+the sessions that are awake at once, and the resources that they take. A
+sleeping sandbox takes no room: its snapshot is in the
+[object storage](./storage.md#the-object-storage), and a session that
+exists costs only that. To have more room, add workers, by hand or with an
+autoscaler of the WorkerPool.
 
 ## Replicas
 
-The Supervisors, the Egress Proxies and the depots each run as many
+The Supervisors and the gateways of the object storage each run as many
 replicas as their `replicas` say, and any replica can serve any request.
 Turns do not belong to a Supervisor: if the one that follows a turn goes
 away, another one continues the turn from what was recorded.
@@ -40,8 +52,8 @@ again and records them, so the turn goes on with all that the agent said and
 did. A turn whose sandbox is gone as well fails with what the log has left
 of it.
 
-Supervisors and Egress Proxies do not wait for turns when they stop, as when
-their deployment is scaled in or rolled out. Another Supervisor continues
-the turns from what was recorded, and the requests that a stopping proxy was
-forwarding fail. A depot that stops finishes the transfers that are under
-way, for as long as `runtime.maxRestoreSeconds`.
+Supervisors do not wait for turns when they stop, as when their deployment
+is scaled in or rolled out. Another Supervisor continues the turns from what
+was recorded. A worker that goes away has its
+sandboxes put to sleep before it goes: with `memory` snapshots their turns go
+on on another worker.

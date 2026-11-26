@@ -21,44 +21,44 @@ supervisor:
   allowedOrigins: [https://aviary.example.com]
 stateMetrics:
   enabled: false
-depot:
-  replicas: 3
-  volume:
-    size: 100Gi
-    storageClass: shared
-    accessMode: ReadWriteMany
-egressProxy:
-  replicas: 2
-  concurrency: 4
-  allowedHosts:
-    - llm.example.com
-    - packages.example.com
-    - git.example.com:8443
-  extraEgress:
-    - to:
-        - namespaceSelector:
-            matchLabels: {kubernetes.io/metadata.name: llm-gateway}
-  localhost: host.example.com
+# Substrate installed apart from Aviary.
+substrate:
+  install: false
+  namespace: substrate-system
+  atespace: team-a
+  objectStorage:
+    location: s3://bucket/aviary/
+    secret: object-storage
+workers:
+  replicas: 5
+  image: registry.example.com/ateworker-gvisor@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  resources:
+    limits: {cpu: "16", memory: 64Gi}
 sandboxes:
   idleSeconds: 0
-  archiveAfterSeconds: 2592000
   retentionSeconds: 604800
-agent-sandbox:
-  enabled: false
+  snapshot: rootfs
+  allowedHosts:
+    - https://llm.example.com
+    - https://*.packages.example.com
+    - https://git.example.com:8443
+  localhost: host.example.com
 runtime:
-  maxConcurrentTurns: 7
   maxQueuedTurns: 11
   maxQueueWaitSeconds: 13
   maxStartupSeconds: 17
-  maxRestoreSeconds: 1200
   maxTurnSeconds: 7200
   maxToolOutputBytes: 23
   maxAttachmentBytes: 29
   maxAttachments: 0
   harnesses:
     opencode:
+      image: registry.example.com/aviary-harness-opencode@sha256:2222222222222222222222222222222222222222222222222222222222222222
       resources:
-        limits: {memory: 8Gi}
-  volume:
-    size: 50Gi
-    storageClass: fast
+        limits: {cpu: "2", memory: 8Gi}
+    codex:
+      image: registry.example.com/aviary-harness-codex@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      resources:
+        limits: {cpu: "1", memory: 1Gi}
+  runner:
+    image: registry.example.com/aviary-runner@sha256:4444444444444444444444444444444444444444444444444444444444444444

@@ -184,10 +184,15 @@ create table sessions (
     -- 'expired' if the session ended because it expired. Null if a caller
     -- ended it.
     end_reason varchar(32),
+    -- Whether the object storage may hold files of the session, which are
+    -- deleted after it ends.
+    has_attachments boolean not null default false,
     foreign key (agent_id) references agents (id),
     foreign key (created_by) references users (id),
     -- For listing the sessions that have a sandbox.
-    key sessions_sandbox (sandbox)
+    key sessions_sandbox (sandbox),
+    -- For listing the sessions that have left files when they ended.
+    key sessions_left_attachments (has_attachments, ended_at)
 );
 
 -- The MCP servers that a session turned on or off where it differs from its
@@ -274,6 +279,31 @@ create table approvals (
     foreign key (answered_by) references users (id)
 );
 
+-- A file that a message to a session carries, or that was uploaded for a
+-- message to carry. Its bytes are an object in the object storage.
+create table attachments (
+    id binary(16) primary key,
+    session_id binary(16) not null,
+    -- The turn of the message that carries the file, and the place of the
+    -- file among those of the message. Null until a message carries it.
+    turn_id binary(16),
+    position int,
+    -- The files of a message have different names. Compared exactly, not
+    -- case-insensitively.
+    name varchar(255) character set utf8mb4 collate utf8mb4_bin not null,
+    media_type varchar(255) not null,
+    size bigint not null,
+    -- Who uploaded the file. Null if the request was not authenticated.
+    created_by binary(16),
+    created_at datetime(6) not null default (now(6)),
+    foreign key (session_id) references sessions (id),
+    foreign key (turn_id) references turns (id),
+    foreign key (created_by) references users (id),
+    -- For the files of a turn, and for those that no message carries by
+    -- their age: these have no turn in the key.
+    key attachments_turn (turn_id, created_at)
+);
+
 -- The oldest schema version that a Supervisor may be built for. Older
 -- Supervisors do not start. A migration that removes something that they use
 -- raises it.
@@ -286,16 +316,16 @@ create table schema_floor (
 insert into schema_floor (version) values (0);
 
 -- Locks that serialize work across Supervisors. A transaction holds a lock by
--- locking its row: dispatch while it dispatches turns, and queue while it
--- counts the queue or announces it.
+-- locking its row: queue while it counts the queue or announces it.
 create table locks (
     name varchar(32) primary key
 );
-insert into locks (name) values ('dispatch'), ('queue');
+insert into locks (name) values ('queue');
 
 -- +goose Down
 drop table locks;
 drop table schema_floor;
+drop table attachments;
 drop table approvals;
 drop table turn_items;
 drop table turns;

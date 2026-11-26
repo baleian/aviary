@@ -24,7 +24,24 @@ const (
 	told = 30 * time.Second
 )
 
-// ErrBusy is returned by Start when the runner is running another turn.
+// Refusal is an error response from a runner.
+type Refusal struct {
+	Who, Asked string
+	Status     int
+	Said       string
+}
+
+func (r *Refusal) Error() string {
+	return fmt.Sprintf("%s returned %d %s for %s: %s", r.Who, r.Status, http.StatusText(r.Status), r.Asked, r.Said)
+}
+
+// Is reports a 404 response as ErrNotFound.
+func (r *Refusal) Is(target error) bool {
+	return target == ErrNotFound && r.Status == http.StatusNotFound
+}
+
+// ErrBusy is returned by Start when the runner is running another turn,
+// which it is then told to stop.
 var ErrBusy = errors.New("runner is busy with another turn")
 
 // ErrNoRoom means that the home of the runner's sandbox has no room for a
@@ -35,7 +52,10 @@ var ErrNoRoom = errors.New("the home has no room")
 // sandbox, which the agent controls, so they are not trusted.
 type Runner struct {
 	address string
-	http    *http.Client
+	// target names the sandbox to the router at address, which forwards each
+	// request to it. It is empty for a runner at address itself.
+	target string
+	http   *http.Client
 	// quiet is how long an event stream may stay silent before it is
 	// abandoned.
 	quiet time.Duration
@@ -48,11 +68,6 @@ var stream = &http.Client{}
 // RunnerAt returns a client of the runner at address.
 func RunnerAt(address string) *Runner {
 	return &Runner{address: address, http: stream, quiet: time.Minute}
-}
-
-// Address returns the runner's base URL.
-func (r *Runner) Address() string {
-	return r.address
 }
 
 // Turn is a turn as the runner receives it. A harness may have only the
@@ -74,15 +89,24 @@ type Turn struct {
 	McpServers []McpServer `json:"mcp_servers,omitempty"`
 }
 
-// McpServer is an MCP server as a harness reaches it: through the Egress
-// Proxy, which knows it by its ID.
+// McpServer is an MCP server as a harness reaches it.
 type McpServer struct {
+	// ID names the server in the events of the turn.
 	ID uuid.UUID `json:"id"`
 	// Name names the server, and its tools, to the harness.
 	Name string `json:"name"`
 	// Transport is "http" for Streamable HTTP, or "sse".
 	Transport string `json:"transport"`
 	URL       string `json:"url"`
+	// Headers go with every request to the server. A secret header has a
+	// placeholder, which the egress gateway replaces.
+	Headers []McpHeader `json:"headers,omitempty"`
+}
+
+// McpHeader is a header of the requests to an MCP server.
+type McpHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // Event is an event of a turn as reported by the runner.
@@ -95,7 +119,7 @@ type Event struct {
 }
 
 // Start gives the turn to the runner. It is idempotent, and returns ErrBusy
-// if the runner is running another turn.
+// if the runner is running another turn, which the runner then stops.
 func (r *Runner) Start(ctx context.Context, turn uuid.UUID, start Turn) error {
 	err := r.tell(ctx, http.MethodPut, "/turns/"+turn.String(), start)
 	var refusal *Refusal
@@ -194,45 +218,6 @@ func (r *Runner) Events(ctx context.Context, turn uuid.UUID, after uint64, each 
 	return nil
 }
 
-// Home asks the runner to pack the home of its sandbox, and returns the
-// archive as the runner sends it. The caller closes it. Reading it fails if
-// the runner does not send it whole.
-func (r *Runner) Home(ctx context.Context) (io.ReadCloser, error) {
-	request, err := r.request(ctx, http.MethodGet, "/home", nil)
-	if err != nil {
-		return nil, err
-	}
-	answer, err := r.http.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("runner: %w", err)
-	}
-	if answer.StatusCode != http.StatusOK {
-		defer answer.Body.Close()
-		return nil, refused(answer, http.MethodGet+" /home")
-	}
-	return answer.Body, nil
-}
-
-// Unpack gives the runner the archive of a home, of size bytes, to unpack
-// into the home of its sandbox. The runner takes it only before its first
-// turn.
-func (r *Runner) Unpack(ctx context.Context, archive io.Reader, size int64) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, r.address+"/home", archive)
-	if err != nil {
-		return err
-	}
-	request.ContentLength = size
-	answer, err := r.http.Do(request)
-	if err != nil {
-		return fmt.Errorf("runner: %w", err)
-	}
-	defer answer.Body.Close()
-	if answer.StatusCode < 200 || answer.StatusCode > 299 {
-		return refused(answer, http.MethodPut+" /home")
-	}
-	return nil
-}
-
 // PutFile gives the runner a file that a message carries, of size bytes, to
 // write at the path below the attachments of its home. The path is relative
 // and has slashes between its elements. A file that is there is replaced. It
@@ -247,6 +232,7 @@ func (r *Runner) PutFile(ctx context.Context, path string, file io.Reader, size 
 	if err != nil {
 		return err
 	}
+	r.name(request)
 	request.ContentLength = size
 	answer, err := r.http.Do(request)
 	if err != nil {
@@ -308,10 +294,18 @@ func (r *Runner) request(ctx context.Context, method, path string, body any) (*h
 	if err != nil {
 		return nil, err
 	}
+	r.name(request)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	return request, nil
+}
+
+// name names the runner's sandbox in the request, for the router.
+func (r *Runner) name(request *http.Request) {
+	if r.target != "" {
+		request.Header.Set("ate-target-actor", r.target)
+	}
 }
 
 // refused returns the Refusal for an error response.

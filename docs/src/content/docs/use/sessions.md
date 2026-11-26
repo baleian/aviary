@@ -20,12 +20,13 @@ can be changed at any time, also after the session has ended.
 A message is a text, files, or both. A session runs one turn at a time: it
 takes the next message when its last turn has ended.
 
-A turn runs at once if fewer turns are running than the installation
-allows. Otherwise it is queued, and queued turns run in the order in which
-they were sent. A turn that waits for too long expires, and if too many
-turns are queued, new messages are refused for the moment. The limits are
-`runtime.maxConcurrentTurns`, `runtime.maxQueueWaitSeconds` and
-`runtime.maxQueuedTurns` in the
+A turn runs as soon as a worker has room for the session's sandbox, at once
+if the sandbox is awake. Until then it is queued, and queued turns run in
+the order in which they were sent: the turn's
+[events](../reference/api/events.md) tell its place in the queue. A turn
+that waits for too long expires, and if too many turns are queued, new
+messages are refused for the moment. The limits are
+`runtime.maxQueueWaitSeconds` and `runtime.maxQueuedTurns` in the
 [configuration](../reference/configuration.md#runtime).
 
 ## Files
@@ -71,15 +72,13 @@ show as:
 
 | Sandbox | Meaning |
 | --- | --- |
-| Awake | The pod of the session runs. |
-| Asleep | The session was not in use, and its pod was deleted. The volume with the agent's files is kept, and the next message wakes the session in a new pod. |
-| Archived | The session slept for long, and its home is kept as an archive. The next message restores it into a new sandbox. |
-| Restoring | A turn unpacks the archive in a new sandbox. |
-| Lost | The sandbox is gone although the session has not ended, as after it was deleted in the cluster. Everything that the agent had in it is gone, and the next turn gets a new sandbox. |
+| Awake | The sandbox of the session runs on a worker. |
+| Asleep | The session was not in use, and a snapshot keeps its sandbox with the agent's files. The next message wakes the session. |
+| Lost | The sandbox is gone although the session has not ended, as after it was deleted in Agent Substrate. Everything that the agent had in it is gone, and the next turn gets a new sandbox. |
 
-The first turn after a sleep takes longer, since a pod and the harness
-start first. See [Sessions and storage](../operate/storage.md) for when
-a session sleeps and when its home is archived.
+The first turn after a sleep may take longer, since the sandbox wakes first.
+See [Sessions and storage](../operate/storage.md) for when a session
+sleeps and what its snapshot keeps.
 
 ## MCP servers of a session
 
@@ -90,8 +89,7 @@ message. See [MCP servers](./mcp-servers.md).
 ## Ending a session
 
 **End session**, in the menu of a session, deletes its sandbox with its
-volume and everything that the agent had in it, unless the storage of the
-installation keeps the data of deleted volumes. The conversation stays
+snapshot and everything that the agent had in it. The conversation stays
 readable, and the session accepts no more messages. A session cannot be
 ended while a turn of it has not ended.
 

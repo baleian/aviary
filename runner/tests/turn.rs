@@ -129,7 +129,6 @@ async fn starting_a_turn_is_idempotent() {
         runner.turn("t1", "say once ; sleep 300").await,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(runner.turn("t2", "say two").await, StatusCode::CONFLICT);
     let events = runner.events("t1").await;
     assert_eq!(names(&events), ["started", "message.delta", "finished"]);
     assert_eq!(runner.turn("t1", "say once").await, StatusCode::NO_CONTENT);
@@ -139,6 +138,23 @@ async fn starting_a_turn_is_idempotent() {
         said(&runner.run("t2", "recall").await),
         "say once ; sleep 300"
     );
+}
+
+/// A turn that runs when the next one is given was left behind, as by a
+/// snapshot taken while it ran: it is stopped, and the next turn starts once
+/// it has.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_next_turn_stops_one_left_behind() {
+    let home = Home::new();
+    let runner = start(runner(&home)).await;
+    assert_eq!(
+        runner.turn("t1", "say once ; sleep 30000").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(runner.turn("t2", "say two").await, StatusCode::CONFLICT);
+    let events = runner.events("t1").await;
+    assert_eq!(ending(&events).data["stop_reason"], "cancelled");
+    assert_eq!(said(&runner.run("t2", "say two").await), "two");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -293,24 +309,28 @@ async fn new_runner_resumes_the_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn runner_exits_on_sigterm() {
+async fn turn_runs_on_after_sigterm() {
     let home = Home::new();
     let mut runner = start(runner(&home)).await;
     runner.turn("t1", "say on ; sleep 60000").await;
     let mut events = runner.follow("t1", 0).await;
     assert_eq!(events.next().await.unwrap().name, "started");
-    // As when a sandbox is put to sleep and its pod is deleted.
+    // As when the worker of the sandbox goes away: the sandbox is to be
+    // suspended before it does, with the turn in it.
     let pid = runner.child.id().unwrap().to_string();
     let told = std::process::Command::new("kill")
         .args(["-TERM", &pid])
         .status()
         .unwrap();
     assert!(told.success());
-    let ended = time::timeout(Duration::from_secs(5), runner.child.wait())
-        .await
-        .expect("timed out waiting for the runner to exit")
-        .unwrap();
-    assert!(ended.success(), "{ended}");
+    // The runner would have exited by now if it took SIGTERM for its end.
+    time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        runner.child.try_wait().unwrap().is_none(),
+        "runner exited on SIGTERM"
+    );
+    assert_eq!(runner.healthy().await, StatusCode::OK);
+    assert_eq!(runner.turn("t1", "say on").await, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -361,20 +381,6 @@ async fn misconfigured_runner_fails_the_turn() {
     let events = runner.run("t1", "say Hello").await;
     assert_eq!(names(&events), ["failed"]);
     assert_eq!(ending(&events).data["reason"], "harness_error");
-
-    // Without the session token, the harness cannot reach MCP servers.
-    let runner = start(support::runner(&home)).await;
-    let server =
-        json!({"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"});
-    runner
-        .turn_with("t1", json!({"text": "mcp", "mcp_servers": [server]}))
-        .await;
-    let events = runner.events("t1").await;
-    assert_eq!(names(&events), ["failed"]);
-    assert_eq!(
-        ending(&events).data,
-        json!({"reason": "runner_error", "message": "AVIARY_LLM_API_KEY is not set"})
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -513,19 +519,16 @@ async fn turn_with_other_settings_gets_a_new_harness() {
     );
 }
 
-/// The harness reaches the MCP servers of a turn with the session token, and
-/// names the server of each request by its ID.
+/// The harness reaches the MCP servers of a turn with the headers of each.
 #[tokio::test(flavor = "multi_thread")]
 async fn harness_starts_with_the_mcp_servers_of_the_turn() {
     let home = Home::new();
     let mut command = runner(&home);
-    command
-        .env("AVIARY_LLM_API_KEY", "the-token")
-        .env("FAKE_HARNESS_MCP", "http,sse");
+    command.env("FAKE_HARNESS_MCP", "http,sse");
     let runner = start(command).await;
-    let tracker =
-        json!({"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"});
-    let docs = json!({"id": "2", "name": "docs", "transport": "sse", "url": "http://proxy/sse"});
+    let tracker = json!({"id": "1", "name": "tracker", "transport": "http", "url": "https://tracker.example.com/mcp",
+        "headers": [{"name": "authorization", "value": "aviary"}, {"name": "x-team", "value": "a-team"}]});
+    let docs = json!({"id": "2", "name": "docs", "transport": "sse", "url": "http://docs.example.com/sse"});
     let run = async |id: &str, text: &str, servers: Value| {
         let start = json!({"text": text, "mcp_servers": servers});
         assert_eq!(runner.turn_with(id, start).await, StatusCode::NO_CONTENT);
@@ -539,8 +542,8 @@ async fn harness_starts_with_the_mcp_servers_of_the_turn() {
     let first = run("t1", "mcp ; tool a", json!([tracker, docs])).await;
     assert_eq!(
         said(&first),
-        "http tracker http://proxy/mcp authorization=Bearer the-token x-aviary-mcp=1\n\
-         sse docs http://proxy/sse authorization=Bearer the-token x-aviary-mcp=2"
+        "http tracker https://tracker.example.com/mcp authorization=aviary x-team=a-team\n\
+         sse docs http://docs.example.com/sse"
     );
     let same = run("t2", "tool b", json!([tracker, docs])).await;
     assert_eq!(call(&same), "call-2");
@@ -550,7 +553,7 @@ async fn harness_starts_with_the_mcp_servers_of_the_turn() {
     assert_eq!(call(&other), "call-1");
     assert_eq!(
         said(&other),
-        "sse docs http://proxy/sse authorization=Bearer the-token x-aviary-mcp=2,\
+        "sse docs http://docs.example.com/sse,\
          mcp ; tool a\ntool b"
     );
     let none = run("t4", "mcp", json!([])).await;
@@ -565,13 +568,11 @@ async fn harness_starts_with_the_mcp_servers_of_the_turn() {
 async fn mcp_servers_that_the_harness_does_not_support_are_left_out() {
     let home = Home::new();
     let mut command = runner(&home);
-    command
-        .env("AVIARY_LLM_API_KEY", "the-token")
-        .env("FAKE_HARNESS_MCP", "http");
+    command.env("FAKE_HARNESS_MCP", "http");
     let runner = start(command).await;
     let servers = json!([
-        {"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"},
-        {"id": "2", "name": "docs", "transport": "sse", "url": "http://proxy/sse"},
+        {"id": "1", "name": "tracker", "transport": "http", "url": "https://tracker.example.com/mcp"},
+        {"id": "2", "name": "docs", "transport": "sse", "url": "http://docs.example.com/sse"},
     ]);
     // Every turn of the harness says which it goes without.
     for id in ["t1", "t2"] {
@@ -586,7 +587,7 @@ async fn mcp_servers_that_the_harness_does_not_support_are_left_out() {
         );
         assert_eq!(
             said(&events),
-            "http tracker http://proxy/mcp authorization=Bearer the-token x-aviary-mcp=1"
+            "http tracker https://tracker.example.com/mcp"
         );
     }
 }
@@ -598,12 +599,10 @@ async fn calls_of_mcp_tools_name_their_server() {
     let home = Home::new();
     let mut command = runner(&home);
     command
-        .env("AVIARY_LLM_API_KEY", "the-token")
         .env("FAKE_HARNESS_MCP", "http")
         .env("AVIARY_MCP_TOOL_TITLE", "{server}: {tool}");
     let runner = start(command).await;
-    let server =
-        json!({"id": "1", "name": "tracker", "transport": "http", "url": "http://proxy/mcp"});
+    let server = json!({"id": "1", "name": "tracker", "transport": "http", "url": "https://tracker.example.com/mcp"});
     let turn = json!({"text": "tool tracker: search ; tool ls", "mcp_servers": [server]});
     runner.turn_with("t1", turn).await;
     let events = runner.events("t1").await;

@@ -41,10 +41,10 @@ func TestMetricsStartAtZero(t *testing.T) {
 func TestMetrics(t *testing.T) {
 	t.Parallel()
 	aviary := install(t, func(config *driver.Config) {
-		config.MaxConcurrentTurns = 1
 		config.MaxQueuedTurns = 1
 		config.MaxQueueWait = time.Second
 	})
+	aviary.service.Room(1)
 	one, other := aviary.supervisor(), aviary.supervisor()
 	total := func(series string) float64 { return one.metric(series) + other.metric(series) }
 	ended := func(s *supervisor, turn string) string {
@@ -120,9 +120,9 @@ func TestMetrics(t *testing.T) {
 		`aviary_approval_wait_seconds_count{harness="opencode",outcome="cancelled"}`:   1,
 		`aviary_approval_wait_seconds_count{harness="opencode",outcome="other"}`:       1,
 		"aviary_approval_wait_seconds_count":                                           3,
-		// Four messages were accepted, one of which had to wait.
+		// Four messages were accepted, each while no other turn was queued.
 		"aviary_turn_queue_length_count":                       4,
-		"aviary_turn_queue_length_sum":                         1,
+		"aviary_turn_queue_length_sum":                         4,
 		`aviary_messages_refused_total{reason="session_busy"}`: 1,
 		`aviary_messages_refused_total{reason="queue_full"}`:   1,
 		// Three turns were dispatched, started and ended.

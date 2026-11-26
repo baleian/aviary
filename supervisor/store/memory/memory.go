@@ -51,15 +51,13 @@ type Store struct {
 
 type session struct {
 	store.Session
-	// claim is the claim of the Supervisor that archives or restores the
-	// home, or uuid.Nil.
-	claim uuid.UUID
 	// turns are in sequence order.
 	turns []*turn
 	// mcp are the MCP servers that the session turned on or off where it
 	// differs from its agent.
 	mcp map[uuid.UUID]bool
-	// attachments is whether the depot may have attachments of the session.
+	// attachments is whether the object storage may have attachments of the
+	// session.
 	attachments bool
 }
 
@@ -73,14 +71,25 @@ type turn struct {
 	attachments []*store.Attachment
 }
 
+// asked returns when the oldest of the turn's approval requests that wait for
+// an answer was made, or zero if none waits.
+func (t *turn) asked() time.Time {
+	for _, approval := range t.approvals {
+		if !approval.answered && !approval.resolved {
+			return approval.requestedAt
+		}
+	}
+	return time.Time{}
+}
+
 type approval struct {
-	id                 string
-	request            json.RawMessage
-	requestedAt        time.Time
-	optionID           string
-	answeredBy         uuid.UUID
-	answered, resolved bool
-	resolvedAt         time.Time
+	id                     string
+	request                json.RawMessage
+	requestedAt            time.Time
+	optionID               string
+	answeredBy             uuid.UUID
+	answered, resolved     bool
+	answeredAt, resolvedAt time.Time
 }
 
 func New() *Store {
@@ -217,8 +226,7 @@ func usageOf(usage *store.Usage) *store.Usage {
 
 func (s *session) record() store.Session {
 	session := s.Session
-	session.EndedAt, session.AsleepSince, session.Archive = clone(s.EndedAt), clone(s.AsleepSince), clone(s.Archive)
-	session.Claimed, session.ClaimedAt = s.claim != uuid.Nil, clone(s.ClaimedAt)
+	session.EndedAt = clone(s.EndedAt)
 	return session
 }
 
@@ -796,14 +804,9 @@ func (s *Store) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to st
 	if session.Sandbox != from {
 		return false, nil
 	}
-	session.Sandbox, session.SandboxState, session.AsleepSince = to, "", nil
-	switch {
-	case to != "" && session.Archive != nil:
-		session.SandboxState = store.SandboxRestoring
-	case to != "":
-		session.SandboxState = store.SandboxAwake
-	case session.Archive != nil:
-		session.SandboxState = store.SandboxArchived
+	session.Sandbox, session.SandboxState = to, ""
+	if to != "" {
+		session.SandboxState = store.SandboxAsleep
 	}
 	return true, nil
 }
@@ -814,15 +817,8 @@ func (s *Store) SetSandboxState(ctx context.Context, sessionID uuid.UUID, sandbo
 	}
 	defer s.mu.Unlock()
 	session, found := s.sessions[sessionID]
-	if !found || sandbox == "" || session.Sandbox != sandbox || session.Archive != nil {
+	if !found || sandbox == "" || session.Sandbox != sandbox {
 		return nil
-	}
-	switch {
-	case state != store.SandboxAsleep:
-		session.AsleepSince = nil
-	case session.SandboxState != store.SandboxAsleep:
-		since := s.now()
-		session.AsleepSince = &since
 	}
 	session.SandboxState = state
 	return nil
@@ -849,95 +845,11 @@ func (s *Store) SandboxCounts(ctx context.Context) (map[string]int, error) {
 	defer s.mu.Unlock()
 	counts := map[string]int{}
 	for _, session := range s.sessions {
-		if (session.Sandbox != "" || session.Archive != nil) && session.EndedAt == nil {
+		if session.Sandbox != "" && session.EndedAt == nil {
 			counts[session.SandboxState]++
 		}
 	}
 	return counts, nil
-}
-
-func (s *Store) ClaimArchive(ctx context.Context, sessionID uuid.UUID, sandbox string, turns int, claim uuid.UUID, since time.Time) (bool, error) {
-	if err := s.begin(ctx); err != nil {
-		return false, err
-	}
-	defer s.mu.Unlock()
-	session, found := s.sessions[sessionID]
-	if !found || session.EndedAt != nil || sandbox == "" || session.Sandbox != sandbox ||
-		session.SandboxState != store.SandboxAsleep || session.Archive != nil ||
-		len(session.turns) != turns || session.busy() ||
-		session.ClaimedAt != nil && session.ClaimedAt.After(since) {
-		return false, nil
-	}
-	now := s.now()
-	session.claim, session.ClaimedAt = claim, &now
-	return true, nil
-}
-
-func (s *Store) ArchiveSession(ctx context.Context, sessionID, claim uuid.UUID, turns int, archive store.Archive) (bool, error) {
-	if err := s.begin(ctx); err != nil {
-		return false, err
-	}
-	defer s.mu.Unlock()
-	session, found := s.sessions[sessionID]
-	if !found || session.EndedAt != nil || claim == uuid.Nil || session.claim != claim ||
-		len(session.turns) != turns || session.busy() {
-		return false, nil
-	}
-	archive.At = s.now()
-	session.Archive, session.claim = &archive, uuid.Nil
-	session.Sandbox, session.SandboxState, session.AsleepSince = "", store.SandboxArchived, nil
-	return true, nil
-}
-
-func (s *Store) ClaimRestore(ctx context.Context, sessionID, claim uuid.UUID) (store.Archive, bool, error) {
-	if err := s.begin(ctx); err != nil {
-		return store.Archive{}, false, err
-	}
-	defer s.mu.Unlock()
-	session, found := s.sessions[sessionID]
-	if !found || session.EndedAt != nil || session.Archive == nil {
-		return store.Archive{}, false, nil
-	}
-	now := s.now()
-	session.claim, session.ClaimedAt = claim, &now
-	session.Sandbox, session.SandboxState = "", store.SandboxArchived
-	return *session.Archive, true, nil
-}
-
-func (s *Store) RestoreSession(ctx context.Context, sessionID, claim uuid.UUID, sandbox string) (bool, error) {
-	if err := s.begin(ctx); err != nil {
-		return false, err
-	}
-	defer s.mu.Unlock()
-	session, found := s.sessions[sessionID]
-	if !found || claim == uuid.Nil || session.claim != claim || sandbox == "" || session.Sandbox != sandbox || session.Archive == nil {
-		return false, nil
-	}
-	session.Archive, session.claim, session.SandboxState = nil, uuid.Nil, store.SandboxAwake
-	return true, nil
-}
-
-func (s *Store) LeftArchives(ctx context.Context, before time.Time, limit int) ([]store.Session, error) {
-	if err := s.begin(ctx); err != nil {
-		return nil, err
-	}
-	defer s.mu.Unlock()
-	var ended, old []store.Session
-	for _, session := range s.sessions {
-		switch {
-		case session.Archive == nil:
-		case session.EndedAt != nil:
-			ended = append(ended, session.record())
-		case session.Archive.At.Before(before):
-			old = append(old, session.record())
-		}
-	}
-	left := []store.Session{}
-	for _, sessions := range [][]store.Session{ended, old} {
-		slices.SortFunc(sessions, func(a, b store.Session) int { return a.Archive.At.Compare(b.Archive.At) })
-		left = append(left, sessions[:min(limit, len(sessions))]...)
-	}
-	return left, nil
 }
 
 // open returns the session if it has not ended.
@@ -1062,22 +974,6 @@ func (s *Store) ForgetAttachments(ctx context.Context, sessionID uuid.UUID) erro
 	defer s.mu.Unlock()
 	if session, found := s.sessions[sessionID]; found && session.EndedAt != nil {
 		session.attachments = false
-	}
-	return nil
-}
-
-func (s *Store) ForgetArchive(ctx context.Context, sessionID, archive uuid.UUID) error {
-	if err := s.begin(ctx); err != nil {
-		return err
-	}
-	defer s.mu.Unlock()
-	session, found := s.sessions[sessionID]
-	if !found || session.EndedAt == nil || session.Archive == nil || session.Archive.ID != archive {
-		return nil
-	}
-	session.Archive = nil
-	if session.Sandbox == "" {
-		session.SandboxState = ""
 	}
 	return nil
 }
@@ -1390,18 +1286,7 @@ func (s *Store) queued() []*turn {
 	return queued
 }
 
-// running counts the dispatching and running turns. The caller holds mu.
-func (s *Store) running() int {
-	running := 0
-	for _, turn := range s.created {
-		if turn.State == store.TurnDispatching || turn.State == store.TurnRunning {
-			running++
-		}
-	}
-	return running
-}
-
-func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting, maxRunning int) (store.Turn, int, error) {
+func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting int) (store.Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Turn{}, 0, err
@@ -1432,8 +1317,7 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text st
 		}
 		carried[i], names[i] = s.attachments[at], s.attachments[at].Name
 	}
-	// Queued turns that have room to run do not wait.
-	waiting := len(s.queued()) + 1 - max(0, maxRunning-s.running())
+	waiting := len(s.queued()) + 1
 	if maxWaiting > 0 && waiting > maxWaiting {
 		return store.Turn{}, 0, store.ErrQueueFull
 	}
@@ -1525,20 +1409,70 @@ func cloned(values []json.RawMessage) []json.RawMessage {
 	return cloned
 }
 
-func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatch, error) {
+func (s *Store) NextTurns(ctx context.Context, limit int) ([]store.QueuedTurn, error) {
 	if err := s.begin(ctx); err != nil {
 		return nil, err
 	}
 	defer s.mu.Unlock()
 	queued := s.queued()
-	room := min(max(limit-s.running(), 0), len(queued))
-	dispatches := make([]store.Dispatch, room)
-	for i, turn := range queued[:room] {
-		agent, now := s.agents[s.sessions[turn.SessionID].AgentID], s.now()
-		turn.State, turn.dispatchedAt = store.TurnDispatching, &now
-		dispatches[i] = store.Dispatch{TurnID: turn.ID, Harness: agent.Harness, Waited: now.Sub(turn.CreatedAt)}
+	next := make([]store.QueuedTurn, 0, min(limit, len(queued)))
+	now := s.now()
+	for _, turn := range queued[:min(limit, len(queued))] {
+		session := s.sessions[turn.SessionID]
+		next = append(next, store.QueuedTurn{
+			TurnID: turn.ID, SessionID: turn.SessionID, Harness: s.agents[session.AgentID].Harness,
+			Sandbox: session.Sandbox, SandboxState: session.SandboxState, Waited: now.Sub(turn.CreatedAt),
+		})
 	}
-	return dispatches, nil
+	return next, nil
+}
+
+func (s *Store) DispatchTurn(ctx context.Context, turnID uuid.UUID) (bool, error) {
+	if err := s.begin(ctx); err != nil {
+		return false, err
+	}
+	defer s.mu.Unlock()
+	turn, found := s.turns[turnID]
+	if !found || turn.State != store.TurnQueued {
+		return false, nil
+	}
+	now := s.now()
+	turn.State, turn.dispatchedAt = store.TurnDispatching, &now
+	return true, nil
+}
+
+func (s *Store) IdleSandboxes(ctx context.Context, limit int, waiting bool) ([]store.IdleSandbox, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	now := s.now()
+	var idle []store.IdleSandbox
+	for _, session := range s.sessions {
+		if session.Sandbox == "" || session.SandboxState != store.SandboxAwake {
+			continue
+		}
+		since := session.CreatedAt
+		if last := len(session.turns); last > 0 {
+			turn := session.turns[last-1]
+			switch asked := turn.asked(); {
+			case turn.EndedAt != nil:
+				since = *turn.EndedAt
+			case waiting && turn.CancelRequestedAt == nil && !asked.IsZero():
+				since = asked
+			default:
+				continue
+			}
+		}
+		idle = append(idle, store.IdleSandbox{SessionID: session.ID, Sandbox: session.Sandbox, Idle: now.Sub(since)})
+	}
+	slices.SortFunc(idle, func(one, other store.IdleSandbox) int {
+		if order := cmp.Compare(other.Idle, one.Idle); order != 0 {
+			return order
+		}
+		return bytes.Compare(one.SessionID[:], other.SessionID[:])
+	})
+	return idle[:min(limit, len(idle))], nil
 }
 
 func (s *Store) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool, error) {
@@ -1830,7 +1764,7 @@ func (s *Store) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, option
 	if kept == nil || kept.answered || kept.resolved || turn.EndedAt != nil {
 		return false, nil
 	}
-	kept.optionID, kept.answeredBy, kept.answered = optionID, by, true
+	kept.optionID, kept.answeredBy, kept.answered, kept.answeredAt = optionID, by, true, s.now()
 	return true, nil
 }
 
@@ -1848,6 +1782,30 @@ func (s *Store) WaitingApprovals(ctx context.Context, turnID uuid.UUID) ([]json.
 		}
 	}
 	return requests, nil
+}
+
+func (s *Store) WaitedForAnswers(ctx context.Context, turnID uuid.UUID) (time.Duration, error) {
+	if err := s.begin(ctx); err != nil {
+		return 0, err
+	}
+	defer s.mu.Unlock()
+	turn, found := s.turns[turnID]
+	if !found {
+		return 0, nil
+	}
+	now := s.now()
+	var waited time.Duration
+	for _, approval := range turn.approvals {
+		until := now
+		switch {
+		case approval.answered:
+			until = approval.answeredAt
+		case approval.resolved:
+			until = approval.resolvedAt
+		}
+		waited += until.Sub(approval.requestedAt)
+	}
+	return waited, nil
 }
 
 func (s *Store) Answers(ctx context.Context, turnID *uuid.UUID) ([]store.Answer, error) {

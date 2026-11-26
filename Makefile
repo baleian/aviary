@@ -13,16 +13,12 @@ endif
 DOCKER_IO ?= docker.io
 GCR_IO ?= gcr.io
 GHCR_IO ?= ghcr.io
-PUBLIC_ECR_AWS ?= public.ecr.aws
 QUAY_IO ?= quay.io
 REGISTRY_K8S_IO ?= registry.k8s.io
 export DOCKER_IO GCR_IO
-# The repository of agent-sandbox, whose source has its chart, or a mirror of
-# it.
-AGENT_SANDBOX_REPO ?= https://github.com/kubernetes-sigs/agent-sandbox
-# The repository of the Mountpoint for Amazon S3 CSI driver, whose releases
-# have its chart, or a mirror of it.
-MOUNTPOINT_S3_CSI_REPO ?= https://github.com/awslabs/mountpoint-s3-csi-driver
+# The repository of Agent Substrate, whose source has the manifests of its
+# releases, or a mirror of it.
+SUBSTRATE_REPO ?= https://github.com/agent-substrate/substrate
 
 CLUSTER := aviary
 KIND_CONFIG ?= hack/kind/cluster.yaml
@@ -48,19 +44,21 @@ export KUBECONFIG := $(E2E_KUBECONFIG)
 endif
 KEPT := $(abspath $(patsubst ~/%,$(HOME)/%,$(DATA)))
 NODE_IMAGE := $(DOCKER_IO)/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
-# The chart of agent-sandbox, which the Aviary chart installs with itself. It
-# is taken from the source of the release, verified against its checksum, and
-# is not kept in the repository.
-AGENT_SANDBOX := v1.0.11
-AGENT_SANDBOX_SHA256 := 400b83e1d51a0cf0954c6f6e8a301a1fe816c69bca54c90870239f578fffe36a
-AGENT_SANDBOX_SOURCE := .out/agent-sandbox-$(AGENT_SANDBOX).tar.gz
-AGENT_SANDBOX_CHART := deploy/charts/aviary/charts/agent-sandbox/Chart.yaml
-# The chart of the Mountpoint for Amazon S3 CSI driver, which make versitygw
-# installs in the local cluster: the package of its release, verified against
-# its checksum. The chart in its source refuses to be installed.
-MOUNTPOINT_S3_CSI := 2.9.2
-MOUNTPOINT_S3_CSI_SHA256 := fc66f3fd2e747f5f9d4735e468329c100f9f34a87e38751f810446745ebe3d28
-MOUNTPOINT_S3_CSI_CHART := .out/aws-mountpoint-s3-csi-driver-$(MOUNTPOINT_S3_CSI).tgz
+# Agent Substrate, which runs the sandboxes: the release whose manifests the
+# chart deploy/charts/substrate is made of. The source of the release is
+# verified against its checksum and is not kept in the repository.
+SUBSTRATE := v1.0.1
+SUBSTRATE_SHA256 := a5ac0caa5e2bde5a0f8acd478db1b07a1b8f4942f594d570186dc0a5cd84cddb
+SUBSTRATE_SOURCE := .out/substrate-$(SUBSTRATE).tar.gz
+SUBSTRATE_OUT := .out/substrate-$(SUBSTRATE)
+# The chart of Substrate, packaged where the chart of Aviary depends on it.
+SUBSTRATE_CHART := deploy/charts/aviary/charts/substrate-$(shell sed -n 's/^version: //p' deploy/charts/substrate/Chart.yaml).tgz
+# The values of the local cluster for Substrate: the passwords of its
+# database and the keys of the S3 gateway.
+SUBSTRATE_VALUES := .out/$(CLUSTER)-substrate.yaml
+# The harness images and the runner image of the cluster, at its registry,
+# by digest.
+HARNESS_VALUES := .out/$(CLUSTER)-harnesses.yaml
 GO_IMAGE := $(DOCKER_IO)/library/golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9
 SQLC_IMAGE := $(DOCKER_IO)/sqlc/sqlc:1.31.1@sha256:70f53171d27b2424e9358869975455a6e955a5aa8e58a998a270a6e34e525537
 
@@ -71,6 +69,7 @@ OPENCODE_IMAGE := aviary-harness-opencode:dev
 CODEX_IMAGE := aviary-harness-codex:dev
 CLAUDE_CODE_IMAGE := aviary-harness-claude-code:dev
 MOCK_LLM_IMAGE := aviary-mock-llm:dev
+SUBSTRATE_KEYS_IMAGE := aviary-substrate-keys:dev
 WEB_IMAGE := aviary-web:dev
 # Images that test-harness tests, for example
 # make test-harness HARNESS_IMAGES=<image>
@@ -97,8 +96,8 @@ KEEP_SECRET = secret=$$($(KUBECTL) get secret $(1) --namespace $(2) --output jso
 endif
 # The registries that have a mirror, each as registry=mirror, for the nodes
 # of the cluster.
-NODE_MIRRORS := $(filter-out docker.io=docker.io gcr.io=gcr.io ghcr.io=ghcr.io public.ecr.aws=public.ecr.aws quay.io=quay.io registry.k8s.io=registry.k8s.io, \
-	docker.io=$(DOCKER_IO) gcr.io=$(GCR_IO) ghcr.io=$(GHCR_IO) public.ecr.aws=$(PUBLIC_ECR_AWS) quay.io=$(QUAY_IO) registry.k8s.io=$(REGISTRY_K8S_IO))
+NODE_MIRRORS := $(filter-out docker.io=docker.io gcr.io=gcr.io ghcr.io=ghcr.io quay.io=quay.io registry.k8s.io=registry.k8s.io, \
+	docker.io=$(DOCKER_IO) gcr.io=$(GCR_IO) ghcr.io=$(GHCR_IO) quay.io=$(QUAY_IO) registry.k8s.io=$(REGISTRY_K8S_IO))
 # The harnesses that the e2e tests. The first also runs the tests that do not
 # depend on a harness.
 E2E_HARNESSES ?= opencode codex claude-code
@@ -114,15 +113,7 @@ SQLC_RUN := docker run --rm --user $$(id -u):$$(id -g) \
 	--volume $(CURDIR)/supervisor:/src --workdir /src $(SQLC_IMAGE)
 # Cargo takes the crates of crates.io from the registry in CRATES_IO, if any.
 CARGO := cargo$(if $(CRATES_IO), --config 'source.crates-io.replace-with="mirror"' --config 'source.mirror.registry="$(CRATES_IO)"')
-RENDER := helm template aviary deploy/charts/aviary --namespace aviary-system
-ENVOY_IMAGE = $(DOCKER_IO)/$(shell sed -n 's/^  image: \(envoyproxy.*\)/\1/p' deploy/charts/aviary/values.yaml)
-# The proxy tests stand in for the Supervisor and for the upstream hosts of
-# the proxies, under these network aliases.
-PROXIES = ENVOY_IMAGE=$(ENVOY_IMAGE) docker compose --file test/proxy/compose.yaml --project-name aviary-test-proxy
-AMONG_PROXIES := --network aviary-test-proxy_default --env AVIARY_TEST_PROXY=1 \
-	--network-alias aviary-supervisor.aviary-system --network-alias model.test \
-	--network-alias allowed.test --network-alias other.test \
-	--network-alias tls.test --network-alias unnamed.test
+RENDER := helm template aviary deploy/charts/aviary --namespace aviary-system --values test/chart/required.yaml
 NGINX_IMAGE = $(DOCKER_IO)/$(shell sed -n 's/^FROM [^ ]*\/\(nginxinc[^ ]*\).*/\1/p' images/web/Dockerfile)
 # The tests of the web server stand in for the API behind it.
 WEB_SERVERS = NGINX_IMAGE=$(NGINX_IMAGE) docker compose --file test/web/compose.yaml --project-name aviary-test-web
@@ -135,7 +126,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-docs test-harness chart cluster-up cluster-down postgres mysql valkey redis openbao vault versitygw keycloak headlamp grafana web web-dev docs docs-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-docs test-harness chart cluster-up cluster-down substrate postgres mysql valkey redis openbao vault keycloak headlamp grafana web web-dev docs docs-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -159,7 +150,7 @@ lint: web/node_modules/.package-lock.json docs/node_modules/.package-lock.json
 # make test-supervisor TESTS='-run TestStore/EndTurn ./store/postgres'
 # make test-runner TESTS=cut
 test:
-	$(MAKE) --jobs $(if $(filter output-sync,$(.FEATURES)),--output-sync=target) test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-proxy test-docs
+	$(MAKE) --jobs $(if $(filter output-sync,$(.FEATURES)),--output-sync=target) test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-docs
 
 test-supervisor: TESTS ?= ./...
 test-supervisor:
@@ -189,41 +180,24 @@ test-docs: TESTS ?= ./docs/...
 test-docs: docs
 	$(call GO,test) $(GO_TEST) $(TESTS)
 
-# Renders the chart with its default values, with those in test/chart and
-# with a claim of the installation for the depot, checks the output and that
-# invalid values are refused, and has Envoy validate its configuration.
+# Renders the chart with its default values and the required ones, with
+# those in test/chart and with a claim of the installation for the store of
+# its objects, checks the output, and checks that invalid values are refused.
 test-chart: TESTS ?= ./chart/...
-test-chart: $(AGENT_SANDBOX_CHART)
-	helm lint --strict --quiet deploy/charts/aviary
+test-chart: $(SUBSTRATE_CHART)
+	helm lint --strict --quiet deploy/charts/aviary --values test/chart/required.yaml
 	mkdir -p .out/chart
 	$(RENDER) > .out/chart/default.yaml
 	$(RENDER) --values test/chart/set.yaml > .out/chart/set.yaml
-	$(RENDER) --values test/chart/closed.yaml > .out/chart/closed.yaml
 	$(RENDER) --values test/chart/large.yaml > .out/chart/large.yaml
-	$(RENDER) --set depot.volume.existingClaim=objects > .out/chart/claim.yaml
-	! $(RENDER) --set 'egressProxy.allowedHosts={https://example.com}' > /dev/null 2>&1
-	! $(RENDER) --set depot.volume.accessMode=ReadOnlyMany > /dev/null 2>&1
+	$(RENDER) --values test/chart/substrate.yaml > .out/chart/substrate.yaml
+	$(RENDER) --set substrate.store.volume.existingClaim=objects \
+		--set substrate.store.volume.accessMode=ReadWriteMany > .out/chart/claim.yaml
+	! $(RENDER) --set substrate.store.volume.accessMode=ReadOnlyMany > /dev/null 2>&1
+	! $(RENDER) --set runtime.harnesses.opencode.image=aviary-harness-opencode:dev > /dev/null 2>&1
+	! $(RENDER) --set runtime.harnesses.opencode.image=registry.example.com/opencode@sha256:5555555555555555555555555555555555555555555555555555555555555555 > /dev/null 2>&1
+	! $(RENDER) --set substrate.objectStorage.location=gs://bucket/ > /dev/null 2>&1
 	$(call GO,test,--env AVIARY_TEST_RENDERED=/src/.out/chart) $(GO_TEST) $(TESTS)
-	for values in default set closed large; do \
-		$(call GO,test) run ./internal/unpack /src/.out/chart/$$values.yaml /src/.out/chart/$$values && \
-		docker run --rm --volume $(CURDIR)/.out/chart/$$values:/etc/envoy:ro \
-			$(ENVOY_IMAGE) --mode validate --log-level error --config-path /etc/envoy/envoy.yaml || exit 1; \
-	done
-
-# Runs the Egress Proxy with the configuration rendered from each values file
-# in test/proxy, and sends it requests.
-test-proxy: TESTS ?= ./proxy/...
-test-proxy: $(AGENT_SANDBOX_CHART)
-	mkdir -p .out/proxy
-	$(call GO,test) run ./internal/selfsigned tls.test /src/.out/proxy/tls
-	for values in listed open closed; do \
-		$(RENDER) --values test/proxy/$$values.yaml > .out/proxy/$$values.yaml && \
-		$(call GO,test) run ./internal/unpack /src/.out/proxy/$$values.yaml /src/.out/proxy/$$values || exit 1; \
-	done
-	$(PROXIES) up --detach --force-recreate
-	$(call GO,test,$(AMONG_PROXIES)) $(GO_TEST) $(TESTS); \
-		status=$$?; [ $$status = 0 ] || $(PROXIES) logs --no-color --tail 40; \
-		$(PROXIES) down --volumes; exit $$status
 
 # Runs the server of the web UI's image with the configuration of the image,
 # in front of an API and alone, and sends it requests. A page and a file
@@ -241,34 +215,38 @@ test-web-server:
 # Tests the harness images in containers, without a cluster. Few run at a
 # time, since every harness needs memory.
 test-harness: build
-	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" $(CARGO) test --locked --package aviary-runner --test harness -- \
+	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" AVIARY_RUNNER_IMAGE=$(RUNNER_IMAGE) $(CARGO) test --locked --package aviary-runner --test harness -- \
 		--ignored --test-threads 3 $(TESTS)
 
-$(AGENT_SANDBOX_SOURCE):
+$(SUBSTRATE_SOURCE):
 	mkdir -p $(@D)
 	curl --fail --silent --show-error --location --output $@.new \
-		$(AGENT_SANDBOX_REPO)/archive/refs/tags/$(AGENT_SANDBOX).tar.gz
-	openssl dgst -sha256 -r $@.new | grep -q '^$(AGENT_SANDBOX_SHA256) ' || \
-		{ echo "The checksum of $@.new is not $(AGENT_SANDBOX_SHA256)." >&2; exit 1; }
+		$(SUBSTRATE_REPO)/archive/refs/tags/$(SUBSTRATE).tar.gz
+	openssl dgst -sha256 -r $@.new | grep -q '^$(SUBSTRATE_SHA256) ' || \
+		{ echo "The checksum of $@.new is not $(SUBSTRATE_SHA256)." >&2; exit 1; }
 	mv $@.new $@
 
-$(AGENT_SANDBOX_CHART): $(AGENT_SANDBOX_SOURCE)
-	rm -rf $(@D)
-	mkdir -p $(@D)
-	tar --extract --gzip -m --file $< --directory $(@D) --strip-components 2 \
-		agent-sandbox-$(AGENT_SANDBOX:v%=%)/helm
+$(SUBSTRATE_OUT)/source/go.mod: $(SUBSTRATE_SOURCE)
+	mkdir -p $(SUBSTRATE_OUT)/source
+	tar --extract --gzip -m --file $< --directory $(SUBSTRATE_OUT)/source --strip-components 1
 
-$(MOUNTPOINT_S3_CSI_CHART):
-	mkdir -p $(@D)
-	curl --fail --silent --show-error --location --output $@.new \
-		$(MOUNTPOINT_S3_CSI_REPO)/releases/download/helm-chart-aws-mountpoint-s3-csi-driver-$(MOUNTPOINT_S3_CSI)/$(@F)
-	openssl dgst -sha256 -r $@.new | grep -q '^$(MOUNTPOINT_S3_CSI_SHA256) ' || \
-		{ echo "The checksum of $@.new is not $(MOUNTPOINT_S3_CSI_SHA256)." >&2; exit 1; }
+# The templates of the chart of Substrate made of the manifests of the
+# release, which its kustomize directory patches and fills with the values
+# of the chart, and its CRDs.
+deploy/charts/substrate/templates/upstream.yaml: $(SUBSTRATE_OUT)/source/go.mod deploy/charts/substrate/kustomize/kustomization.yaml deploy/charts/substrate/kustomize/helm.awk
+	mkdir -p $(SUBSTRATE_OUT)/render/upstream deploy/charts/substrate/crds
+	cp -R $(SUBSTRATE_OUT)/source/manifests/ate-install/. $(SUBSTRATE_OUT)/render/upstream
+	cp deploy/charts/substrate/kustomize/kustomization.yaml $(SUBSTRATE_OUT)/render
+	cp $(SUBSTRATE_OUT)/source/manifests/ate-install/generated/ate.dev_*.yaml deploy/charts/substrate/crds
+	kubectl kustomize --load-restrictor LoadRestrictionsNone $(SUBSTRATE_OUT)/render | \
+		awk -f deploy/charts/substrate/kustomize/helm.awk > $@.new
 	mv $@.new $@
 
-# Packages the chart, with the chart of agent-sandbox in it, as
-# .out/aviary-<version>.tgz.
-chart: $(AGENT_SANDBOX_CHART)
+$(SUBSTRATE_CHART): deploy/charts/substrate/templates/upstream.yaml $(wildcard deploy/charts/substrate/*.yaml deploy/charts/substrate/templates/*)
+	helm package deploy/charts/substrate --destination $(@D)
+
+# Packages the chart as .out/aviary-<version>.tgz, with that of Substrate.
+chart: $(SUBSTRATE_CHART)
 	helm package deploy/charts/aviary --destination .out
 
 # Installs the packages of the console in the versions that
@@ -309,6 +287,38 @@ endif
 
 cluster-down:
 	kind delete cluster --name $(CLUSTER)
+
+# Prepares the local cluster for Agent Substrate, which the chart installs.
+# The nodes answer ARP for the addresses that they route, which gVisor needs
+# on kind, and a registry holds the harness images. A PostgreSQL of its own
+# keeps the records of Substrate, with the users and the schema that the
+# script of the release makes, and SUBSTRATE_VALUES gives the chart their
+# passwords.
+substrate: $(SUBSTRATE_OUT)/source/go.mod
+	for node in $$(kind get nodes --name $(CLUSTER)); do \
+		docker exec $$node sysctl -q -w net.ipv4.conf.all.proxy_arp=1 || exit 1; \
+	done
+	$(KUBECTL) apply --filename hack/kind/registry.yaml
+	$(call KEPT_SECRET,substrate-postgres)
+	$(KUBECTL) get secret substrate-postgres --namespace aviary-data >/dev/null 2>&1 || \
+		$(KUBECTL) create secret generic substrate-postgres --namespace aviary-data \
+			--from-literal=admin=$$(openssl rand -hex 24) --from-literal=owner=$$(openssl rand -hex 24) \
+			--from-literal=readWrite=$$(openssl rand -hex 24)
+	$(call KEEP_SECRET,substrate-postgres,aviary-data)
+	$(KUBECTL) apply --filename hack/kind/substrate-postgres.yaml
+	$(KUBECTL) --namespace aviary-data rollout status statefulset/substrate-postgres --timeout 300s
+	$(KUBECTL) --namespace aviary-data exec --stdin substrate-postgres-0 -- sh -c \
+		'psql --quiet --no-psqlrc --single-transaction --set=ON_ERROR_STOP=1 --username substrate --dbname substrate \
+			--set=substrate_schema=substrate \
+			--set=substrate_owner_role=substrate_owner --set=substrate_owner_user=substrate_owner_user \
+			--set=substrate_owner_password="$$OWNER_PASSWORD" \
+			--set=substrate_readwrite_role=substrate_readwrite --set=substrate_readwrite_user=substrate_readwrite_user \
+			--set=substrate_readwrite_password="$$READ_WRITE_PASSWORD"' \
+		< $(SUBSTRATE_OUT)/source/pkg/postgressetup/setup.sql
+	mkdir -p .out
+	(umask 077 && $(KUBECTL) get secret substrate-postgres --namespace aviary-data --output json | \
+		jq --from-file hack/kind/substrate-values.jq > $(SUBSTRATE_VALUES))
+	$(KUBECTL) --namespace aviary-data rollout status deployment/kind-registry --timeout 300s
 
 # The next four targets install the data layer in the local cluster. Aviary
 # needs one database and one event log, for example
@@ -361,24 +371,6 @@ vault:
 	$(KUBECTL) apply -f hack/kind/vault.yaml
 	$(KUBECTL) --namespace aviary-data rollout status deployment/vault --timeout 180s
 
-# Installs the Versity S3 Gateway in the local cluster, for trying the depot
-# on a bucket, and the Mountpoint for Amazon S3 CSI driver, which mounts the
-# bucket of the gateway as a volume and signs its requests with the keys of
-# the gateway. Aviary keeps its objects in the bucket when installed with
-# make deploy VALUES=hack/kind/aviary-versitygw-values.yaml
-versitygw: $(MOUNTPOINT_S3_CSI_CHART)
-	$(KUBECTL) get secret versitygw-root --namespace aviary-data >/dev/null 2>&1 || \
-		$(KUBECTL) create secret generic versitygw-root --namespace aviary-data \
-			--from-literal=access=$$(openssl rand -hex 10) --from-literal=secret=$$(openssl rand -hex 24)
-	$(KUBECTL) get secret versitygw-root --namespace aviary-data --output json | \
-		jq '{apiVersion, kind, type, metadata: {name: "aws-secret"}, stringData: {key_id: (.data.access | @base64d), access_key: (.data.secret | @base64d)}}' | \
-		$(KUBECTL) apply --namespace kube-system -f -
-	$(HELM) upgrade --install aws-mountpoint-s3-csi-driver $(MOUNTPOINT_S3_CSI_CHART) \
-		--namespace kube-system --wait
-	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
-	$(KUBECTL) apply -f hack/kind/versitygw.yaml
-	$(KUBECTL) --namespace aviary-data rollout status statefulset/versitygw --timeout 300s
-
 # Installs Keycloak in the local cluster, for trying Aviary with
 # authentication. Aviary uses it when installed with
 # make deploy VALUES=hack/kind/aviary-keycloak-values.yaml
@@ -394,12 +386,13 @@ headlamp:
 	$(KUBECTL) --namespace headlamp rollout status deployment/headlamp --timeout 300s
 	@echo "Headlamp is at http://localhost:4466"
 
-# Installs Prometheus, which scrapes the metrics of Aviary, and Grafana with
-# the dashboard in deploy/grafana, at http://localhost:3000.
+# Installs Prometheus, which scrapes the metrics of Aviary and of Agent
+# Substrate, and Grafana with the dashboards in deploy/grafana, at
+# http://localhost:3000.
 grafana:
 	$(KUBECTL) create namespace monitoring --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) create configmap grafana-dashboards --namespace monitoring \
-		--from-file deploy/grafana/aviary.json --dry-run=client --output yaml | \
+		--from-file deploy/grafana/aviary.json --from-file deploy/grafana/substrate.json --dry-run=client --output yaml | \
 		$(KUBECTL) apply --server-side -f -
 	$(KUBECTL) apply -f hack/kind/prometheus.yaml -f hack/kind/grafana.yaml
 	$(KUBECTL) --namespace monitoring rollout status deployment/prometheus --timeout 300s
@@ -443,17 +436,38 @@ docs: docs/node_modules/.package-lock.json
 docs-dev: docs/node_modules/.package-lock.json
 	cd docs && ASTRO_TELEMETRY_DISABLED=1 npm run dev
 
-build:
+build: $(SUBSTRATE_OUT)/source/go.mod
 	$(BUILD) --file images/supervisor/Dockerfile --tag $(SUPERVISOR_IMAGE) .
 	$(BUILD) --file images/runner/Dockerfile --tag $(RUNNER_IMAGE) .
-	$(BUILD) --build-arg RUNNER_IMAGE=$(RUNNER_IMAGE) --tag $(HARNESS_BASE_IMAGE) images/harness-base
+	$(BUILD) --tag $(HARNESS_BASE_IMAGE) images/harness-base
 	$(BUILD) --tag $(OPENCODE_IMAGE) images/harness-opencode
 	$(BUILD) --tag $(CODEX_IMAGE) images/harness-codex
 	$(BUILD) --tag $(CLAUDE_CODE_IMAGE) images/harness-claude-code
 	$(BUILD) --file images/mock-llm/Dockerfile --tag $(MOCK_LLM_IMAGE) .
+	$(BUILD) --file images/substrate-keys/Dockerfile --tag $(SUBSTRATE_KEYS_IMAGE) $(SUBSTRATE_OUT)/source
 
+# Loads the images into the nodes of the cluster, and puts the harness images
+# and the runner image into its registry, from a node, as Substrate takes
+# them: by digest, at localhost:5001. HARNESS_VALUES names them for the chart.
 images: build
-	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(CLAUDE_CODE_IMAGE) $(MOCK_LLM_IMAGE)
+	kind load docker-image --name $(CLUSTER) $(SUPERVISOR_IMAGE) $(MOCK_LLM_IMAGE) $(SUBSTRATE_KEYS_IMAGE)
+	kind load docker-image --name $(CLUSTER) --nodes $(CLUSTER)-control-plane $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(CLAUDE_CODE_IMAGE) $(RUNNER_IMAGE)
+	mkdir -p .out
+	registry=$$($(KUBECTL) --namespace aviary-data get service kind-registry --output jsonpath='{.spec.clusterIP}'):5000 && \
+	ctr="docker exec $(CLUSTER)-control-plane ctr --namespace k8s.io" && \
+	printf 'runtime:\n  harnesses:\n' > $(HARNESS_VALUES).new && \
+	for image in $(OPENCODE_IMAGE) $(CODEX_IMAGE) $(CLAUDE_CODE_IMAGE) $(RUNNER_IMAGE); do \
+		$$ctr images tag --force docker.io/library/$$image $$registry/$$image > /dev/null && \
+		$$ctr images push --plain-http $$registry/$$image > /dev/null && \
+		digest=$$($$ctr images ls name==$$registry/$$image | awk 'NR == 2 { print $$3 }') && \
+		[ -n "$$digest" ] && \
+		name=$${image%:dev} && \
+		case $$name in \
+			aviary-harness-*) printf '    %s:\n      image: localhost:5001/%s@%s\n' $${name#aviary-harness-} $$name $$digest ;; \
+			*) printf '  runner:\n    image: localhost:5001/%s@%s\n' $$name $$digest ;; \
+		esac >> $(HARNESS_VALUES).new || exit 1; \
+	done
+	mv $(HARNESS_VALUES).new $(HARNESS_VALUES)
 
 # Creates the Secrets that the chart reads, and fails unless the cluster has
 # one database and one event log. Their URLs are built from their passwords.
@@ -466,6 +480,7 @@ secrets:
 	logs=$$(installed valkey-users redis-users) && [ "$$logs" -eq 1 ] || \
 		{ echo "The cluster has $$logs event logs, and Aviary needs one: make valkey or make redis installs one." >&2; exit 1; }
 	$(KUBECTL) create namespace aviary-system --dry-run=client --output yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) label namespace aviary-system ate.dev/api-access=true --overwrite
 	if $(KUBECTL) get secret mysql-users --namespace aviary-data >/dev/null 2>&1; then \
 		$(KUBECTL) get secret mysql-users --namespace aviary-data --output json | \
 			jq '{apiVersion, kind, type, metadata: {name: "aviary-database"}, stringData: {uri: ("mysql://aviary:" + (.data.aviary | @base64d) + "@mysql.aviary-data:3306/aviary")}}'; \
@@ -486,27 +501,27 @@ secrets:
 			--from-literal=k1=$$(openssl rand -base64 32)
 	$(call KEEP_SECRET,aviary-encryption,aviary-system)
 
-# The image ID restarts the pods that run the Supervisor image when the image
-# changes. The cluster reaches the machine that runs it, at the address that
-# Docker gives containers for their host: the Egress Proxy may connect to it,
-# and a model provider at localhost is a model server on it. VALUES adds
-# values files, which can set egressProxy.localhost and
-# egressProxy.extraEgress otherwise, for example
+# Installs Aviary with Agent Substrate in the cluster, after make substrate
+# and make images. The image ID restarts the pods that run the Supervisor
+# image when the image changes. A model provider at localhost is a model
+# server on the machine that runs the cluster: the name
+# host.aviary-system.svc.cluster.local, which hack/kind/aviary-values.yaml
+# gives the sandboxes for it, has the address that Docker gives containers
+# for their host. VALUES adds values files, for example
 # make deploy VALUES=my-values.yaml
-deploy: secrets $(AGENT_SANDBOX_CHART)
-	mkdir -p .out
+deploy: secrets $(SUBSTRATE_CHART)
 	host=$$(docker run --rm --add-host host:host-gateway --entrypoint getent $(NODE_IMAGE) ahostsv4 host | head -n 1 | cut -d ' ' -f 1) && \
 	[ -n "$$host" ] && \
-	printf 'egressProxy:\n  localhost: %s\n  extraEgress:\n    - to:\n        - ipBlock: {cidr: %s/32}\n' "$$host" "$$host" > .out/host.yaml
+	printf 'apiVersion: v1\nkind: Service\nmetadata: {name: host, namespace: aviary-system}\nspec: {clusterIP: None}\n---\napiVersion: discovery.k8s.io/v1\nkind: EndpointSlice\nmetadata:\n  name: host\n  namespace: aviary-system\n  labels: {kubernetes.io/service-name: host}\naddressType: IPv4\nendpoints:\n  - addresses: ["%s"]\n' "$$host" | \
+		$(KUBECTL) apply -f -
 	image=$$(docker image inspect --format '{{.Id}}' $(SUPERVISOR_IMAGE)) && \
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system \
-		--values .out/host.yaml \
+		--values hack/kind/aviary-values.yaml --values $(SUBSTRATE_VALUES) --values $(HARNESS_VALUES) \
 		--set-string 'supervisor.podAnnotations.aviary\.io/image-id='$$image \
 		--set-string 'stateMetrics.podAnnotations.aviary\.io/image-id='$$image \
-		--set-string 'depot.podAnnotations.aviary\.io/image-id='$$image \
 		$(addprefix --values ,$(VALUES)) \
-		--wait
+		--wait --timeout 10m
 	$(KUBECTL) apply --filename hack/kind/api.yaml
 	@echo "The API is at http://localhost:8080"
 
@@ -529,16 +544,16 @@ endif
 
 # Installs Aviary in the cluster of the e2e as the tests need it, with the
 # mock model server and OpenBao, and with Keycloak if the cluster has it.
-e2e-up: $(AGENT_SANDBOX_CHART)
+e2e-up: $(SUBSTRATE_CHART)
 ifeq ($(filter cluster-up,$(MAKECMDGOALS)),)
 	$(MAKE) cluster-down cluster-up postgres valkey CLUSTER=$(CLUSTER) KIND_CONFIG=$(KIND_CONFIG) DATA=
 endif
-	$(MAKE) openbao images secrets CLUSTER=$(CLUSTER) DATA=
+	$(MAKE) substrate openbao images secrets CLUSTER=$(CLUSTER) DATA=
 	$(KUBECTL) apply --filename test/e2e/mock-llm.yaml --filename hack/kind/api.yaml
 	keycloak=$$($(KUBECTL) get deployment keycloak --namespace aviary-data --ignore-not-found --output name) && \
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
-		--namespace aviary-system --values test/e2e/values.yaml \
-		$${keycloak:+--values hack/kind/aviary-keycloak-values.yaml} --wait
+		--namespace aviary-system --values test/e2e/values.yaml --values $(SUBSTRATE_VALUES) --values $(HARNESS_VALUES) \
+		$${keycloak:+--values hack/kind/aviary-keycloak-values.yaml} --wait --timeout 10m
 	$(KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
 
 # The tests run on the kind network and reach the API at the node port that
@@ -552,14 +567,17 @@ e2e-run:
 		--env AVIARY_E2E_IDENTITY=$${keycloak:+keycloak} \
 		--env AVIARY_E2E_HARNESSES="$(E2E_HARNESSES)") test -count=1 -timeout 20m -v ./e2e/... $(TESTS); \
 		status=$$?; [ $$status = 0 ] || { \
-			for part in supervisor state-metrics depot egress-proxy; do \
+			for part in supervisor state-metrics; do \
 				$(KUBECTL) --namespace aviary-system logs --selector app.kubernetes.io/component=$$part \
 					--prefix --tail -1 > $(E2E_OUT)/$$part.log 2>&1; \
 			done; \
-			$(KUBECTL) --namespace agent-sandbox-system logs deployment/agent-sandbox-controller \
-				--tail -1 > $(E2E_OUT)/agent-sandbox.log 2>&1; \
-			$(KUBECTL) get pods,sandboxes.agents.x-k8s.io,persistentvolumeclaims --all-namespaces --output wide \
-				> $(E2E_OUT)/pods.txt 2>&1; \
+			for part in ate-api-server atenet-router atenet-egress; do \
+				$(KUBECTL) --namespace ate-system logs deployment/$$part --all-containers --prefix --tail -1 \
+					> $(E2E_OUT)/$$part.log 2>&1; \
+			done; \
+			$(KUBECTL) --namespace ate-system logs daemonset/atelet --all-containers --prefix --tail -1 > $(E2E_OUT)/atelet.log 2>&1; \
+			$(KUBECTL) --namespace aviary-runtime logs --selector ate.dev/worker-pool --prefix --tail -1 > $(E2E_OUT)/workers.log 2>&1; \
+			$(KUBECTL) get pods,workerpools.ate.dev --all-namespaces --output wide > $(E2E_OUT)/pods.txt 2>&1; \
 			$(KUBECTL) get events --all-namespaces --sort-by .lastTimestamp > $(E2E_OUT)/events.txt 2>&1; \
 			echo "e2e failed: the cluster $(CLUSTER) is kept, and its logs are in $(E2E_OUT)"; \
 		}; exit $$status

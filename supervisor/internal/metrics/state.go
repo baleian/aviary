@@ -36,7 +36,7 @@ func NewState(counts Counts, harnesses []string) *State {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(
 		sandboxes{counts: counts, desc: prometheus.NewDesc(
-			"aviary_sandboxes", "Number of sandboxes of sessions that have not ended, by state, and of homes that are archived.", []string{"state"}, nil,
+			"aviary_sandboxes", "Number of sandboxes of sessions that have not ended, by state.", []string{"state"}, nil,
 		)},
 		turns{
 			counts: counts, harnesses: harnesses,
@@ -71,9 +71,7 @@ func unread(ctx context.Context, collected chan<- prometheus.Metric, metric *pro
 	collected <- prometheus.NewInvalidMetric(metric, errors.New(what+": the store could not be read"))
 }
 
-var sandboxStates = []string{
-	store.SandboxAwake, store.SandboxAsleep, store.SandboxArchived, store.SandboxRestoring, store.SandboxLost,
-}
+var sandboxStates = []string{store.SandboxAwake, store.SandboxAsleep, store.SandboxLost}
 
 // sandboxes collects the number of sandboxes in each state.
 type sandboxes struct {

@@ -3,13 +3,12 @@ package app
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/url"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strconv"
@@ -19,16 +18,18 @@ import (
 	"testing"
 	"time"
 
-	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/google/uuid"
+	credprovider "go.ate.dev/substrate/api/credprovider/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"aviary/supervisor/events"
 	memorylog "aviary/supervisor/events/memory"
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/driver"
+	"aviary/supervisor/internal/outbound"
 	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/internal/sandbox/runnertest"
 	"aviary/supervisor/internal/sandbox/sandboxtest"
@@ -40,7 +41,11 @@ import (
 
 // The tests of this package run whole Supervisors through serveOn, with an
 // in-memory store and event log and fake sandboxes in which nothing runs. A
-// test plays the runner of each turn and the Egress Proxy.
+// test plays the runner of each turn and the egress gateway, and serves the
+// model providers and MCP servers that the Supervisors ask.
+
+// atespace holds the sandboxes of the tests.
+const atespace = "aviary"
 
 // patience bounds waits for the Supervisor. soon bounds waits for what it
 // must do immediately: it is shorter than the sweep interval, so that work
@@ -79,9 +84,9 @@ type installation struct {
 	// origins are the origins whose pages may call the API from a browser:
 	// none unless a test sets them.
 	origins []string
-	// localhost is the host that stands in for the local host of a
-	// provider's URL: none unless a test sets it.
-	localhost string
+	// endpoints serve the model providers and MCP servers that the
+	// Supervisors ask for their models and tools.
+	endpoints *endpoints
 }
 
 // install returns an installation without Supervisors. changes modify the
@@ -94,12 +99,10 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 			"opencode": {Image: "registry.example.com/harness-opencode:1.0"},
 			"codex":    {Image: "registry.example.com/harness-codex:1.0"},
 		},
-		Models:             &url.URL{Scheme: "http", Host: "127.0.0.2:8080"},
-		MaxStartup:         90 * time.Second,
-		MaxTurn:            30 * time.Minute,
-		MaxQueueWait:       2 * time.Minute,
-		MaxQueuedTurns:     500,
-		MaxConcurrentTurns: 50,
+		MaxStartup:     90 * time.Second,
+		MaxTurn:        30 * time.Minute,
+		MaxQueueWait:   2 * time.Minute,
+		MaxQueuedTurns: 500,
 	}
 	for _, change := range changes {
 		change(&config)
@@ -107,17 +110,18 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 	return &installation{
 		t: t, records: memorystore.New(), service: sandboxtest.New(t), config: config,
 		keys: testenv.Keys(t), storeHosts: []string{storeHost}, secrets: &shelves{}, log: memorylog.New(),
+		endpoints: &endpoints{t: t, at: map[string]string{}, transport: http.DefaultTransport.(*http.Transport).Clone()},
 	}
 }
 
-// token returns the session token that the sandbox's pod was created with.
-func (i *installation) token(sandbox string) string {
+// made returns what the sandbox was created with, and its latest egress.
+func (i *installation) made(sandbox string) sandbox.Request {
 	i.t.Helper()
 	made, found := i.service.Made()[sandbox]
-	if !found || made.Pod.Token == "" {
-		i.t.Fatalf("sandbox %s has no token", sandbox)
+	if !found {
+		i.t.Fatalf("no sandbox %s", sandbox)
 	}
-	return made.Pod.Token
+	return made
 }
 
 // stores returns the secret store client of one Supervisor, with a cache of
@@ -136,8 +140,8 @@ func (i *installation) stores() *secret.Stores {
 type supervisor struct {
 	*installation
 	api, metrics string
-	// proxies calls the authz server as the Egress Proxy does.
-	proxies authv3.AuthorizationClient
+	// gateway asks for secrets as the egress gateway does.
+	gateway credprovider.CredentialProviderClient
 	// stop cancels the Supervisor's context, as SIGTERM does, and waits for
 	// it to return.
 	stop func()
@@ -156,8 +160,8 @@ func (i *installation) supervisor() *supervisor {
 		}
 		return listener
 	}
-	on := ports{api: listen(), authz: listen(), metrics: listen()}
-	connection, err := grpc.NewClient(on.authz.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	on := ports{api: listen(), credentials: listen(), metrics: listen()}
+	connection, err := grpc.NewClient(on.credentials.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		i.t.Fatal(err)
 	}
@@ -166,12 +170,13 @@ func (i *installation) supervisor() *supervisor {
 		installation: i,
 		api:          "http://" + on.api.Addr().String(),
 		metrics:      "http://" + on.metrics.Addr().String(),
-		proxies:      authv3.NewAuthorizationClient(connection),
+		gateway:      credprovider.NewCredentialProviderClient(connection),
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
+	reach := outbound.Through(i.config.Localhost, i.endpoints)
 	go func() {
-		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers, i.origins, i.localhost)
+		stopped <- serveOn(ctx, on, i.records, ev, i.service, i.config, i.keys, stores, i.callers, i.origins, atespace, nil, reach)
 	}()
 	s.stop = sync.OnceFunc(func() {
 		stop()
@@ -487,7 +492,7 @@ type runner struct {
 }
 
 // given waits for the turn to be dispatched to a runner, and returns the
-// runner. A turn with a free slot is dispatched immediately.
+// runner.
 func (i *installation) given(turn string) *runner {
 	i.t.Helper()
 	return &runner{Turn: i.service.TurnWith(i.t, turn), installation: i}
@@ -594,41 +599,92 @@ func (r *runner) answer() (id, option string) {
 	return r.Answered(r.installation.t)
 }
 
-// Fake Egress Proxy.
+// Fake egress gateway.
 
-// check sends an authz check as the Egress Proxy does: for a model request to
-// path with token as the bearer token or, if forward, for a forward proxy
-// request with token as the password.
-func (s *supervisor) check(token string, forward bool, path string) *authv3.CheckResponse {
+// fetch asks for the secret that uri names, for a request of the sandbox, as
+// the egress gateway does. It returns the secret, or the code and the message
+// of the refusal.
+func (s *supervisor) fetch(sandbox, uri string) (string, codes.Code, string) {
 	s.t.Helper()
-	headers, extensions := map[string]string{"authorization": "Bearer " + token}, map[string]string{"listener": "llm"}
-	if forward {
-		headers = map[string]string{"proxy-authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("session:"+token))}
-		extensions["listener"] = "forward"
-	}
-	answer, err := s.proxies.Check(context.Background(), &authv3.CheckRequest{Attributes: &authv3.AttributeContext{
-		Request:           &authv3.AttributeContext_Request{Http: &authv3.AttributeContext_HttpRequest{Headers: headers, Path: path}},
-		ContextExtensions: extensions,
-	}})
+	answer, err := s.gateway.FetchSecret(context.Background(), &credprovider.FetchSecretRequest{
+		Uri: uri, ActorSpiffeId: "spiffe://substrate-actor.local/actor/" + atespace + "/" + sandbox,
+	})
 	if err != nil {
-		s.t.Fatal(err)
+		refused := status.Convert(err)
+		return "", refused.Code(), refused.Message()
 	}
-	return answer
+	return string(answer.GetOpaqueBytes()), codes.OK, ""
 }
 
-// origin returns the metadata that the Supervisor attaches to a request with
-// token, or nil if it denies the request.
-func (s *supervisor) origin(token string, forward bool) map[string]string {
-	s.t.Helper()
-	answer := s.check(token, forward, "/v1/chat/completions")
-	if codes.Code(answer.GetStatus().GetCode()) != codes.OK {
-		return nil
+// Model providers and MCP servers.
+
+// endpoints serve the model providers and MCP servers that Supervisors ask,
+// in place of the hosts of their URLs. A request to another host fails, as
+// one to a host that cannot be reached does.
+type endpoints struct {
+	t         *testing.T
+	transport http.RoundTripper
+
+	mu sync.Mutex
+	// at are the addresses of the servers of the endpoints, by host, and got
+	// are the requests that the endpoints got.
+	at  map[string]string
+	got []passed
+}
+
+// passed is a request as an endpoint got it.
+type passed struct {
+	method, host, path, authorization string
+	secure                            bool
+}
+
+// serve serves the endpoint at the host, with its port unless it is that of
+// the scheme.
+func (e *endpoints) serve(host string, endpoint http.HandlerFunc) {
+	server := httptest.NewServer(endpoint)
+	e.t.Cleanup(server.Close)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.at[host] = server.Listener.Addr().String()
+}
+
+func (e *endpoints) RoundTrip(request *http.Request) (*http.Response, error) {
+	host := request.URL.Host
+	if port := request.URL.Port(); (port == "80" && request.URL.Scheme == "http") || (port == "443" && request.URL.Scheme == "https") {
+		host = request.URL.Hostname()
 	}
-	origin := map[string]string{}
-	for name, value := range answer.GetDynamicMetadata().GetFields() {
-		origin[name] = value.GetStringValue()
+	e.mu.Lock()
+	address, served := e.at[host]
+	if served {
+		e.got = append(e.got, passed{request.Method, host, request.URL.RequestURI(), request.Header.Get("Authorization"), request.URL.Scheme == "https"})
 	}
-	return origin
+	e.mu.Unlock()
+	if !served {
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: request.URL.Hostname(), IsNotFound: true}}
+	}
+	// An MCP server at a loopback address refuses requests for other hosts,
+	// against DNS rebinding.
+	onward := request.Clone(request.Context())
+	onward.URL.Scheme, onward.URL.Host, onward.Host = "http", address, ""
+	return e.transport.RoundTrip(onward)
+}
+
+// last returns the last request that an endpoint got.
+func (e *endpoints) last() passed {
+	e.t.Helper()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.got) == 0 {
+		e.t.Fatal("no endpoint got a request")
+	}
+	return e.got[len(e.got)-1]
+}
+
+// asked returns how many requests the endpoints got.
+func (e *endpoints) asked() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.got)
 }
 
 // Metrics.

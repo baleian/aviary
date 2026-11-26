@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 394" role="img" aria-labelledby="title desc">
   <title id="title">What leaves a sandbox</title>
-  <desc id="desc">A sandbox sends its model and MCP requests to one port of the Egress Proxy and everything else to another, each with its session token. The proxy asks the Supervisor whose request it is. It puts the provider's key and headers into a model or MCP request, and lets other requests through to allowed hosts only.</desc>
+  <desc id="desc">A sandbox sends its model and MCP requests to their URLs with a placeholder in place of each secret, and its other connections to the hosts that are allowed. All of them pass through the egress gateway of Agent Substrate, which reads the requests to the hosts of the turn's provider and MCP servers, asks the Supervisor for their secrets and puts them in, lets the connections to the other allowed hosts through unread, and refuses every other host.</desc>
   <style>
     svg {
       --bg: #ffffff; --frame: #d9e0ea;
@@ -59,50 +59,48 @@
   <rect class="bg" x="0.5" y="0.5" width="899" height="393" rx="14"/>
 
 
-  <!-- The Supervisor, which the proxy asks -->
+  <!-- The Supervisor, which the gateway asks -->
   <rect class="hub" x="400" y="16" width="200" height="44" rx="10"/>
   <text class="t c" x="500" y="43">Supervisor</text>
   <path class="e" d="M470 104V62" marker-end="url(#a)"/>
-  <text class="l r" x="462" y="78">whose request</text>
-  <text class="l r" x="462" y="92">is this?</text>
+  <text class="l r" x="462" y="78">the secret,</text>
+  <text class="l r" x="462" y="92">for this sandbox?</text>
   <path class="e ret" d="M530 60V102" marker-end="url(#a)"/>
-  <text class="l" x="538" y="78">its turn, and for a model or MCP</text>
-  <text class="l" x="538" y="92">request the endpoint and the key</text>
+  <text class="l" x="538" y="78">only while a turn runs in its session, and only</text>
+  <text class="l" x="538" y="92">of the turn's provider or the session's servers</text>
 
   <!-- The sandbox -->
   <rect class="closed" x="20" y="104" width="250" height="270" rx="12"/>
   <text class="z" x="34" y="124">SESSION SANDBOX</text>
   <rect class="box" x="34" y="140" width="222" height="70" rx="8"/>
   <text class="n" x="46" y="162">Model and MCP requests</text>
-  <text class="d" x="46" y="180">to the proxy, with the session</text>
-  <text class="d" x="46" y="195">token in place of an API key</text>
+  <text class="d" x="46" y="180">with the placeholder aviary</text>
+  <text class="d" x="46" y="195">in place of each secret</text>
   <rect class="box" x="34" y="226" width="222" height="70" rx="8"/>
   <text class="n" x="46" y="248">Everything else</text>
-  <text class="d" x="46" y="266">by the proxy variables, with</text>
-  <text class="d" x="46" y="281">the token as the password</text>
-  <text class="d" x="34" y="326">No API keys, no DNS, and no</text>
-  <text class="d" x="34" y="341">connection but to the proxy:</text>
-  <text class="d" x="34" y="356">a network policy closes the rest.</text>
+  <text class="d" x="46" y="266">to the hosts that the</text>
+  <text class="d" x="46" y="281">installation allows</text>
+  <text class="d" x="34" y="326">No API keys. Names resolve only</text>
+  <text class="d" x="34" y="341">for the hosts that it may reach,</text>
+  <text class="d" x="34" y="356">and there is no other way out.</text>
 
-  <!-- The proxy -->
+  <!-- The gateway -->
   <rect class="out" x="350" y="104" width="300" height="270" rx="12"/>
-  <text class="t" x="366" y="128">Egress Proxy</text>
-  <text class="m r" x="634" y="128">Envoy</text>
+  <text class="t" x="366" y="128">Egress gateway</text>
+  <text class="m r" x="634" y="128">Agent Substrate</text>
   <path class="e way" d="M256 175H364" marker-end="url(#w)"/>
-  <text class="m c" x="310" y="168">:8080</text>
   <rect class="box" x="366" y="140" width="268" height="70" rx="8"/>
-  <text class="n" x="378" y="162">puts in the provider's key</text>
-  <text class="d" x="378" y="180">and the headers of the endpoint,</text>
-  <text class="d" x="378" y="195">in place of the token</text>
+  <text class="n" x="378" y="162">puts in the secrets</text>
+  <text class="d" x="378" y="180">reads the request with a certificate</text>
+  <text class="d" x="378" y="195">of its own, in place of the placeholder</text>
   <path class="e way" d="M256 261H364" marker-end="url(#w)"/>
-  <text class="m c" x="310" y="254">:3128</text>
   <rect class="box" x="366" y="226" width="268" height="70" rx="8"/>
   <text class="n" x="378" y="248">lets allowed hosts through</text>
-  <text class="d" x="378" y="266">of HTTPS it sees only the host</text>
-  <text class="d" x="378" y="281">and the port</text>
-  <text class="d" x="366" y="326">Refuses a session in which no turn runs,</text>
-  <text class="d" x="366" y="341">and a host that is not allowed. Logs each</text>
-  <text class="d" x="366" y="356">request with its turn, session and user.</text>
+  <text class="d" x="378" y="266">unread: of HTTPS it sees only</text>
+  <text class="d" x="378" y="281">the host and the port</text>
+  <text class="d" x="366" y="326">Refuses a host that the policy of the</text>
+  <text class="d" x="366" y="341">sandbox does not name. The Supervisor</text>
+  <text class="d" x="366" y="356">logs each secret that it gives.</text>
 
   <!-- Where the requests go -->
   <rect class="zone" x="706" y="104" width="174" height="270" rx="12"/>

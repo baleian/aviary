@@ -57,3 +57,48 @@ spec:
     - name: http
       port: 80
       targetPort: http
+---
+# The mock model server as the MCP servers of the tests, each at a host of
+# its own: the egress gateway puts a secret into a header of the requests to
+# a host whichever server they are for.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-mcp
+  namespace: aviary-e2e
+spec:
+  selector:
+    app.kubernetes.io/name: mock-llm
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-sse
+  namespace: aviary-e2e
+spec:
+  selector:
+    app.kubernetes.io/name: mock-llm
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# A port where nothing listens. Its connections reach the pod of the mock
+# model server, which refuses them, whatever the network of the cluster does
+# with a port that no Service has.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-closed
+  namespace: aviary-e2e
+spec:
+  selector:
+    app.kubernetes.io/name: mock-llm
+  ports:
+    - name: https
+      port: 443
+      targetPort: 9

@@ -41,37 +41,13 @@ func (rs *Runners) Runner(sandbox string, home *Home) *Runner {
 	return &Runner{runners: rs, sandbox: sandbox, home: home}
 }
 
-// Home is the home of a sandbox. It outlives the runners of the sandbox, and
-// its archive is its content.
+// Home is the home of a sandbox. It outlives the runners of the sandbox.
 type Home struct {
-	mu      sync.Mutex
-	content string
+	mu sync.Mutex
 	// files are the files that messages carried, by their paths below the
 	// attachments of the home. full makes the home refuse more.
 	files map[string]string
 	full  bool
-	// unpacked counts the archives that were unpacked into the home.
-	unpacked int
-	// cut makes the runner end the next archive that it packs halfway, and
-	// refuse makes it refuse the next one that it is to unpack.
-	cut, refuse bool
-	// held, if not nil, holds an archive halfway until it is closed.
-	held chan struct{}
-}
-
-// Write replaces the content of the home.
-func (h *Home) Write(content string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.content = content
-}
-
-// Content returns the content of the home, and how many archives were
-// unpacked into it.
-func (h *Home) Content() (content string, unpacked int) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.content, h.unpacked
 }
 
 // Files returns the files that messages carried into the home, by their
@@ -87,30 +63,6 @@ func (h *Home) Fill() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.full = true
-}
-
-// Cut makes the runner end the next archive of the home halfway.
-func (h *Home) Cut() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.cut = true
-}
-
-// Refuse makes the runner fail to unpack the next archive.
-func (h *Home) Refuse() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.refuse = true
-}
-
-// Hold makes the runner send the archives of the home only halfway, until
-// the returned function is called.
-func (h *Home) Hold() (release func()) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	held := make(chan struct{})
-	h.held = held
-	return sync.OnceFunc(func() { close(held) })
 }
 
 // Turn waits for the next turn given to any of the runners and returns it.
@@ -171,8 +123,8 @@ type Runner struct {
 	turn *Turn
 }
 
-// Gone simulates the loss of the runner's pod: the event streams of its turn
-// are cut off.
+// Gone cuts off the event streams of the runner's turn, as when its sandbox
+// goes to sleep or is lost.
 func (rn *Runner) Gone() {
 	rn.mu.Lock()
 	turn := rn.turn
@@ -214,10 +166,17 @@ type Turn struct {
 
 // McpServer is an MCP server of a turn.
 type McpServer struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Transport string `json:"transport"`
-	URL       string `json:"url"`
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	Transport string      `json:"transport"`
+	URL       string      `json:"url"`
+	Headers   []McpHeader `json:"headers"`
+}
+
+// McpHeader is a header of the requests to an MCP server.
+type McpHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 type event struct {
@@ -250,8 +209,6 @@ func (rn *Runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			turn.answers = append(turn.answers, [2]string{r.PathValue("request"), answer.Option})
 		})
 	})
-	mux.HandleFunc("GET /home", rn.pack)
-	mux.HandleFunc("PUT /home", rn.unpack)
 	mux.HandleFunc("PUT /files/{path...}", rn.file)
 	mux.ServeHTTP(w, r)
 }
@@ -274,63 +231,6 @@ func (rn *Runner) file(w http.ResponseWriter, r *http.Request) {
 		home.files = map[string]string{}
 	}
 	home.files[r.PathValue("path")] = string(content)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// pack sends the content of the home as its archive, unless a turn runs.
-func (rn *Runner) pack(w http.ResponseWriter, r *http.Request) {
-	rn.mu.Lock()
-	running := rn.turn != nil && !rn.turn.over()
-	rn.mu.Unlock()
-	if running {
-		http.Error(w, "a turn is running in the home", http.StatusConflict)
-		return
-	}
-	home := rn.home
-	home.mu.Lock()
-	content, cut, held := home.content, home.cut, home.held
-	home.cut = false
-	home.mu.Unlock()
-	half := len(content) / 2
-	io.WriteString(w, content[:half])
-	w.(http.Flusher).Flush()
-	if held != nil {
-		select {
-		case <-held:
-		case <-r.Context().Done():
-			return
-		case <-rn.runners.closed:
-			return
-		}
-	}
-	if cut {
-		// Abort the response, as a runner that cannot pack the home does.
-		panic(http.ErrAbortHandler)
-	}
-	io.WriteString(w, content[half:])
-}
-
-// unpack takes the archive as the content of the home, unless the runner has
-// had a turn.
-func (rn *Runner) unpack(w http.ResponseWriter, r *http.Request) {
-	rn.mu.Lock()
-	used := rn.turn != nil
-	rn.mu.Unlock()
-	if used {
-		http.Error(w, "a turn has run in the home", http.StatusConflict)
-		return
-	}
-	archive, err := io.ReadAll(r.Body)
-	home := rn.home
-	home.mu.Lock()
-	defer home.mu.Unlock()
-	if err != nil || home.refuse {
-		home.refuse = false
-		http.Error(w, "the archive cannot be unpacked", http.StatusInternalServerError)
-		return
-	}
-	home.content = string(archive)
-	home.unpacked++
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -361,6 +261,10 @@ func (rn *Runner) start(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case rn.turn != nil && rn.turn.ID == turn.ID:
 	case rn.turn != nil && !rn.turn.over():
+		// As the runner does, the turn is told to stop.
+		rn.turn.mu.Lock()
+		rn.turn.stops++
+		rn.turn.mu.Unlock()
 		w.WriteHeader(http.StatusConflict)
 		return
 	default:
@@ -401,7 +305,7 @@ func (rn *Runner) events(w http.ResponseWriter, r *http.Request) {
 		ended, changed, cut := turn.ended, turn.changed, turn.cuts != cuts
 		turn.mu.Unlock()
 		if cut {
-			// Abort the response, as a lost pod would.
+			// Abort the response, as a lost sandbox would.
 			panic(http.ErrAbortHandler)
 		}
 		for _, event := range events {

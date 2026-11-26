@@ -1,0 +1,57 @@
+{{- $location := include "substrate.location" . -}}
+{{- if not (hasPrefix "s3://" $location) }}
+{{- fail "substrate.objectStorage.location must be an S3 location, such as s3://bucket/" }}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ate-api-server-envvars
+  namespace: ate-system
+data:
+  ATE_API_ACTOR_JWT_ISSUER: https://idp.ate-system.svc
+  ATE_API_POSTGRES_OWNER_ROLE: {{ .Values.database.ownerRole | quote }}
+  ATE_API_POSTGRES_READ_WRITE_ROLE: {{ .Values.database.readWriteRole | quote }}
+  ATE_API_POSTGRES_SCHEMA: {{ .Values.database.schema | quote }}
+  ATE_API_SNAPSHOT_LOCATION: {{ $location | quote }}
+  ATE_API_SNAPSHOT_TRANSFER_SERVICE_ACCOUNT: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ate-api-config
+  namespace: ate-system
+data:
+  apiconfig.textproto: |
+    logging: {
+      level: "info"
+    }
+---
+# The API server checks the service account tokens of its callers. An issuer
+# inside the cluster is reached with the service account of the API server.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ate-api-authentication
+  namespace: ate-system
+data:
+  authentication.yaml: |
+    jwtProviders:
+    - name: kubernetes
+      issuer: {{ .Values.kubernetesIssuer }}
+      audiences:
+      - api.ate-system.svc
+      {{- if has .Values.kubernetesIssuer (list "https://kubernetes.default.svc" "https://kubernetes.default.svc.cluster.local") }}
+      certificateAuthorityFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      discoveryTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      {{- end }}
+{{- if not .Values.database.secret }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: substrate-database
+  namespace: ate-system
+stringData:
+  owner: {{ required "substrate.database.owner is required without substrate.database.secret" .Values.database.owner | quote }}
+  readWrite: {{ required "substrate.database.readWrite is required without substrate.database.secret" .Values.database.readWrite | quote }}
+{{- end }}

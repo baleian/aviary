@@ -812,7 +812,7 @@ a:hover .top > .go {
   justify-content: center;
   padding: 10px 0 4px;
 }
-/* Whether the sandbox of a session is awake, asleep, archived, lost or gone. */
+/* Whether the sandbox of a session is awake, asleep, lost or gone. */
 .sb {
   display: inline-flex;
   align-items: center;

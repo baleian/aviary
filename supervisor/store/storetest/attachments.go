@@ -108,12 +108,12 @@ func (suite suite) testTurnAttachments(t *testing.T) {
 	session := st.session()
 	capture, report, again := st.attachment(session, "image.png"), st.attachment(session, "report.pdf"), st.attachment(session, "image.png")
 	kept := st.attachment(session, "kept.txt")
-	turn, _, err := st.CreateTurn(ctx, session, uuid.Nil, "look", []uuid.UUID{again.ID, report.ID, capture.ID}, 0, 50)
+	turn, _, err := st.CreateTurn(ctx, session, uuid.Nil, "look", []uuid.UUID{again.ID, report.ID, capture.ID}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	st.end(turn.ID, true, store.Failure{})
-	plain, _, err := st.CreateTurn(ctx, session, uuid.Nil, "and now", nil, 0, 50)
+	plain, _, err := st.CreateTurn(ctx, session, uuid.Nil, "and now", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func (suite suite) testUnknownAttachments(t *testing.T) {
 	st := suite.open(t)
 	session, other := st.session(), st.session()
 	mine, sent, foreign := st.attachment(session, "mine.txt"), st.attachment(session, "sent.txt"), st.attachment(other, "foreign.txt")
-	first, _, err := st.CreateTurn(ctx, session, uuid.Nil, "one", []uuid.UUID{sent.ID}, 0, 50)
+	first, _, err := st.CreateTurn(ctx, session, uuid.Nil, "one", []uuid.UUID{sent.ID}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func (suite suite) testUnknownAttachments(t *testing.T) {
 		"an attachment that another message carries": {sent.ID, mine.ID},
 		"an attachment that is named twice":          {mine.ID, mine.ID},
 	} {
-		if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "two", attachments, 0, 50); !errors.Is(err, store.ErrUnknownAttachment) {
+		if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "two", attachments, 0); !errors.Is(err, store.ErrUnknownAttachment) {
 			t.Errorf("CreateTurn with %s: %v, want ErrUnknownAttachment", what, err)
 		}
 	}
@@ -177,7 +177,7 @@ func (suite suite) testUnknownAttachments(t *testing.T) {
 			t.Errorf("attachment of a refused message = %+v, %v; want it of no turn", read, err)
 		}
 	}
-	second, _, err := st.CreateTurn(ctx, session, uuid.Nil, "two", []uuid.UUID{mine.ID}, 0, 50)
+	second, _, err := st.CreateTurn(ctx, session, uuid.Nil, "two", []uuid.UUID{mine.ID}, 0)
 	if err != nil {
 		t.Fatalf("CreateTurn after refused messages: %v", err)
 	}
@@ -187,7 +187,7 @@ func (suite suite) testUnknownAttachments(t *testing.T) {
 	}
 	// A message that is refused for another reason carries nothing either.
 	late := st.attachment(session, "late.txt")
-	if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "three", []uuid.UUID{late.ID}, 0, 50); !errors.Is(err, store.ErrSessionBusy) {
+	if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "three", []uuid.UUID{late.ID}, 0); !errors.Is(err, store.ErrSessionBusy) {
 		t.Fatalf("CreateTurn of a busy session: %v, want ErrSessionBusy", err)
 	}
 	if read, err := st.Attachment(ctx, late.ID); err != nil || read.TurnID != uuid.Nil {
@@ -202,7 +202,7 @@ func (suite suite) testUnsentAttachments(t *testing.T) {
 	st := suite.open(t)
 	session := st.session()
 	old, sent, newer := st.attachment(session, "old.txt"), st.attachment(session, "sent.txt"), st.attachment(session, "newer.txt")
-	if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "look", []uuid.UUID{sent.ID}, 0, 50); err != nil {
+	if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "look", []uuid.UUID{sent.ID}, 0); err != nil {
 		t.Fatal(err)
 	}
 	// The stores of the other tests have unsent attachments too.
@@ -251,8 +251,8 @@ func (suite suite) testUnsentAttachments(t *testing.T) {
 	}
 }
 
-// A session whose attachments the depot may have is listed once it has
-// ended, until the depot has none of them.
+// A session whose attachments the object storage may have is listed once it
+// has ended, until the object storage has none of them.
 func (suite suite) testLeftAttachments(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -274,7 +274,8 @@ func (suite suite) testLeftAttachments(t *testing.T) {
 	if left(soon) {
 		t.Error("LeftAttachments lists a session that has not ended")
 	}
-	// The depot keeps the attachments of a session that has not ended.
+	// The object storage keeps the attachments of a session that has not
+	// ended.
 	if err := st.ForgetAttachments(ctx, expected); err != nil {
 		t.Fatal(err)
 	}
@@ -301,4 +302,9 @@ func (suite suite) testLeftAttachments(t *testing.T) {
 	if err := st.ForgetAttachments(ctx, uuid.New()); err != nil {
 		t.Errorf("ForgetAttachments of an unknown session: %v", err)
 	}
+}
+
+// recent reports whether at is a time of this test.
+func recent(at *time.Time) bool {
+	return at != nil && time.Since(*at) < time.Minute && time.Until(*at) < time.Minute
 }

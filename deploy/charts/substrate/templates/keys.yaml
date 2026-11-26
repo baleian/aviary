@@ -1,0 +1,82 @@
+# Makes the signing keys and certificate authorities of Substrate, each when
+# its Secret does not exist yet, so that an upgrade keeps them. The
+# components wait for their Secrets until the Job has made them.
+{{- $namespaces := list "ate-system" "podcertificate-controller-system" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: substrate-keys
+  namespace: ate-system
+{{- range $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: substrate-keys
+  namespace: {{ . }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: substrate-keys
+  namespace: {{ . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: substrate-keys
+subjects:
+  - kind: ServiceAccount
+    name: substrate-keys
+    namespace: ate-system
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # A Job does not change, so a new image makes a new one.
+  name: substrate-keys-{{ printf "%s %s" .Chart.Version .Values.keys.image | sha256sum | trunc 8 }}
+  namespace: ate-system
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      serviceAccountName: substrate-keys
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: keys
+          image: {{ .Values.keys.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          command: [sh, -c]
+          args:
+            - |
+              set -u
+              # pool <namespace> <name> jwt|<key type of a certificate authority>
+              pool() {
+                if [ "$3" = jwt ]; then
+                  out=$(kubectl-ate admin make-jwt-pool --secret-namespace "$1" --name "$2" 2>&1)
+                else
+                  out=$(kubectl-ate admin make-ca-pool --secret-namespace "$1" --name "$2" --ca-id 1 --key-type "$3" 2>&1)
+                fi
+                status=$?
+                case $out in
+                  *"already exists"*) echo "$1/$2 exists" ;;
+                  *) echo "$out"; return $status ;;
+                esac
+              }
+              pool ate-system actor-id-jwt-pool jwt &&
+              pool ate-system actor-id-ca-pool ECDSAP256 &&
+              pool ate-system egress-mitm-ca-pool ECDSAP256 &&
+              pool podcertificate-controller-system service-dns-ca-pool ED25519 &&
+              pool podcertificate-controller-system pod-identity-ca-pool ED25519 &&
+              pool podcertificate-controller-system postgres-ca-pool ED25519

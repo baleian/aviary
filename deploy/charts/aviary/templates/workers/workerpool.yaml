@@ -1,0 +1,27 @@
+# The workers of the sandboxes: pods of Agent Substrate that hold the
+# sandboxes while they are awake. A worker takes as many as fit in its
+# resources by the limits of their harnesses, and a sandbox wakes on any
+# worker that has room.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aviary-runtime
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: workers
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: aviary
+  namespace: aviary-runtime
+  labels:
+    {{- include "aviary.pool" . | fromJson | toYaml | nindent 4 }}
+spec:
+  replicas: {{ .Values.workers.replicas }}
+  workerImage: {{ .Values.workers.image }}
+  sandboxClasses:
+    - name: gvisor
+  template:
+    resources:
+      {{- toYaml .Values.workers.resources | nindent 6 }}

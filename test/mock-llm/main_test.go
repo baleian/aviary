@@ -410,9 +410,9 @@ func TestRequests(t *testing.T) {
 	defer model.Close()
 	messages := []map[string]any{{"role": "user", "content": "say hello"}}
 	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/messages"} {
-		// Only the Egress Proxy holds the key. A sandbox has only its session
-		// token.
-		for _, key := range []string{"", "a-session-token"} {
+		// Only the egress gateway puts the key in. A sandbox sends only a
+		// placeholder.
+		for _, key := range []string{"", "aviary"} {
 			status, _, _ := events(t, model.URL+path, key, map[string]any{"stream": true, "messages": messages})
 			if status != http.StatusUnauthorized {
 				t.Errorf("%s with key %q: got status %d, want 401", path, key, status)
@@ -435,7 +435,7 @@ func TestRequests(t *testing.T) {
 		t.Errorf("GET /healthz: got %v: %v", response, err)
 	}
 	// The models are listed for a caller with the key.
-	for key, status := range map[string]int{apiKey: http.StatusOK, "a-session-token": http.StatusUnauthorized} {
+	for key, status := range map[string]int{apiKey: http.StatusOK, "aviary": http.StatusUnauthorized} {
 		request, err := http.NewRequest("GET", model.URL+"/v1/models", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -835,7 +835,7 @@ func TestMcpServer(t *testing.T) {
 			return mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).
 				Connect(t.Context(), transport(model.URL, client), nil)
 		}
-		if session, err := connect(map[string]string{"Authorization": "Bearer a-session-token"}); err == nil {
+		if session, err := connect(map[string]string{"Authorization": "Bearer aviary"}); err == nil {
 			session.Close()
 			t.Errorf("%T: connected without the key", transport(model.URL, nil))
 		}

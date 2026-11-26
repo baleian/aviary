@@ -21,8 +21,9 @@ import (
 	"aviary/supervisor/store"
 )
 
-// timeout bounds each request to a store. It must stay below the Egress
-// Proxy's authz timeout, since an authz check may wait for a store.
+// timeout bounds each request to a store. It must stay below the 4 seconds
+// that the egress gateway of Substrate waits for the secrets of a request,
+// since it may wait for a store.
 const timeout = 3 * time.Second
 
 // Cache limits. A value is at most maxValue bytes. At most maxValues values

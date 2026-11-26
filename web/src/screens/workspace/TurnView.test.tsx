@@ -50,7 +50,7 @@ function show(
   more: {
     servers?: McpServer[];
     kept?: boolean;
-    awaits?: "wake" | "restore";
+    awaits?: "wake";
     onStop?: () => void;
     onAgain?: (text: string) => void;
     onAnswer?: (request: string, option: string) => Promise<boolean>;
@@ -758,7 +758,6 @@ it("says what a turn waits for before it starts", () => {
   for (const [awaits, said] of [
     [undefined, "Starting…"],
     ["wake", "Waking up…"],
-    ["restore", "Restoring files…"],
   ] as const) {
     const starting = show(starts, [], { awaits });
     expect(starting.element.querySelector(".state")!.textContent).toBe(said);

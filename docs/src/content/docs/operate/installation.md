@@ -14,42 +14,92 @@ your own. Aviary has only run on a local cluster so far: see
 - **A database and an event log**, which the chart does not install.
   [Plugins](./plugins.md#tested-products) lists the products
   and versions that Aviary is tested with.
-- **A network plugin that enforces network policies.** The policies are what
-  isolate the sandboxes.
-- **Storage for volumes.** Every session has a volume, and the depot has
-  one: see [Sessions and storage](./storage.md).
-- **agent-sandbox**, which manages the sandboxes. The chart installs
-  agent-sandbox v1.0.11 as well, with the chart of agent-sandbox, in the
-  namespace `agent-sandbox-system`.
+- **What [Agent Substrate](#agent-substrate) needs**, which the chart
+  installs to run the sandboxes: a PostgreSQL database, and nodes and a
+  Kubernetes that it runs on.
+- **Storage for a volume** of the object storage, which keeps the
+  snapshots of sleeping sandboxes and the files that messages carry, unless
+  they are kept in an S3 bucket: see
+  [Sessions and storage](./storage.md#the-object-storage).
 
-A cluster runs agent-sandbox once. If yours has it already, in that version,
-set `agent-sandbox.enabled` to false. Helm installs the custom resource
-definitions of agent-sandbox with the release and leaves them alone
-afterwards: it does not upgrade them, and does not delete them with the
-release.
+## Agent Substrate
+
+[Agent Substrate](https://github.com/agent-substrate/substrate) runs the
+sandbox of each session as an actor, on the workers of a pool that the chart
+makes. The chart installs its control plane in the namespace `ate-system`,
+from the manifests of its release v1.0.1, with the values under `substrate`
+(see [Configuration](../reference/configuration.md#agent-substrate)). It
+needs:
+
+- **A PostgreSQL database**, in which its API server keeps its records, in a
+  schema of its own, as an owner user and a read-write user. The script
+  `pkg/postgressetup/setup.sql` of the release makes the users, their roles
+  and the schema, with `psql` variables for their names and passwords. The
+  chart takes their connection strings from a Secret in `ate-system`, under
+  the keys `owner` and `readWrite`.
+- **An object storage** for the snapshots of sleeping sandboxes, which
+  keeps the files that messages carry as well: see
+  [Sessions and storage](./storage.md#the-object-storage). By default the
+  chart keeps them in a volume, through an S3 gateway of its own. With
+  `substrate.objectStorage.location` they are kept in an S3 bucket, which
+  the API server and the agent of Substrate on the nodes, atelet, and the
+  Supervisors reach with an access key, or with the identity of their
+  service accounts, which `substrate.serviceAccountAnnotations` and
+  `supervisor.serviceAccountAnnotations` can give a role.
+- **The issuer of the service account tokens** of the cluster,
+  `substrate.kubernetesIssuer`, against which its API checks the tokens of
+  the Supervisors. On EKS, it is the OpenID Connect issuer of the cluster.
+- **Nodes and a Kubernetes that it runs on**: nodes on which atelet, which
+  runs privileged, runs the sandboxes in gVisor, and a Kubernetes with pod
+  certificates and cluster trust bundles. Its own documentation says more.
+- **The image `substrate.keys.image`** of the Job that makes the signing
+  keys and certificate authorities of Substrate, each the first time:
+  `kubectl-ate` of the release. `make build` builds it as
+  `aviary-substrate-keys:dev`.
+
+The chart renders the same for the same values, without reading the
+cluster, so that it can be applied by a GitOps tool as well as by Helm. Its
+resources need the CRDs of Substrate, which are in the chart, before they
+can be checked: a tool that checks every resource before it applies them
+needs to skip those of the CRDs that it applies at the same time.
+
+The namespace of the release needs the label `ate.dev/api-access=true`, with
+which Substrate lets its pods reach its API:
+
+```sh
+kubectl label namespace aviary-system ate.dev/api-access=true
+```
+
+With `substrate.install: false` the chart leaves Substrate out, for a
+cluster that has it installed for Aviary: with the Supervisors as its
+credential provider `aviary.io` at
+`aviary-supervisor.<namespace>.svc:50051`, its router letting in
+`spiffe://cluster.local/ns/<namespace>/sa/aviary-supervisor`, and the
+service account `aviary-supervisor` as an owner of every atespace.
 
 ## Images
 
 A cluster of your own pulls the images that the values of the chart name:
-`supervisor.image`, `egressProxy.image`, `agent-sandbox.image.repository`
-and the `image` of each harness in `runtime.harnesses`.
+`supervisor.image`, `workers.image`, `substrate.keys.image`, the images of
+the release of Substrate at `substrate.images.registry`, without a location
+of the snapshots `substrate.store.image`, the `image` of each harness in
+`runtime.harnesses` and `runtime.runner.image`. Substrate pulls the images
+of a sandbox itself, by their digests: from a registry that it reaches
+without credentials, or with those of the kubelet's credential provider,
+which `substrate.atelet.imageCredentialProvider` names.
 
-`make build` builds the images of this repository, the Supervisor as
-`aviary-supervisor:dev` and each harness as `aviary-harness-<name>:dev`.
-Push them to a registry that your cluster pulls from, and name them in your
-values. In a network that does not reach the public registries, see
+`make build` builds the images of this repository: the Supervisor as
+`aviary-supervisor:dev`, the runner as `aviary-runner:dev`, each harness as
+`aviary-harness-<name>:dev`, and the image of the key Job of Substrate as
+`aviary-substrate-keys:dev`. Push them to a registry that your cluster pulls
+from, and name them in your values, each harness and the runner by its
+digest. In a network that does not reach the public registries, see
 [Mirrors](./mirrors.md).
 
 To run a harness that is not in this repository, see
 [Harness images](./harness-images.md). To connect Aviary to a
 database, an event log or a secret store that it has no plugin for, see
 [Plugins](./plugins.md).
-
-## The chart
-
-The chart of agent-sandbox is not in this repository. `make chart` takes it
-from the source of that release and packages the Aviary chart with it, as
-`.out/aviary-0.1.0.tgz`. `make deploy` and the tests take it the same way.
 
 ## Secrets
 
@@ -75,18 +125,26 @@ kubectl --namespace aviary-system create secret generic aviary-encryption \
 The names and the keys are values of the chart: see
 [Configuration](../reference/configuration.md#supervisor).
 
+Substrate reads its own in `ate-system`: the connection strings of its
+database, in `substrate.database.secret`, and the access key of a bucket of
+`substrate.objectStorage.location`, if it uses one, in
+`substrate.objectStorage.secret`, which the Supervisors read in the release
+namespace. Without these names the chart makes the Secrets of the strings
+and the key in its values.
+
 ## Installing
 
 ```sh
 make chart
 helm upgrade --install aviary .out/aviary-0.1.0.tgz \
-  --namespace aviary-system --values my-values.yaml --wait
+  --namespace aviary-system --values my-values.yaml --wait --timeout 10m
 ```
 
-Before every install and upgrade, the chart migrates the database: see
-[Upgrades and rollbacks](./upgrades.md). The sandboxes run in
-the namespace `aviary-runtime`, which the chart creates and which enforces
-the restricted Pod Security Standard.
+`make chart` packages the chart with Substrate's, which it makes of the
+source of the release. Before every install and upgrade, the chart migrates
+the database: see [Upgrades and rollbacks](./upgrades.md). The workers of
+the sandboxes run in the namespace `aviary-runtime`, which the chart
+creates, as pods of Substrate.
 
 The Supervisors serve the API on the Service `aviary-supervisor` of the
 release namespace, on port 80. What exposes it outside the cluster must not
@@ -100,5 +158,7 @@ that messages carry: request bodies of up to `runtime.maxAttachmentBytes`.
 - [Network and egress](./egress.md): what the sandboxes reach.
 - [Sessions and storage](./storage.md): when sessions sleep,
   and where their files are kept.
+- [Capacity and availability](./capacity.md): how many sandboxes the
+  workers hold.
 - [Web UI](./web-ui.md): the chart does not install it.
 - [Observability](./observability.md): metrics and logs.

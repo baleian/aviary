@@ -1,6 +1,6 @@
 ---
 title: Metrics
-description: The Prometheus metrics of the Supervisors, the state of the installation, the depots and the Egress Proxies.
+description: The Prometheus metrics of the Supervisors and of the state of the installation.
 ---
 
 A Supervisor serves Prometheus metrics on port 9092 at `/metrics`. The port
@@ -11,7 +11,7 @@ each pod.
 
 | Metric | Description |
 | --- | --- |
-| `aviary_turn_queue_length` | Number of queued turns when a turn was accepted, that turn included. 0 for a turn that did not have to wait. |
+| `aviary_turn_queue_length` | Number of queued turns when a turn was accepted, that turn included. |
 | `aviary_turns_followed` | Turns that this Supervisor follows, by `harness`. |
 | `aviary_turns_ended_total` | Ended turns, by `harness`, `state` and, for a failed turn, `reason`. |
 | `aviary_turn_queue_duration_seconds` | Time that a turn waited to run, from its message until it left the queue, by `harness`. |
@@ -43,42 +43,14 @@ false leaves the pod out.
 
 | Metric | Description |
 | --- | --- |
-| `aviary_sandboxes` | Sandboxes of the sessions that have not ended, by `state`: `awake`, `asleep`, `archived`, `restoring` or `lost`, as the sessions say of their `sandbox`. An `archived` one is a home in the depot, without a sandbox. |
+| `aviary_sandboxes` | Sandboxes of the sessions that have not ended, by `state`: `awake`, `asleep` or `lost`, as the sessions say of their `sandbox`. |
 | `aviary_turns` | Turns that have not ended, by `harness` and `state`: `queued`; `starting`, from leaving the queue until the harness has the message; `running`; or `awaiting_approval`, while a request of the turn waits for a person. |
-| `aviary_turns_oldest_age_seconds` | Age of the oldest turn of each `harness` and `state`: the time since its message for a queued turn, and since it left the queue for the others. 0 without such a turn. An age well beyond the limit of its state, `runtime.maxQueueWaitSeconds`, `runtime.maxStartupSeconds` or `runtime.maxTurnSeconds`, means that no Supervisor is ending the turn. |
+| `aviary_turns_oldest_age_seconds` | Age of the oldest turn of each `harness` and `state`: the time since its message for a queued turn, and since it left the queue for the others. 0 without such a turn. An age well beyond the limit of its state, `runtime.maxQueueWaitSeconds`, `runtime.maxStartupSeconds` or `runtime.maxTurnSeconds`, means that no Supervisor is ending the turn; with `memory` snapshots, the time that a turn waits for approval does not count toward its limit. |
 | `aviary_approvals_waiting` | Approval requests that wait for a person's answer, by `harness`. A turn can have several. |
-
-## Depot
-
-A depot serves its metrics on the same port and path. Each depot reports its
-own requests, and all of them report the same of the volume, which they
-share:
-
-| Metric | Description |
-| --- | --- |
-| `aviary_depot_request_duration_seconds` | Time that a depot took to serve a request for an object, by `operation`: `write`, `read` or `delete`, and by `outcome`: `done`; `refused`, if the request could not be served as it was made, as for a key that has no object; or `failed`, if the depot or its volume failed it. |
-| `aviary_depot_object_bytes_total` | Bytes of the objects that were written and read, by `operation`. |
-| `aviary_depot_volume_capacity_bytes`, `aviary_depot_volume_available_bytes` | Size of the volume that holds the objects, and how much of it is free. A scrape fails while the volume cannot be read. |
-
-## Egress Proxy
-
-An Egress Proxy serves the metrics of Envoy on the same port and path, among
-them:
-
-| Metric | Description |
-| --- | --- |
-| `envoy_http_downstream_rq_total`, `envoy_http_downstream_rq_xx` | Requests, and the classes of their response codes. The label `envoy_http_conn_manager_prefix` is `llm` for model requests, which include the Kubernetes probes, and `forward` for all others. |
-| `envoy_http_downstream_rq_time` | Request duration in milliseconds. |
-| `envoy_http_ext_authz_ok`, `envoy_http_ext_authz_denied`, `envoy_http_ext_authz_error` | What the Supervisor answered when the proxy asked for the turn of a request. |
-| `envoy_http_rbac_denied` | Requests to hosts that `egressProxy.allowedHosts` does not allow. Present only if the list names hosts. |
-
-Of Envoy's admin interface, only the metrics can be reached. A sandbox can
-read them too, by requesting the proxy's own address through the forward
-proxy, if `egressProxy.allowedHosts` allows that address, as the default
-does.
 
 ## Dashboard
 
 The Grafana dashboard in `deploy/grafana/aviary.json` charts the metrics of
-the Supervisors, of the state, of the depots and of the Egress Proxies, and
-can be imported into any Grafana with a Prometheus data source.
+the Supervisors and of the state, and can be imported into any
+Grafana with a Prometheus data source. `deploy/grafana/substrate.json`
+charts those of Agent Substrate.

@@ -20,6 +20,7 @@ var (
 	errUnknownAttachment  = &apiError{status: http.StatusBadRequest, Code: "unknown_attachment", Message: "an attachment is not one of the session that no message carries yet"}
 	errNoAttachments      = &apiError{status: http.StatusForbidden, Code: "attachments_disabled", Message: "the installation takes no attachments"}
 	errStorageFull        = &apiError{status: http.StatusInsufficientStorage, Code: "storage_full", Message: "the installation has no room for the file"}
+	errLengthRequired     = &apiError{status: http.StatusLengthRequired, Code: "length_required", Message: "the request must give the length of the file"}
 )
 
 // maxFileName is the longest name of an attachment, in bytes. It leaves

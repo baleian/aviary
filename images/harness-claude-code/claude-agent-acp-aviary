@@ -1,10 +1,17 @@
 #!/bin/sh
 # Claude Code reads the model endpoint from variables of its own, and adds /v1
-# to the URL itself.
+# to the URL itself. It takes the provider's headers as lines of
+# "name: value".
 set -eu
 export ANTHROPIC_BASE_URL="${AVIARY_LLM_BASE_URL%/v1}" \
   ANTHROPIC_AUTH_TOKEN="$AVIARY_LLM_API_KEY" \
   ANTHROPIC_MODEL="$AVIARY_LLM_MODEL"
+ANTHROPIC_CUSTOM_HEADERS=$(node --eval '
+  for (const [name, value] of Object.entries(JSON.parse(process.env.AVIARY_LLM_HEADERS || "{}"))) {
+    console.log(name + ": " + value);
+  }
+')
+export ANTHROPIC_CUSTOM_HEADERS
 # Claude Code names other models by alias for some work, such as a title for
 # the session and some subagents. Each alias is the agent's model.
 export ANTHROPIC_DEFAULT_FABLE_MODEL="$AVIARY_LLM_MODEL" \

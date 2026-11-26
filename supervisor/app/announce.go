@@ -96,38 +96,6 @@ func (a announcing) SetSandboxState(ctx context.Context, sessionID uuid.UUID, sa
 	return err
 }
 
-func (a announcing) ArchiveSession(ctx context.Context, sessionID, claim uuid.UUID, turns int, archive store.Archive) (bool, error) {
-	archived, err := a.Store.ArchiveSession(ctx, sessionID, claim, turns, archive)
-	if archived {
-		a.changed(ctx, sessionID)
-	}
-	return archived, err
-}
-
-func (a announcing) ClaimRestore(ctx context.Context, sessionID, claim uuid.UUID) (store.Archive, bool, error) {
-	archive, claimed, err := a.Store.ClaimRestore(ctx, sessionID, claim)
-	if claimed {
-		a.changed(ctx, sessionID)
-	}
-	return archive, claimed, err
-}
-
-func (a announcing) RestoreSession(ctx context.Context, sessionID, claim uuid.UUID, sandbox string) (bool, error) {
-	restored, err := a.Store.RestoreSession(ctx, sessionID, claim, sandbox)
-	if restored {
-		a.changed(ctx, sessionID)
-	}
-	return restored, err
-}
-
-func (a announcing) ForgetArchive(ctx context.Context, sessionID, archive uuid.UUID) error {
-	err := a.Store.ForgetArchive(ctx, sessionID, archive)
-	if err == nil {
-		a.changed(ctx, sessionID)
-	}
-	return err
-}
-
 func (a announcing) EndSession(ctx context.Context, id uuid.UUID, reason string) (store.Session, error) {
 	session, err := a.Store.EndSession(ctx, id, reason)
 	if err == nil {
@@ -136,8 +104,8 @@ func (a announcing) EndSession(ctx context.Context, id uuid.UUID, reason string)
 	return session, err
 }
 
-func (a announcing) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting, maxRunning int) (store.Turn, int, error) {
-	turn, waiting, err := a.Store.CreateTurn(ctx, sessionID, by, text, attachments, maxWaiting, maxRunning)
+func (a announcing) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting int) (store.Turn, int, error) {
+	turn, waiting, err := a.Store.CreateTurn(ctx, sessionID, by, text, attachments, maxWaiting)
 	if err == nil {
 		a.changed(ctx, sessionID)
 	}

@@ -34,14 +34,40 @@ metadata:
   name: prometheus
   namespace: monitoring
 data:
-  # Scrapes only the Supervisors, the state metrics, the depots and the
-  # Egress Proxies, and keeps only the metrics that deploy/grafana/aviary.json
-  # charts.
+  # Scrapes only the Supervisors, the state metrics and the components of
+  # Agent Substrate, and keeps only the metrics that
+  # deploy/grafana/aviary.json and deploy/grafana/substrate.json chart.
   # Prometheus reads the file when it starts.
   prometheus.yml: |
     global:
       scrape_interval: 15s
     scrape_configs:
+      # The API server, atelet, the router, the egress gateway and the
+      # controller, at their ports of metrics. The proxies of the router and
+      # of the gateway have their own, of other metrics.
+      - job_name: substrate
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: {names: [ate-system]}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            regex: prometheus|metrics
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_phase]
+            regex: Pending|Succeeded|Failed
+            action: drop
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: component
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: "\
+              (ate|atelet|atenet|rpc)_.+|\
+              process_(cpu_seconds_total|resident_memory_bytes)|go_goroutines"
+            action: keep
       - job_name: aviary-supervisor
         kubernetes_sd_configs:
           - role: pod
@@ -92,69 +118,6 @@ data:
           - source_labels: [__name__]
             regex: aviary_(sandboxes|turns|turns_oldest_age_seconds|approvals_waiting)
             action: keep
-      - job_name: aviary-depot
-        kubernetes_sd_configs:
-          - role: pod
-            namespaces: {names: [aviary-system]}
-        relabel_configs:
-          - source_labels:
-              - __meta_kubernetes_pod_label_app_kubernetes_io_name
-              - __meta_kubernetes_pod_label_app_kubernetes_io_component
-              - __meta_kubernetes_pod_container_port_name
-            regex: aviary;depot;metrics
-            action: keep
-          - source_labels: [__meta_kubernetes_pod_phase]
-            regex: Pending|Succeeded|Failed
-            action: drop
-          - source_labels: [__meta_kubernetes_namespace]
-            target_label: namespace
-          - source_labels: [__meta_kubernetes_pod_name]
-            target_label: pod
-        metric_relabel_configs:
-          - source_labels: [__name__]
-            regex: "\
-              aviary_depot_request_duration_seconds_(bucket|count)|aviary_depot_object_bytes_total|\
-              aviary_depot_volume_(capacity|available)_bytes|\
-              process_(cpu_seconds_total|resident_memory_bytes|start_time_seconds)"
-            action: keep
-      - job_name: aviary-egress-proxy
-        kubernetes_sd_configs:
-          - role: pod
-            namespaces: {names: [aviary-system]}
-        relabel_configs:
-          - source_labels:
-              - __meta_kubernetes_pod_label_app_kubernetes_io_name
-              - __meta_kubernetes_pod_label_app_kubernetes_io_component
-              - __meta_kubernetes_pod_container_port_name
-            regex: aviary;egress-proxy;metrics
-            action: keep
-          - source_labels: [__meta_kubernetes_pod_phase]
-            regex: Pending|Succeeded|Failed
-            action: drop
-          - source_labels: [__meta_kubernetes_namespace]
-            target_label: namespace
-          - source_labels: [__meta_kubernetes_pod_name]
-            target_label: pod
-        metric_relabel_configs:
-          - source_labels: [__name__]
-            regex: "\
-              envoy_http_downstream_rq_(total|xx|active|rx_reset|idle_timeout|time_bucket)|\
-              envoy_http_downstream_cx_(active|rx_bytes_total|tx_bytes_total|upgrades_total|upgrades_active)|\
-              envoy_http_ext_authz_(ok|denied|error)|envoy_http_rbac_denied|envoy_http_health_check_request_total|\
-              envoy_cluster_upstream_rq(_rx_reset|_time_bucket)?|envoy_cluster_ssl_connection_error|\
-              envoy_cluster_upstream_cx_(active|connect_fail|connect_timeout|rx_bytes_total|tx_bytes_total)|\
-              envoy_dns_cache_(model|forward)_(num_hosts|dns_query_(success|failure|timeout))|\
-              envoy_server_(uptime|state|concurrency|total_connections|memory_allocated|memory_physical_size)|\
-              envoy_(main_thread|workers)_watchdog_miss"
-            action: keep
-          # Drops the series of the metrics listener and the admin interface,
-          # which count only the scrapes.
-          - source_labels: [envoy_http_conn_manager_prefix]
-            regex: admin|metrics
-            action: drop
-          - source_labels: [envoy_cluster_name]
-            regex: admin
-            action: drop
 ---
 apiVersion: apps/v1
 kind: Deployment

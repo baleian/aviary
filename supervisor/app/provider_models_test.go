@@ -4,105 +4,23 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
-	"google.golang.org/grpc/codes"
 
-	"aviary/supervisor/internal/api"
-	"aviary/supervisor/internal/authz"
 	"aviary/supervisor/internal/driver"
-	"aviary/supervisor/internal/testenv"
-	"aviary/supervisor/store"
 )
 
-// proxy stands in for the model listener of the Egress Proxy. It asks a
-// Supervisor about each request, as the proxy does, and answers for the
-// endpoint that the Supervisor names.
-type proxy struct {
-	t *testing.T
-	// asks is the Supervisor that it asks.
-	asks *supervisor
-	// endpoints are the model endpoints that it reaches, by host.
-	endpoints map[string]http.HandlerFunc
-
-	mu sync.Mutex
-	// tokens are the tokens of the requests that it got, and got are the
-	// requests that it passed on to an endpoint.
-	tokens []string
-	got    []passed
-}
-
-// passed is a request as an endpoint got it.
-type passed struct {
-	method, host, path, authorization, secure string
-}
-
-func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	p.mu.Lock()
-	p.tokens = append(p.tokens, token)
-	p.mu.Unlock()
-	// replies answers as the proxy does when it makes the reply itself.
-	replies := func(status int, body string) {
-		w.Header().Set("x-aviary-proxy", "true")
-		w.WriteHeader(status)
-		io.WriteString(w, body)
-	}
-	answer := p.asks.check(token, false, r.URL.RequestURI())
-	if codes.Code(answer.GetStatus().GetCode()) != codes.OK {
-		status, why := refusal(answer)
-		replies(status, why)
-		return
-	}
-	to := named(p.t, answer)
-	endpoint, reached := p.endpoints[to.host]
-	if !reached {
-		replies(http.StatusServiceUnavailable, "upstream connect error or disconnect/reset before headers. reset reason: connection timeout")
-		return
-	}
-	p.mu.Lock()
-	p.got = append(p.got, passed{r.Method, to.host, r.URL.RequestURI(), to.authorization, to.secure})
-	p.mu.Unlock()
-	// The headers that the Supervisor names replace those of the request.
-	// The two that name the endpoint are for the proxy only.
-	onward := r.Clone(r.Context())
-	onward.Header.Del("Authorization")
-	for _, header := range answer.GetOkResponse().GetHeaders() {
-		if name := header.GetHeader().GetKey(); !strings.HasPrefix(name, "x-aviary-upstream") {
-			onward.Header.Set(name, header.GetHeader().GetValue())
-		}
-	}
-	endpoint(w, onward)
-}
-
-// last returns the last request that an endpoint got, and the token that it
-// came to the proxy with.
-func (p *proxy) last() (passed, string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.got) == 0 {
-		p.t.Fatal("no endpoint got a request")
-	}
-	return p.got[len(p.got)-1], p.tokens[len(p.tokens)-1]
-}
-
-// proxied returns an installation whose model requests go to a stand-in for
-// the Egress Proxy, which reaches the endpoints.
-func proxied(t *testing.T, endpoints map[string]http.HandlerFunc) (*installation, *proxy) {
+// reaching returns an installation whose Supervisors reach the endpoints in
+// place of the hosts of their URLs, by host.
+func reaching(t *testing.T, served map[string]http.HandlerFunc, changes ...func(*driver.Config)) *installation {
 	t.Helper()
-	standIn := &proxy{t: t, endpoints: endpoints}
-	server := httptest.NewServer(standIn)
-	t.Cleanup(server.Close)
-	at, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatal(err)
+	aviary := install(t, changes...)
+	for host, endpoint := range served {
+		aviary.endpoints.serve(host, endpoint)
 	}
-	return install(t, func(config *driver.Config) { config.Models = at }), standIn
+	return aviary
 }
 
 // listed is what came of asking a provider for its models. models are the IDs
@@ -170,16 +88,16 @@ func answers(body string) http.HandlerFunc {
 }
 
 // The models of an endpoint are listed before it is registered: the
-// Supervisor asks the endpoint for them, through the Egress Proxy and with the
-// key, as a turn's model requests go. The result is the models and the status
-// that the endpoint answered with, or why the proxy got no answer.
-func TestTheModelsOfAnEndpointAreListedThroughTheProxy(t *testing.T) {
+// Supervisor asks the endpoint for them with the key and the headers, as a
+// turn's model requests carry them. The result is the models and the status
+// that the endpoint answered with, or why there was no answer.
+func TestTheModelsOfAnEndpointAreListed(t *testing.T) {
 	t.Parallel()
 	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("the Supervisor followed a redirect of a model endpoint")
 	}))
 	t.Cleanup(elsewhere.Close)
-	aviary, standIn := proxied(t, map[string]http.HandlerFunc{
+	aviary := reaching(t, map[string]http.HandlerFunc{
 		"model.example.com:8000": keyedEndpoint("sk-a-key"),
 		"api.example.com":        keyedEndpoint("sk-in-the-store"),
 		"gateway.example.com":    routedEndpoint("X-Gateway-Route", "team-a"),
@@ -193,28 +111,14 @@ func TestTheModelsOfAnEndpointAreListedThroughTheProxy(t *testing.T) {
 		},
 	})
 	s := aviary.supervisor()
-	standIn.asks = s
 	project := s.project()
 
 	got := s.modelsAt(project, `{"url": "http://model.example.com:8000/v1/", "api_key": {"value": "sk-a-key"}}`)
 	if got != (listed{reached: true, status: http.StatusOK, models: "model-a,model-b"}) {
 		t.Errorf("an endpoint that lists its models: %+v", got)
 	}
-	asked, token := standIn.last()
-	if asked != (passed{"GET", "model.example.com:8000", "/v1/models", "Bearer sk-a-key", "false"}) {
+	if asked := aviary.endpoints.last(); asked != (passed{"GET", "model.example.com:8000", "/v1/models", "Bearer sk-a-key", false}) {
 		t.Errorf("the endpoint got %+v", asked)
-	}
-	// The request names its project for the proxy's access log, and no
-	// turn. Its token is of no use to a sandbox as a proxy password.
-	if from := s.origin(token, false); len(from) != 1 || from["project"] != project {
-		t.Errorf("origin of the model request of a listing = %v", from)
-	}
-	if from := s.origin(token, true); from != nil {
-		t.Errorf("a listing's token as a proxy password: origin %v, want it denied", from)
-	}
-	// Only the path of the provider's URL and paths below it are allowed.
-	if status, _ := refusal(s.check(token, false, "/v2/models")); status != http.StatusNotFound {
-		t.Errorf("the token of a listing on another path: status %d, want 404", status)
 	}
 
 	for name, test := range map[string]struct {
@@ -230,8 +134,7 @@ func TestTheModelsOfAnEndpointAreListedThroughTheProxy(t *testing.T) {
 		"another value of the header":        {`{"url": "https://gateway.example.com/v1", "headers": [{"name": "x-gateway-route", "value": "team-b"}]}`, listed{reached: true, status: http.StatusBadRequest}},
 		"no header for an endpoint with one": {`{"url": "https://gateway.example.com/v1"}`, listed{reached: true, status: http.StatusBadRequest}},
 		"an endpoint that redirects":         {`{"url": "https://moved.example.com/v1"}`, listed{reached: true, status: http.StatusFound}},
-		"an endpoint that is not reached": {`{"url": "https://nowhere.example.com/v1"}`,
-			listed{reason: "upstream connect error or disconnect/reset before headers. reset reason: connection timeout"}},
+		"an endpoint that is not reached":    {`{"url": "https://nowhere.example.com/v1"}`, listed{reason: "the endpoint cannot be reached"}},
 		// An answer that is not a list of models as the OpenAI API gives it
 		// has no models, and a model without an ID is left out.
 		"an answer that is no list":   {`{"url": "https://other.example.com/v1"}`, listed{reached: true, status: http.StatusOK}},
@@ -248,7 +151,7 @@ func TestTheModelsOfAnEndpointAreListedThroughTheProxy(t *testing.T) {
 	if got := s.modelsAt(project, `{"url": "https://open.example.com/custom/v2"}`); got != (listed{reached: true, status: http.StatusOK}) {
 		t.Errorf("a provider without a key: %+v", got)
 	}
-	if asked, _ := standIn.last(); asked != (passed{"GET", "open.example.com", "/custom/v2/models", "", "true"}) {
+	if asked := aviary.endpoints.last(); asked != (passed{"GET", "open.example.com", "/custom/v2/models", "", true}) {
 		t.Errorf("the endpoint without a key got %+v", asked)
 	}
 
@@ -271,14 +174,13 @@ func TestTheModelsOfAnEndpointAreListedThroughTheProxy(t *testing.T) {
 // that it has then.
 func TestTheModelsOfAProviderAreListed(t *testing.T) {
 	t.Parallel()
-	aviary, standIn := proxied(t, map[string]http.HandlerFunc{
+	aviary := reaching(t, map[string]http.HandlerFunc{
 		"model.example.com:8000": keyedEndpoint("sk-a-key"),
 		"api.example.com":        keyedEndpoint("sk-in-the-store"),
 		"gateway.example.com":    routedEndpoint("X-Gateway-Route", "team-a"),
 		"open.example.com":       answers(""),
 	})
 	s := aviary.supervisor()
-	standIn.asks = s
 	project := s.project()
 	const address = "https://" + storeHost
 	kept := s.create("/v1/projects/"+project+"/secret-stores", scriptedStore("a store", address, "a-credential", "a-credential"))
@@ -298,7 +200,7 @@ func TestTheModelsOfAProviderAreListed(t *testing.T) {
 		"with a key in a secret store":   {elsewhere, listed{reached: true, status: http.StatusOK, models: "model-a,model-b"}},
 		"without a key and with no list": {keyless, listed{reached: true, status: http.StatusOK}},
 		"with a header":                  {routed, listed{reached: true, status: http.StatusOK, models: "routed-model"}},
-		"that is not reached":            {gone, listed{reason: "upstream connect error or disconnect/reset before headers. reset reason: connection timeout"}},
+		"that is not reached":            {gone, listed{reason: "the endpoint cannot be reached"}},
 	} {
 		if got := s.listing("GET", "/v1/providers/"+test.provider+"/models", ""); got != test.want {
 			t.Errorf("a provider %s: %+v, want %+v", name, got, test.want)
@@ -311,7 +213,7 @@ func TestTheModelsOfAProviderAreListed(t *testing.T) {
 	if got := s.listing("GET", "/v1/providers/"+gone+"/models", ""); got != (listed{reached: true, status: http.StatusOK, models: "model-a,model-b"}) {
 		t.Errorf("a provider that was replaced: %+v", got)
 	}
-	if asked, _ := standIn.last(); asked != (passed{"GET", "model.example.com:8000", "/custom/v2/models", "Bearer sk-a-key", "false"}) {
+	if asked := aviary.endpoints.last(); asked != (passed{"GET", "model.example.com:8000", "/custom/v2/models", "Bearer sk-a-key", false}) {
 		t.Errorf("the endpoint of the replaced provider got %+v", asked)
 	}
 	if status, _ := s.request("GET", "/v1/providers/"+uuid.NewString()+"/models", "", nil); status != http.StatusNotFound {
@@ -324,12 +226,11 @@ func TestTheModelsOfAProviderAreListed(t *testing.T) {
 // only while the URL stays the same.
 func TestAProviderIsTriedWithTheSecretsThatItStores(t *testing.T) {
 	t.Parallel()
-	aviary, standIn := proxied(t, map[string]http.HandlerFunc{
+	aviary := reaching(t, map[string]http.HandlerFunc{
 		"model.example.com:8000": keyedEndpoint("sk-a-key"),
 		"gateway.example.com":    routedEndpoint("X-Gateway-Route", "team-a"),
 	})
 	s := aviary.supervisor()
-	standIn.asks = s
 	project := s.project()
 	providers := "/v1/projects/" + project + "/providers"
 	stored := s.create(providers, `{"name": "stored", "url": "http://model.example.com:8000/v1", "api_key": {"value": "sk-a-key"}}`)
@@ -372,9 +273,8 @@ func TestAProviderIsTriedWithTheSecretsThatItStores(t *testing.T) {
 // registered.
 func TestAnEndpointWhoseModelsAreNotListed(t *testing.T) {
 	t.Parallel()
-	aviary, standIn := proxied(t, nil)
+	aviary := install(t)
 	s := aviary.supervisor()
-	standIn.asks = s
 	project := s.project()
 	for name, body := range map[string]string{
 		"no URL":             `{}`,
@@ -393,59 +293,21 @@ func TestAnEndpointWhoseModelsAreNotListed(t *testing.T) {
 	if status, _ := s.request("POST", "/v1/projects/"+uuid.NewString()+"/providers/models", `{"url": "https://api.example.com/v1"}`, nil); status != http.StatusNotFound {
 		t.Errorf("the models of an endpoint in an unknown project: status %d, want 404", status)
 	}
-	if len(standIn.tokens) != 0 {
-		t.Errorf("the proxy got %d requests of listings that were refused", len(standIn.tokens))
+	if asked := aviary.endpoints.asked(); asked != 0 {
+		t.Errorf("the endpoints got %d requests of listings that were refused", asked)
 	}
 }
 
-// The model request of a listing is routed like that of a turn, and is
-// logged with the caller who asked for the models.
-func TestTheModelRequestOfAListing(t *testing.T) {
+// A listing reaches the local host of the URL where the installation says.
+func TestAListingReachesTheLocalHostWhereTheInstallationSays(t *testing.T) {
 	t.Parallel()
-	aviary, standIn := proxied(t, map[string]http.HandlerFunc{"host.example.com:11434": answers("")})
-	aviary.localhost = "host.example.com"
-	aviary.callers = api.Callers{Provider: tokens{"a-token": {Subject: "subject-1", Username: "alice@example.com", Groups: []string{"platform"}}}, Admins: []string{"platform"}}
+	aviary := reaching(t, map[string]http.HandlerFunc{"host.example.com:11434": answers("")},
+		func(config *driver.Config) { config.Localhost = "host.example.com" })
 	s := aviary.supervisor()
-	standIn.asks = s
-	s.token = "a-token"
-	project := s.project()
-	var me struct{ ID string }
-	s.request("GET", "/v1/me", "", &me)
-
-	// The local host of the URL is where the installation says.
-	if got := s.modelsAt(project, `{"url": "http://localhost:11434/v1"}`); got != (listed{reached: true, status: http.StatusOK}) {
+	if got := s.modelsAt(s.project(), `{"url": "http://localhost:11434/v1"}`); got != (listed{reached: true, status: http.StatusOK}) {
 		t.Errorf("an endpoint at the local host: %+v", got)
 	}
-	_, token := standIn.last()
-	if from := s.origin(token, false); len(from) != 3 || from["project"] != project || from["user"] != me.ID || from["subject"] != "subject-1" {
-		t.Errorf("origin of the model request of a listing = %v, want the project and the caller %s", from, me.ID)
-	}
-
-	// A token is accepted for as long as its listing may take, and only with
-	// the keys of the installation. A key in a secret store of another
-	// project is not read.
-	theirs := s.create("/v1/projects/"+s.project()+"/secret-stores", scriptedStore("theirs", "https://"+storeHost, "a-credential", "a-credential"))
-	aviary.secrets.put("https://"+storeHost, "llm/model", "api_key", "sk-theirs")
-	provider := store.Provider{ID: uuid.New(), ProjectID: uuid.MustParse(project), URL: "http://localhost:11434/v1"}
-	elsewhere := provider
-	elsewhere.APIKeyAt = &store.SecretReference{Store: uuid.MustParse(theirs), Path: "llm/model", Key: "api_key"}
-	for name, listing := range map[string]authz.Listing{
-		"a listing that is over":                  {Provider: provider, Until: time.Now().Add(-time.Second)},
-		"a listing with the key of another store": {Provider: elsewhere, Until: time.Now().Add(time.Minute)},
-	} {
-		token, err := authz.ListingToken(aviary.keys, listing)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if from := s.origin(token, false); from != nil {
-			t.Errorf("%s: origin %v, want it denied", name, from)
-		}
-	}
-	valid := authz.Listing{Provider: provider, Until: time.Now().Add(time.Minute)}
-	if token, err := authz.ListingToken(aviary.keys, valid); err != nil || s.origin(token, false) == nil {
-		t.Errorf("a listing that goes on is denied: %v", err)
-	}
-	if token, err := authz.ListingToken(testenv.Keys(t), valid); err != nil || s.origin(token, false) != nil {
-		t.Errorf("a listing sealed with other keys is allowed: %v", err)
+	if asked := aviary.endpoints.last(); asked != (passed{"GET", "host.example.com:11434", "/v1/models", "", false}) {
+		t.Errorf("the endpoint got %+v", asked)
 	}
 }

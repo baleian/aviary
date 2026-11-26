@@ -6,6 +6,8 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,21 +24,21 @@ import (
 	"syscall"
 	"time"
 
-	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
-	"github.com/google/uuid"
 	"github.com/rs/cors"
+	credprovider "go.ate.dev/substrate/api/credprovider/v1"
 	"google.golang.org/grpc"
+	grpccredentials "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
-	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/client-go/rest"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"aviary/supervisor/events"
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
-	"aviary/supervisor/internal/authz"
-	"aviary/supervisor/internal/depot"
+	"aviary/supervisor/internal/credentials"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/metrics"
+	"aviary/supervisor/internal/objects"
+	"aviary/supervisor/internal/outbound"
 	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
@@ -54,44 +56,50 @@ const (
 	userGroups         = "AVIARY_USER_GROUPS"
 	allowedOrigins     = "AVIARY_ALLOWED_ORIGINS"
 	harnesses          = "AVIARY_HARNESSES"
-	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
+	runnerImage        = "AVIARY_RUNNER_IMAGE"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
 	maxQueueWait       = "AVIARY_MAX_QUEUE_WAIT_SECONDS"
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
-	maxRestore         = "AVIARY_MAX_RESTORE_SECONDS"
 	maxToolOutput      = "AVIARY_MAX_TOOL_OUTPUT_BYTES"
 	maxAttachmentBytes = "AVIARY_MAX_ATTACHMENT_BYTES"
 	maxAttachments     = "AVIARY_MAX_ATTACHMENTS"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
-	sandboxNamespace   = "AVIARY_SANDBOX_NAMESPACE"
-	sandboxVolume      = "AVIARY_SANDBOX_VOLUME_SIZE"
-	sandboxClass       = "AVIARY_SANDBOX_STORAGE_CLASS"
+	sandboxAtespace    = "AVIARY_SANDBOX_ATESPACE"
+	sandboxPool        = "AVIARY_SANDBOX_POOL"
+	sandboxSnapshot    = "AVIARY_SANDBOX_SNAPSHOT"
+	sandboxHosts       = "AVIARY_SANDBOX_HOSTS"
 	sandboxIdle        = "AVIARY_SANDBOX_IDLE_SECONDS"
-	sandboxArchive     = "AVIARY_SANDBOX_ARCHIVE_SECONDS"
 	sandboxRetention   = "AVIARY_SANDBOX_RETENTION_SECONDS"
-	modelsURL          = "AVIARY_LLM_BASE_URL"
+	substrateAPI       = "AVIARY_SUBSTRATE_API"
+	substrateAuthority = "AVIARY_SUBSTRATE_AUTHORITY"
+	substrateToken     = "AVIARY_SUBSTRATE_TOKEN_FILE"
+	substrateCA        = "AVIARY_SUBSTRATE_CA_FILE"
+	substrateRouter    = "AVIARY_SUBSTRATE_ROUTER"
+	routerName         = "AVIARY_SUBSTRATE_ROUTER_NAME"
+	substrateIdentity  = "AVIARY_SUBSTRATE_IDENTITY_FILE"
+	credentialsCert    = "AVIARY_CREDENTIALS_CERT_FILE"
+	credentialsClients = "AVIARY_CREDENTIALS_CLIENT_CA_FILE"
+	egressGateway      = "AVIARY_SUBSTRATE_EGRESS_GATEWAY"
 	modelsLocalhost    = "AVIARY_LLM_LOCALHOST"
-	proxyURL           = "AVIARY_PROXY_URL"
-	depotURL           = "AVIARY_DEPOT_URL"
-	depotDirectory     = "AVIARY_DEPOT_DIRECTORY"
+	objectStorage      = "AVIARY_OBJECT_STORAGE"
 	apiAddr            = ":8080"
-	authzAddr          = ":9091"
+	credentialsAddr    = ":50051"
 	metricsAddr        = ":9092"
 	// shutdownTimeout is how long in-flight API requests get to finish.
 	shutdownTimeout = 10 * time.Second
 	// identityPatience bounds connecting to the identity provider at startup.
 	identityPatience = 30 * time.Second
 	// keepaliveInterval is the interval and the timeout of the keepalive
-	// pings of the authz server.
+	// pings of the credentials server.
 	keepaliveInterval = 30 * time.Second
 )
 
-// handover is how long a stopping Supervisor or depot keeps serving, since
+// handover is how long a stopping Supervisor keeps serving, since
 // the cluster may still send it new requests. It is a variable for tests.
 var handover = 5 * time.Second
 
 type ports struct {
-	api, authz, metrics net.Listener
+	api, credentials, metrics net.Listener
 }
 
 // Plugins connect the Supervisor to the database, the event log, secret
@@ -123,13 +131,8 @@ func Main(plugins Plugins) {
 // instead migrates the database schema to the latest or the given version,
 // up or down. Serving does not migrate: a release runs "migrate" once, before
 // it starts the Supervisors. With the argument "state-metrics", it instead
-// serves the state metrics of the installation until ctx is done. With the
-// argument "depot", it instead serves the objects of a directory as a depot,
-// which needs no database.
+// serves the state metrics of the installation until ctx is done.
 func Run(ctx context.Context, args []string, plugins Plugins) error {
-	if len(args) == 1 && args[0] == "depot" {
-		return serveDepot(ctx)
-	}
 	database, err := env(databaseURL)
 	if err != nil {
 		return err
@@ -148,55 +151,7 @@ func Run(ctx context.Context, args []string, plugins Plugins) error {
 	case len(args) == 1 && args[0] == "state-metrics":
 		return serveState(ctx, database, plugins)
 	}
-	return errors.New("usage: aviary-supervisor [migrate [<version>] | state-metrics | depot]")
-}
-
-// serveDepot serves the objects in the directory of AVIARY_DEPOT_DIRECTORY.
-func serveDepot(ctx context.Context) error {
-	directory, err := env(depotDirectory)
-	if err != nil {
-		return err
-	}
-	objects, err := depot.Open(directory)
-	if err != nil {
-		return err
-	}
-	requests, err := net.Listen("tcp", apiAddr)
-	if err != nil {
-		return err
-	}
-	scrapes, err := net.Listen("tcp", metricsAddr)
-	if err != nil {
-		return err
-	}
-	return serveDepotOn(ctx, requests, scrapes, objects)
-}
-
-// serveDepotOn serves the objects to the Supervisors on requests, and the
-// metrics of the depot on scrapes, until ctx is done.
-func serveDepotOn(ctx context.Context, requests, scrapes net.Listener, objects *depot.Directory) error {
-	m := metrics.NewDepot(objects.Volume)
-	server := &http.Server{Handler: depot.Handler(objects, m.Served), ReadHeaderTimeout: 10 * time.Second}
-	metricsMux := http.NewServeMux()
-	metricsMux.Handle("GET /metrics", m.Handler())
-	metricsServer := &http.Server{Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
-	defer metricsServer.Close()
-	failed := make(chan error, 2)
-	go func() { failed <- server.Serve(requests) }()
-	go func() { failed <- metricsServer.Serve(scrapes) }()
-	slog.Info("listening", "depot", requests.Addr().String(), "metrics", scrapes.Addr().String())
-
-	select {
-	case err := <-failed:
-		return err
-	case <-ctx.Done():
-	}
-	// The depot keeps serving for the handover, then lets the transfers that
-	// are under way finish. They have no limit here: the cluster ends a depot
-	// that takes longer than its pod is given.
-	slog.Info("stopping")
-	time.Sleep(handover)
-	return server.Shutdown(context.Background())
+	return errors.New("usage: aviary-supervisor [migrate [<version>] | state-metrics]")
 }
 
 // serveState serves the state metrics, which need the database and the names
@@ -238,21 +193,28 @@ func serveStateOn(ctx context.Context, on net.Listener, st store.Store, harnesse
 	return server.Shutdown(stopping)
 }
 
-func sandboxSettings() (sandbox.Settings, error) {
-	var settings sandbox.Settings
+// sandboxSettings reads the settings of the sandboxes and of the Substrate
+// that runs them.
+func sandboxSettings(harnesses map[string]sandbox.Harness) (sandbox.Settings, error) {
+	// An installation without harnesses needs no runner.
+	settings := sandbox.Settings{Harnesses: harnesses, Runner: os.Getenv(runnerImage)}
 	var err error
-	if settings.Namespace, err = env(sandboxNamespace); err != nil {
-		return settings, err
+	for name, value := range map[string]*string{
+		sandboxAtespace: &settings.Atespace, sandboxSnapshot: &settings.Snapshot,
+		substrateAPI: &settings.API, substrateAuthority: &settings.Authority, substrateToken: &settings.TokenFile, substrateCA: &settings.CAFile,
+		substrateRouter: &settings.Router, routerName: &settings.RouterName, substrateIdentity: &settings.IdentityFile,
+	} {
+		if *value, err = env(name); err != nil {
+			return settings, err
+		}
 	}
-	size, err := env(sandboxVolume)
+	pool, err := env(sandboxPool)
 	if err != nil {
 		return settings, err
 	}
-	if settings.Volume, err = resource.ParseQuantity(size); err != nil || settings.Volume.Sign() <= 0 {
-		return settings, fmt.Errorf("%s must be a positive quantity such as 10Gi", sandboxVolume)
+	if err := json.Unmarshal([]byte(pool), &settings.Pool); err != nil {
+		return settings, fmt.Errorf("%s must be a JSON object of labels: %w", sandboxPool, err)
 	}
-	// Optional: empty selects the default storage class of the cluster.
-	settings.StorageClass = os.Getenv(sandboxClass)
 	output, err := env(maxToolOutput)
 	if err != nil {
 		return settings, err
@@ -260,25 +222,76 @@ func sandboxSettings() (sandbox.Settings, error) {
 	if settings.MaxToolOutputBytes, err = strconv.Atoi(output); err != nil || settings.MaxToolOutputBytes < 0 {
 		return settings, fmt.Errorf("%s must be a number of bytes, or 0 for no limit", maxToolOutput)
 	}
-	if settings.Proxy, err = address(proxyURL); err != nil {
-		return settings, err
-	}
-	settings.Models, err = address(modelsURL)
-	return settings, err
+	return settings, nil
 }
 
-// address reads the URL of a service of the installation, such as the Egress
-// Proxy, from the named variable.
-func address(name string) (*url.URL, error) {
-	value, err := env(name)
+// sandboxHostsOf reads the hosts that every sandbox may reach, a JSON list
+// of URLs such as ["https://*", "https://*.example.com:8443"], whose paths
+// are ignored.
+func sandboxHostsOf() ([]sandbox.Host, error) {
+	encoded, err := env(sandboxHosts)
 	if err != nil {
 		return nil, err
 	}
-	at, err := url.Parse(value)
-	if err != nil || at.Scheme != "http" || at.Hostname() == "" {
-		return nil, fmt.Errorf("%s must be a URL such as http://name.namespace:8080", name)
+	var addresses []string
+	if err := json.Unmarshal([]byte(encoded), &addresses); err != nil {
+		return nil, fmt.Errorf("%s: %w", sandboxHosts, err)
 	}
-	return at, nil
+	hosts := make([]sandbox.Host, 0, len(addresses))
+	for _, address := range addresses {
+		host, err := sandbox.HostOf(address)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", sandboxHosts, err)
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
+}
+
+// credentialsTLS returns the TLS of the credentials server: its certificate,
+// which the egress gateway trusts, and only the gateway as its client. The
+// files are renewed, so they are read for each connection.
+func credentialsTLS() (*tls.Config, error) {
+	files := map[string]string{}
+	for _, name := range []string{credentialsCert, credentialsClients, egressGateway} {
+		value, err := env(name)
+		if err != nil {
+			return nil, err
+		}
+		files[name] = value
+	}
+	gateway := files[egressGateway]
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			certificate, err := tls.LoadX509KeyPair(files[credentialsCert], files[credentialsCert])
+			if err != nil {
+				return nil, err
+			}
+			encoded, err := os.ReadFile(files[credentialsClients])
+			if err != nil {
+				return nil, err
+			}
+			clients := x509.NewCertPool()
+			if !clients.AppendCertsFromPEM(encoded) {
+				return nil, fmt.Errorf("%s has no certificate", files[credentialsClients])
+			}
+			return &tls.Config{
+				MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate},
+				ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clients,
+				VerifyPeerCertificate: func(_ [][]byte, chains [][]*x509.Certificate) error {
+					for _, chain := range chains {
+						for _, uri := range chain[0].URIs {
+							if uri.String() == gateway {
+								return nil
+							}
+						}
+					}
+					return fmt.Errorf("the client is not %s", gateway)
+				},
+			}, nil
+		},
+	}, nil
 }
 
 func serve(ctx context.Context, database string, plugins Plugins) error {
@@ -315,23 +328,21 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if err != nil {
 		return err
 	}
-	localhost, err := localhostOfProviders()
+	config, err := driverConfig(ctx)
 	if err != nil {
 		return err
 	}
-	config, err := driverConfig()
+	settings, err := sandboxSettings(config.Harnesses)
 	if err != nil {
 		return err
 	}
-	settings, err := sandboxSettings()
+	config.Halt = settings.Snapshot == "memory"
+	client, err := sandbox.New(settings)
 	if err != nil {
 		return err
 	}
-	cluster, err := rest.InClusterConfig()
-	if err != nil {
-		return err
-	}
-	client, err := sandbox.New(cluster, settings)
+	defer client.Close()
+	secured, err := credentialsTLS()
 	if err != nil {
 		return err
 	}
@@ -340,42 +351,45 @@ func serve(ctx context.Context, database string, plugins Plugins) error {
 	if on.api, err = net.Listen("tcp", apiAddr); err != nil {
 		return err
 	}
-	if on.authz, err = net.Listen("tcp", authzAddr); err != nil {
+	if on.credentials, err = net.Listen("tcp", credentialsAddr); err != nil {
 		return err
 	}
 	if on.metrics, err = net.Listen("tcp", metricsAddr); err != nil {
 		return err
 	}
-	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, origins, localhost)
+	return serveOn(ctx, on, st, ev, client, config, keys, stores, callers, origins, settings.Atespace, secured, outbound.Client(config.Localhost))
 }
 
 // serveOn serves on the listeners until ctx is done. keys seal the stored
-// secrets and the session tokens, stores read the secrets kept in secret
-// stores, callers says who may use the API, origins are the origins whose
-// pages may call it from a browser, and localhost is the host that stands in
-// for the local host of a model provider's URL.
-func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, origins []string, localhost string) error {
+// secrets, stores read the secrets kept in secret stores, callers says who
+// may use the API, origins are the origins whose pages may call it from a
+// browser, and atespace holds the sandboxes. The secrets of providers and
+// servers are served over TLS with secured, or without TLS if it is nil.
+// reach asks providers and servers for their models and tools.
+func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, sandboxes driver.Sandboxes, config driver.Config, keys *secret.Keys, stores *secret.Stores, callers api.Callers, origins []string, atespace string, secured *tls.Config, reach *http.Client) error {
 	m := metrics.New(slices.Sorted(maps.Keys(config.Harnesses)), stores.Kinds())
 	stores.Asked = m.SecretRead
-	config.Token = func(session uuid.UUID) (string, error) { return authz.Token(keys, session) }
 	st = announcing{Store: st, events: ev}
 	dr := driver.New(config, sandboxes, st, ev, m)
 	apiServer := &http.Server{
-		Handler:           crossOrigin(origins, api.New(ctx, st, ev, dr, keys, stores, callers, config.Models)),
+		Handler:           crossOrigin(origins, api.New(ctx, st, ev, dr, keys, stores, callers, reach)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	// Authz checks have a port of their own, which can be closed to the
-	// sandboxes. A peer that disappears does not close its connections, so
-	// both ends send keepalive pings: the server sends its own and permits
-	// those of the Egress Proxy.
-	authzServer := grpc.NewServer(
+	// The egress gateway asks for secrets on a port of its own. A peer that
+	// disappears does not close its connections, so both ends send keepalive
+	// pings: the server sends its own and permits those of the gateway.
+	options := []grpc.ServerOption{
 		grpc.KeepaliveParams(keepalive.ServerParameters{Time: keepaliveInterval, Timeout: keepaliveInterval}),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             keepaliveInterval / 2,
 			PermitWithoutStream: true,
 		}),
-	)
-	authv3.RegisterAuthorizationServer(authzServer, authz.New(st, keys, stores, localhost))
+	}
+	if secured != nil {
+		options = append(options, grpc.Creds(grpccredentials.NewTLS(secured)))
+	}
+	credentialsServer := grpc.NewServer(options...)
+	credprovider.RegisterCredentialProviderServer(credentialsServer, credentials.New(&credentials.Resolver{Store: st, Keys: keys, Stores: stores}, atespace))
 	// Metrics have a port of their own, so that they are not exposed with the
 	// API. They are served until serveOn returns.
 	metricsMux := http.NewServeMux()
@@ -384,10 +398,10 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	defer metricsServer.Close()
 	failed := make(chan error, 3)
 	go func() { failed <- apiServer.Serve(on.api) }()
-	go func() { failed <- authzServer.Serve(on.authz) }()
+	go func() { failed <- credentialsServer.Serve(on.credentials) }()
 	go func() { failed <- metricsServer.Serve(on.metrics) }()
 	go dr.Run(ctx)
-	slog.Info("listening", "api", on.api.Addr().String(), "authz", on.authz.Addr().String(),
+	slog.Info("listening", "api", on.api.Addr().String(), "credentials", on.credentials.Addr().String(),
 		"metrics", on.metrics.Addr().String())
 
 	select {
@@ -402,7 +416,7 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	stopping, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	err := apiServer.Shutdown(stopping)
-	authzServer.GracefulStop()
+	credentialsServer.GracefulStop()
 	return err
 }
 
@@ -479,19 +493,17 @@ func callersOf(ctx context.Context, plugins []identity.Plugin) (api.Callers, err
 	return callers, err
 }
 
-// localhostOfProviders reads the host that stands in for the local host of a
-// model provider's URL: a host name or an IP address. It is optional:
-// without it nothing stands in.
+// localhostOfProviders reads the host that stands in for the local host of
+// the URL of a model provider or an MCP server: a host name, which the
+// Supervisor and the sandboxes reach. It is optional: without it nothing
+// stands in, and sandboxes do not reach the local host.
 func localhostOfProviders() (string, error) {
 	host := os.Getenv(modelsLocalhost)
 	if host == "" {
 		return "", nil
 	}
-	if _, err := netip.ParseAddr(host); err == nil {
-		return host, nil
-	}
-	if at, err := url.Parse("//" + host); err != nil || at.Hostname() != host {
-		return "", fmt.Errorf("%s must be a host name or an IP address, without a port", modelsLocalhost)
+	if _, err := netip.ParseAddr(host); err == nil || host == "localhost" || len(validation.IsDNS1123Subdomain(host)) > 0 {
+		return "", fmt.Errorf("%s must be a host name other than localhost, without a port", modelsLocalhost)
 	}
 	return host, nil
 }
@@ -540,9 +552,8 @@ func crossOrigin(origins []string, api http.Handler) http.Handler {
 }
 
 // harnessSettings reads the harnesses, a JSON object such as {"opencode":
-// {"image": "registry.example.com/harness-opencode:1.0", "resources":
-// {"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory":
-// "4Gi"}}}}.
+// {"image": "registry.example.com/harness-opencode@sha256:...", "resources":
+// {"limits": {"cpu": "2", "memory": "4Gi"}}}}.
 func harnessSettings() (map[string]sandbox.Harness, error) {
 	encoded, err := env(harnesses)
 	if err != nil {
@@ -560,13 +571,16 @@ func harnessSettings() (map[string]sandbox.Harness, error) {
 	return configured, nil
 }
 
-func driverConfig() (driver.Config, error) {
+func driverConfig(ctx context.Context) (driver.Config, error) {
 	var config driver.Config
 	var err error
 	if config.Harnesses, err = harnessSettings(); err != nil {
 		return config, err
 	}
-	if config.Models, err = address(modelsURL); err != nil {
+	if config.Hosts, err = sandboxHostsOf(); err != nil {
+		return config, err
+	}
+	if config.Localhost, err = localhostOfProviders(); err != nil {
 		return config, err
 	}
 	idle, err := env(sandboxIdle)
@@ -578,21 +592,14 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, or 0 to disable sleeping", sandboxIdle)
 	}
 	config.Idle = time.Duration(seconds) * time.Second
-	archive, err := env(sandboxArchive)
-	if err != nil {
-		return config, err
+	// Without object storage, messages carry no files.
+	if location := os.Getenv(objectStorage); location != "" {
+		store, err := objects.Open(ctx, location)
+		if err != nil {
+			return config, fmt.Errorf("%s: %w", objectStorage, err)
+		}
+		config.Objects = store
 	}
-	if seconds, err = strconv.Atoi(archive); err != nil || seconds < 0 {
-		return config, fmt.Errorf("%s must be a number of seconds, or 0 to disable archiving", sandboxArchive)
-	}
-	config.ArchiveAfter = time.Duration(seconds) * time.Second
-	// The depot is needed without archiving too: it has the homes that were
-	// archived before.
-	depots, err := address(depotURL)
-	if err != nil {
-		return config, err
-	}
-	config.Depot = depot.At(depots.String())
 	retention, err := env(sandboxRetention)
 	if err != nil {
 		return config, err
@@ -601,13 +608,6 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, or 0 to keep sandboxes until their session ends", sandboxRetention)
 	}
 	config.Retention = time.Duration(seconds) * time.Second
-	limit, err := env(maxConcurrentTurns)
-	if err != nil {
-		return config, err
-	}
-	if config.MaxConcurrentTurns, err = strconv.Atoi(limit); err != nil || config.MaxConcurrentTurns < 1 {
-		return config, fmt.Errorf("%s must be a positive number", maxConcurrentTurns)
-	}
 	queued, err := env(maxQueuedTurns)
 	if err != nil {
 		return config, err
@@ -631,14 +631,6 @@ func driverConfig() (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, or 0 for no limit", maxStartup)
 	}
 	config.MaxStartup = time.Duration(seconds) * time.Second
-	restore, err := env(maxRestore)
-	if err != nil {
-		return config, err
-	}
-	if seconds, err = strconv.Atoi(restore); err != nil || seconds < 0 {
-		return config, fmt.Errorf("%s must be a number of seconds", maxRestore)
-	}
-	config.MaxRestore = time.Duration(seconds) * time.Second
 	size, err := env(maxAttachmentBytes)
 	if err != nil {
 		return config, err

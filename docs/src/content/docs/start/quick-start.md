@@ -9,8 +9,8 @@ This runs Aviary on your machine, in a Kubernetes cluster that
 ## Before you begin
 
 You need Docker, [kind](https://kind.sigs.k8s.io), kubectl, Helm, jq, make,
-curl, openssl and bash. Tested with kind 0.33, Helm 4.3 and Docker 29 on
-Linux.
+curl, openssl, tar and bash. Tested with kind 0.33, Helm 4.3 and Docker 29
+on Linux.
 
 You also need a model endpoint: a provider's API, an AI gateway or a model
 server of your own.
@@ -19,9 +19,10 @@ server of your own.
 
 ```sh
 make cluster-up        # create a kind cluster
+make substrate         # install what Agent Substrate, which runs the sandboxes, needs
 make postgres valkey   # install a database and an event log in it
-make images            # build the images and load them into the cluster
-make deploy            # install Aviary with its Helm chart
+make images            # build the images and put them in the cluster
+make deploy            # install Aviary and Agent Substrate with the Helm chart
 make web               # build the web UI and install it
 ```
 
@@ -39,13 +40,14 @@ URL ends in `/v1`.
 
 The endpoint must be reachable from the cluster. A model server on your own
 machine is: register it at `localhost`, as in `http://localhost:11434/v1`.
-`make deploy` names the machine in `egressProxy.localhost` and lets the
-Egress Proxy connect to it with `egressProxy.extraEgress` (see
-[Configuration](../reference/configuration.md)), so the sandboxes reach the machine through
-the proxy as well. A values file of your own sets the two otherwise. With
-Docker Engine on Linux the model server has to listen on more than
-`127.0.0.1`, which the containers of Docker do not reach there. Another
-endpoint at a private address needs an entry in `egressProxy.extraEgress`.
+`make deploy` gives the machine the name
+`host.aviary-system.svc.cluster.local`, which `hack/kind/aviary-values.yaml`
+names in `sandboxes.localhost` (see
+[Configuration](../reference/configuration.md#sandboxes)), so the sandboxes
+and the Supervisors reach it there. With Docker Engine on Linux the model
+server has to listen on more than `127.0.0.1`, which the containers of
+Docker do not reach there. An endpoint in the cluster needs its full name,
+such as `models.llm.svc.cluster.local`.
 
 ## Send a message
 
@@ -86,8 +88,8 @@ knows the conversation and finds the file.
 
 ## Stop
 
-`make cluster-down` deletes the cluster, including the session volumes,
-which are directories on its nodes. A cluster that is made with `DATA`
+`make cluster-down` deletes the cluster, including the sandboxes and their
+snapshots. A cluster that is made with `DATA`
 [keeps its data](../contribute/development.md#keep-the-data-of-the-cluster)
 in a directory of your machine, for the next cluster.
 

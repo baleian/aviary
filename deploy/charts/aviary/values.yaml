@@ -3,6 +3,10 @@ supervisor:
   # Any replica can serve any request.
   replicas: 1
   podAnnotations: {}
+  # Annotations of the service account of the Supervisors, which keep the
+  # files that messages carry in the object storage: for example, the role
+  # that IRSA gives them.
+  serviceAccountAnnotations: {}
   resources:
     requests: {cpu: 100m, memory: 128Mi}
     # Leaves room for the output of long turns, which is held in memory
@@ -78,125 +82,88 @@ stateMetrics:
     requests: {cpu: 10m, memory: 64Mi}
     limits: {memory: 128Mi}
 
-# The depot, which keeps the files that outlive a sandbox as objects in a
-# volume. Its pods run the image of the Supervisor, and only the Supervisors
-# can connect to them.
-depot:
-  # Any replica can serve any request.
-  replicas: 1
-  podAnnotations: {}
-  resources:
-    requests: {cpu: 50m, memory: 64Mi}
-    limits: {memory: 512Mi}
-  # The volume that holds the objects. Every replica mounts it, and
-  # uninstalling the chart keeps it.
-  volume:
-    size: 30Gi
-    # Empty uses the default storage class of the cluster.
-    storageClass: ""
-    # ReadWriteOnce is a volume that one node mounts, such as a disk: the
-    # replicas run on that node together. ReadWriteMany is a volume that
-    # many nodes mount at once, such as a network file system or a mounted
-    # bucket: the replicas run on any node.
-    accessMode: ReadWriteOnce
-    # A claim of your own in the namespace of the release, instead of the
-    # one that the chart makes. accessMode says how it can be mounted.
-    existingClaim: ""
+# Agent Substrate, which runs the sandboxes. The chart installs it from the
+# manifests of its release, with the values under substrate that
+# deploy/charts/substrate/values.yaml describes, of which substrate.database
+# is required. The Supervisors keep the files that messages carry in its
+# object storage, under attachments/. Its installation names the
+# Supervisors as the credential provider aviary.io, at
+# aviary-supervisor.<namespace of the release>.svc:50051, lets them manage
+# the actors of the atespace and read the workers, and lets their router
+# requests in. The namespace of the release has the label
+# ate.dev/api-access=true, so that the Supervisors reach the API.
+substrate:
+  # Whether the chart installs Substrate. Without it, Substrate is installed
+  # in the cluster for Aviary as above, and messages carry files only if
+  # substrate.objectStorage names the location of its object storage, with
+  # substrate.objectStorage.secret as its key if it needs one.
+  install: true
+  # The namespace of the control plane of Substrate.
+  namespace: ate-system
+  # The atespace that holds the sandboxes and their templates.
+  atespace: aviary
 
-# The Egress Proxy, which all outbound traffic of the sandboxes goes through.
-# It forwards model requests to the model provider of the turn with the
-# provider's API key, and logs every request with its turn.
-egressProxy:
-  image: envoyproxy/envoy:distroless-v1.40.2@sha256:09ca6f2140a61ad8df11779a4a30d52b48433d444466328494f9188c9c35eded
-  replicas: 1
-  # Worker threads of each proxy. 0 lets Envoy choose: as many as the CPUs of
-  # its node, or of its CPU limit if it has one.
-  concurrency: 2
+# The workers that hold the sandboxes while they are awake, in the namespace
+# aviary-runtime. A worker has room for the sandboxes whose limits fit in its
+# resources, and a sandbox that wakes up takes the room of any worker. A
+# sandbox that sleeps takes none, so the pool bounds the sessions that run at
+# once, not those that exist.
+workers:
+  replicas: 2
+  image: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.1@sha256:fd0c6a46d6c69d485856171e632906e774594bea9d00011a4d7038be3e084a2a
   resources:
-    requests: {cpu: 100m, memory: 64Mi}
-    limits: {memory: 512Mi}
-  # Hosts that the sandboxes may reach, including those of model providers.
-  #   "*"        any host
-  #   host       the host on the default HTTPS and HTTP ports. Subdomains
-  #              are separate hosts.
-  #   host:port  the host on another port
-  # Model requests to a host that is not allowed are refused, and their
-  # turns fail.
-  allowedHosts: ["*"]
-  # Address ranges that a NetworkPolicy blocks the proxy from connecting to,
-  # so that the sandboxes cannot use it to reach into the cluster. The
-  # Supervisor and the cluster DNS stay reachable.
-  insideCIDRs:
-    - 10.0.0.0/8
-    - 172.16.0.0/12
-    - 192.168.0.0/16
-    - 100.64.0.0/10
-    - 169.254.0.0/16
-    - fc00::/7
-    - fe80::/10
-  # Additional NetworkPolicy egress rules for the proxy. A model provider or
-  # an allowed host that is in the cluster or at a private address needs
-  # one, for example
-  #   - to:
-  #       - namespaceSelector:
-  #           matchLabels: {kubernetes.io/metadata.name: llm-gateway}
-  #   - to:
-  #       - ipBlock: {cidr: 192.168.1.20/32}
-  extraEgress: []
-  # The host that the proxy connects to for a model provider whose URL is at
-  # localhost or a loopback address, such as http://localhost:11434/v1: a
-  # host name or an IP address. To the proxy such a URL is the proxy itself,
-  # so without this it reaches nothing. An installation on one machine can
-  # name that machine, so that the models that run on it are registered as
-  # its users see them. The host needs a rule in extraEgress if it is at a
-  # private address.
-  localhost: ""
+    limits: {cpu: "8", memory: 16Gi}
 
-# Each session runs in its own sandbox in the aviary-runtime namespace: a pod
-# that runs the harness of its agent, with a volume for the session. The
-# sandboxes are managed by agent-sandbox.
+# Each session runs in its own sandbox: an actor of Substrate that runs the
+# harness of its agent in gVisor, with a home of its own at /home.
 sandboxes:
   # Seconds without a running turn after which a session is put to sleep:
-  # its pod is deleted and its volume is kept. The next turn wakes it in a
-  # new pod. 0 disables sleeping.
+  # its sandbox leaves its worker, and a snapshot keeps it. The next turn
+  # wakes it on a worker that has room. With memory snapshots, a turn that
+  # has waited this long for a person to answer it sleeps too, until the
+  # answer. 0 disables sleeping.
   idleSeconds: 300
-  # Seconds of sleep after which the home of a session is archived in the
-  # depot: its sandbox is deleted with its volume, and the next turn restores
-  # the home into a new sandbox. 0 disables archiving.
-  archiveAfterSeconds: 604800
   # Seconds after its last turn after which a session ends: its sandbox is
-  # deleted with its volume, and its conversation stays in the database. 0
-  # keeps the sandbox until the session is ended.
+  # deleted with its snapshot, and its conversation stays in the database.
+  # 0 keeps the sandbox until the session is ended.
   retentionSeconds: 0
-
-# agent-sandbox, installed by its own chart in the namespace
-# agent-sandbox-system. A cluster runs it once: set enabled to false if the
-# cluster has it already. The other values are those of its chart, such as
-# image.repository for a registry of your own.
-agent-sandbox:
-  enabled: true
-  image:
-    tag: v1.0.11
+  # What the snapshot of a sleeping sandbox keeps:
+  #   memory   its processes and their memory, its files and its home. A
+  #            turn that was running goes on when it wakes.
+  #   rootfs   its files and its home. The harness starts again, and resumes
+  #            its session.
+  #   volumes  its home. The harness starts again, and resumes its session.
+  snapshot: memory
+  # Hosts that every sandbox may reach, besides the model provider and the
+  # MCP servers of its turn, as URLs, whose paths are ignored. A name may be
+  # "*" for any host, or begin with "*." for any host of a domain. A URL
+  # without a port has that of its scheme. The connections to these hosts
+  # pass through Substrate's egress gateway unread.
+  allowedHosts: ["https://*", "http://*"]
+  # The host that the sandboxes and the Supervisors reach for a model
+  # provider or an MCP server whose URL is at localhost or a loopback
+  # address, such as http://localhost:11434/v1: a host name. An installation
+  # on one machine can name that machine, so that the models that run on it
+  # are registered as its users see them. Without it, such a URL is not
+  # reached.
+  localhost: ""
 
 runtime:
-  # Maximum number of turns that run at once. Further turns are queued in
-  # the order in which they arrive.
-  maxConcurrentTurns: 50
-  # Maximum number of queued turns. Beyond it, new messages are refused and
-  # the client is told to retry later. 0 means no limit.
+  # Maximum number of queued turns. A turn is queued until a worker has room
+  # for the sandbox of its session, and queued turns run in the order in
+  # which they arrive. Beyond it, new messages are refused and the client is
+  # told to retry later. 0 means no limit.
   maxQueuedTurns: 500
   # Seconds a turn may stay queued before it expires. 0 means no limit.
   maxQueueWaitSeconds: 120
-  # Seconds a turn may take to reach its harness, which includes creating or
-  # waking the sandbox and pulling the harness image onto a new node. A turn
-  # that takes longer fails. 0 means no limit.
+  # Seconds a turn may take to reach its harness after it leaves the queue,
+  # which includes waking the sandbox on its worker and pulling the harness
+  # image onto the worker. A turn that takes longer fails. 0 means no limit.
   maxStartupSeconds: 120
-  # Seconds more that a turn may take to reach its harness if it first
-  # restores the home of its session from the depot.
-  maxRestoreSeconds: 600
   # Seconds a turn may run after it leaves the queue, including the time it
-  # waits for approval. A turn that runs longer fails, and its sandbox is
-  # put to sleep.
+  # waits for approval, except with memory snapshots, with which its sandbox
+  # can sleep meanwhile. A turn that runs longer fails, and what runs in its
+  # sandbox is stopped.
   maxTurnSeconds: 1800
   # Maximum bytes of the input or output of a tool call that turn events
   # report. Longer text is truncated in the events; the agent itself gets all
@@ -206,30 +173,18 @@ runtime:
   # files of one message. 0 files means that messages carry none.
   maxAttachmentBytes: 67108864
   maxAttachments: 10
-  # Harnesses that agents can use, by name. The image contains the harness
-  # and the runner, and the resources apply to the harness container. A
-  # change applies to a sandbox the next time it wakes. No CPU limit is set,
-  # so that a turn can use the spare CPU of its node.
-  harnesses:
-    opencode:
-      image: aviary-harness-opencode:dev
-      resources:
-        requests: {cpu: 250m, memory: 1Gi}
-        limits: {memory: 4Gi}
-    codex:
-      image: aviary-harness-codex:dev
-      resources:
-        requests: {cpu: 250m, memory: 256Mi}
-        limits: {memory: 4Gi}
-    claude-code:
-      image: aviary-harness-claude-code:dev
-      resources:
-        requests: {cpu: 250m, memory: 512Mi}
-        limits: {memory: 4Gi}
-  # The session volume, mounted at /home. It holds the state of the harness
-  # and the files of the agent, and is deleted with the sandbox. Whether its
-  # data is deleted too depends on the storage class.
-  volume:
-    size: 10Gi
-    # Empty uses the default storage class of the cluster.
-    storageClass: ""
+  # Harnesses that agents can use, by name. The image contains the harness,
+  # and Substrate takes it only by its digest. The limits of CPU and memory
+  # are the size of a sandbox of the harness on its worker. A change applies
+  # to new sessions, for example
+  #   opencode:
+  #     image: registry.example.com/aviary-harness-opencode@sha256:...
+  #     resources:
+  #       limits: {cpu: "2", memory: 2Gi}
+  harnesses: {}
+  runner:
+    # The image of the runner, by its digest, as
+    # registry.example.com/aviary-runner@sha256:... Every sandbox runs the
+    # runner from it, so that the harness images do not contain it. The
+    # harnesses need it. A change applies to new sessions.
+    image: ""

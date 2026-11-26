@@ -4,70 +4,31 @@ import (
 	"context"
 	"maps"
 	"net/http"
-	"slices"
-	"strconv"
-	"strings"
+	"reflect"
 	"testing"
 
-	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 
+	"aviary/supervisor/internal/credentials"
+	"aviary/supervisor/internal/driver"
+	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/store"
 )
 
-// endpoint is how the Supervisor has the proxy route a model request: the
-// headers that it sets, and whether it removes the Authorization header that
-// carries the session token. headers are those of the provider, each as a
-// line "name: value".
-type endpoint struct {
-	host, secure, authorization, headers string
-	keyless                              bool
-}
-
-// named returns the endpoint of an allowed check, or nil if the check leaves
-// the request unchanged.
-func named(t *testing.T, answer *authv3.CheckResponse) *endpoint {
-	t.Helper()
-	if code := codes.Code(answer.GetStatus().GetCode()); code != codes.OK {
-		t.Fatalf("check denied with %v %v", code, answer.GetDeniedResponse())
-	}
-	ok := answer.GetOkResponse()
-	if ok == nil {
-		return nil
-	}
-	found := &endpoint{keyless: slices.Contains(ok.GetHeadersToRemove(), "authorization")}
-	for _, header := range ok.GetHeaders() {
-		name, value := header.GetHeader().GetKey(), header.GetHeader().GetValue()
-		// The pod cannot set a header in place of the Supervisor.
-		if header.GetAppendAction() != corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD {
-			t.Errorf("header %s is set with %v, which keeps a header of the request", name, header.GetAppendAction())
-		}
-		switch name {
-		case "x-aviary-upstream":
-			found.host = value
-		case "x-aviary-upstream-tls":
-			found.secure = value
-		case "authorization":
-			found.authorization = value
-		default:
-			found.headers += name + ": " + value + "\n"
-		}
-	}
-	return found
-}
-
-// refusal returns the status and the body of a denied check.
-func refusal(answer *authv3.CheckResponse) (int, string) {
-	denied := answer.GetDeniedResponse()
-	return int(denied.GetStatus().GetCode()), denied.GetBody()
+// next ends the runner's turn and sends the session another message, and
+// returns the runner of its turn.
+func (r *runner) next(s *supervisor, session string) *runner {
+	r.installation.t.Helper()
+	r.report(started("harness-session"))
+	r.report(finished("end_turn", nil))
+	return r.installation.given(s.send(session, "again").ID)
 }
 
 // An agent's model is a provider of its project and a model name. The
-// harness reaches the model through the Egress Proxy, which gets the
-// provider's endpoint and key for model requests only.
+// harness reaches the provider at its URL, and the egress gateway puts the
+// provider's key into the requests of the turn's sandbox to the provider.
 func TestAgentNamesItsModel(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -83,69 +44,34 @@ func TestAgentNamesItsModel(t *testing.T) {
 		t.Errorf("agent model = %+v", read.Model)
 	}
 
-	runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
-	// The base URL is the proxy with the path of the provider's URL. The
-	// harness gets no API key; its pod sends the session token instead.
+	session := s.create("/v1/agents/"+agent+"/sessions", "")
+	runner := aviary.given(s.send(session, "hello").ID)
+	// The harness gets a placeholder in place of the key.
 	expected := map[string]string{
-		"AVIARY_LLM_BASE_URL": "http://127.0.0.2:8080/custom/v2",
+		"AVIARY_LLM_BASE_URL": "https://api.example.com/custom/v2",
 		"AVIARY_LLM_MODEL":    "a-model-of-the-provider",
+		"AVIARY_LLM_API_KEY":  credentials.Placeholder,
+		"AVIARY_LLM_HEADERS":  "{}",
 	}
 	if told := runner.Environment; !maps.Equal(told, expected) {
 		t.Errorf("harness environment = %v, want %v", told, expected)
 	}
-	token := aviary.token(runner.Sandbox)
-
-	// Any Supervisor can answer the proxy.
+	key := credentials.ProviderKey(uuid.MustParse(provider))
+	keyed := func(host sandbox.Host) sandbox.Egress {
+		return sandbox.Egress{Secrets: []sandbox.Secret{{Host: host, Header: "authorization", Prefix: "Bearer ", URI: key}}}
+	}
+	if egress := aviary.made(runner.Sandbox).Egress; !reflect.DeepEqual(egress, keyed(sandbox.Host{TLS: true, Name: "api.example.com", Port: 443})) {
+		t.Errorf("egress = %+v, want the key for the provider's host", egress)
+	}
+	// Any Supervisor gives the gateway the key.
 	for _, supervisor := range []*supervisor{s, aviary.supervisor()} {
-		got := named(t, supervisor.check(token, false, "/custom/v2/chat/completions?stream=true"))
-		if got == nil || *got != (endpoint{host: "api.example.com", secure: "true", authorization: "Bearer sk-the-first-key"}) {
-			t.Errorf("model request endpoint = %+v", got)
-		}
-	}
-	// A forward proxy request is not rerouted. The metadata names its turn
-	// but no provider.
-	forward := s.check(token, true, "/custom/v2/chat/completions")
-	if got := named(t, forward); got != nil || forward.GetDynamicMetadata().GetFields()["turn"].GetStringValue() != runner.ID ||
-		forward.GetDynamicMetadata().GetFields()["provider"] != nil {
-		t.Errorf("forward proxy request: endpoint %+v, metadata %v", got, forward.GetDynamicMetadata())
-	}
-	// For the proxy's access log, a model request names its provider.
-	model := s.check(token, false, "/custom/v2/chat/completions")
-	if told := model.GetDynamicMetadata().GetFields()["provider"].GetStringValue(); told != provider {
-		t.Errorf("provider metadata = %q, want %q", told, provider)
-	}
-
-	// Only the path of the provider's URL and paths below it are allowed.
-	for path, status := range map[string]int{
-		"/custom/v2":                http.StatusOK,
-		"/custom/v2/":               http.StatusOK,
-		"/custom/v2?query":          http.StatusOK,
-		"/custom/v2/models/a/b":     http.StatusOK,
-		"/custom/v20/chat":          http.StatusNotFound,
-		"/custom":                   http.StatusNotFound,
-		"/v1/chat/completions":      http.StatusNotFound,
-		"/":                         http.StatusNotFound,
-		"/other?/custom/v2/":        http.StatusNotFound,
-		"/custom/v2/../../private":  http.StatusNotFound,
-		"/custom/v2/%2e%2E/private": http.StatusNotFound,
-		"/custom/v2/./chat":         http.StatusNotFound,
-		"/custom/v2/%zz":            http.StatusNotFound,
-		"/custom/v2/a..b/.c":        http.StatusOK,
-	} {
-		answer := s.check(token, false, path)
-		if code := codes.Code(answer.GetStatus().GetCode()); (code == codes.OK) != (status == http.StatusOK) {
-			t.Errorf("model request for %s: code %v", path, code)
-			continue
-		}
-		if status == http.StatusOK {
-			continue
-		}
-		if got, why := refusal(answer); got != status || why != "model requests must be under the path /custom/v2/\n" {
-			t.Errorf("model request for %s denied with %d %q", path, got, why)
+		if got, code, why := supervisor.fetch(runner.Sandbox, key); code != codes.OK || got != "sk-the-first-key" {
+			t.Errorf("the key of the provider = %q, refused with %v %q", got, code, why)
 		}
 	}
 
-	// A replaced provider applies from the next request of a running turn.
+	// A replaced key goes into the next request, and a replaced URL is that
+	// of the next turn.
 	replace := func(body string) {
 		t.Helper()
 		if status, _ := s.request("PUT", "/v1/providers/"+provider, body, nil); status != http.StatusOK {
@@ -153,46 +79,50 @@ func TestAgentNamesItsModel(t *testing.T) {
 		}
 	}
 	replace(`{"name": "a provider", "url": "http://model.example.com:8000", "api_key": {"value": "sk-the-second-key"}}`)
-	got := named(t, s.check(token, false, "/anything/at/all"))
-	if got == nil || *got != (endpoint{host: "model.example.com:8000", secure: "false", authorization: "Bearer sk-the-second-key"}) {
-		t.Errorf("endpoint after replacing the provider = %+v", got)
+	if got, code, why := s.fetch(runner.Sandbox, key); code != codes.OK || got != "sk-the-second-key" {
+		t.Errorf("the key of the replaced provider = %q, refused with %v %q", got, code, why)
 	}
-	// A provider without a key gets no Authorization header, not even the
-	// session token.
-	replace(`{"name": "a provider", "url": "http://model.example.com:8000"}`)
-	got = named(t, s.check(token, false, "/v1/chat/completions"))
-	if got == nil || *got != (endpoint{host: "model.example.com:8000", secure: "false", keyless: true}) {
-		t.Errorf("endpoint of a provider without a key = %+v", got)
-	}
-
 	// A key sealed with the keys of another installation does not open. The
-	// request is denied, and the reason reveals nothing more.
+	// gateway is refused, and the reason reveals nothing more.
 	kept, err := aviary.records.Provider(context.Background(), uuid.MustParse(provider))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kept.APIKey, err = testenv.Keys(t).Seal("sk-the-third-key", store.ProviderKeyPlace(kept.ID)); err != nil {
+	sealed := kept
+	if sealed.APIKey, err = testenv.Keys(t).Seal("sk-the-third-key", store.ProviderKeyPlace(kept.ID)); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := aviary.records.ReplaceProvider(context.Background(), sealed); err != nil {
+		t.Fatal(err)
+	}
+	if _, code, why := s.fetch(runner.Sandbox, key); code != codes.Unavailable || why != "the secret cannot be read: cannot decrypt the model provider's API key" {
+		t.Errorf("a key that does not open: refused with %v %q", code, why)
 	}
 	if _, err := aviary.records.ReplaceProvider(context.Background(), kept); err != nil {
 		t.Fatal(err)
 	}
-	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "cannot read the model provider's API key\n" {
-		t.Errorf("request with a key that does not open: denied with %d %q", status, why)
+
+	runner = runner.next(s, session)
+	model := sandbox.Host{Name: "model.example.com", Port: 8000}
+	if address := runner.Environment["AVIARY_LLM_BASE_URL"]; address != "http://model.example.com:8000" {
+		t.Errorf("AVIARY_LLM_BASE_URL of the next turn = %s", address)
 	}
-	// A URL that cannot be parsed, which the API would refuse.
-	kept.URL = "http://[::1"
-	if _, err := aviary.records.ReplaceProvider(context.Background(), kept); err != nil {
-		t.Fatal(err)
+	if egress := aviary.made(runner.Sandbox).Egress; !reflect.DeepEqual(egress, keyed(model)) {
+		t.Errorf("egress of the next turn = %+v, want the key for the provider's new host", egress)
 	}
-	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "the model provider's URL is invalid\n" {
-		t.Errorf("request with an invalid provider URL: denied with %d %q", status, why)
+	// A provider without a key is reached as it is.
+	replace(`{"name": "a provider", "url": "http://model.example.com:8000"}`)
+	if _, code, why := s.fetch(runner.Sandbox, key); code != codes.NotFound || why != "the model provider has no API key" {
+		t.Errorf("the key of a provider without one: refused with %v %q", code, why)
+	}
+	runner = runner.next(s, session)
+	if egress := aviary.made(runner.Sandbox).Egress; !reflect.DeepEqual(egress, sandbox.Egress{Hosts: []sandbox.Host{model}}) {
+		t.Errorf("egress for a provider without a key = %+v", egress)
 	}
 }
 
 // An endpoint may need headers besides its key, as a gateway does that
-// routes by one. The Egress Proxy gets the headers of the turn's provider for
-// model requests, and sets them in place of what the pod sends.
+// routes by one. The harness sends them with its model requests.
 func TestModelRequestsCarryTheHeadersOfTheirProvider(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -202,38 +132,35 @@ func TestModelRequestsCarryTheHeadersOfTheirProvider(t *testing.T) {
 	provider := s.create("/v1/projects/"+project+"/providers", gateway+`, "api_key": {"value": "sk-the-first-key"},
 		"headers": [{"name": "X-Gateway-Route", "value": "team-a"}, {"name": "accept-language", "value": "en"}]}`)
 	agent := s.agent(project, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
-	runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
-	token := aviary.token(runner.Sandbox)
-
-	// Any Supervisor can answer the proxy.
-	for _, supervisor := range []*supervisor{s, aviary.supervisor()} {
-		got := named(t, supervisor.check(token, false, "/v1/chat/completions"))
-		if got == nil || *got != (endpoint{
-			host: "gateway.example.com", secure: "true", authorization: "Bearer sk-the-first-key",
-			headers: "x-gateway-route: team-a\naccept-language: en\n",
-		}) {
-			t.Errorf("model request endpoint = %+v", got)
-		}
+	session := s.create("/v1/agents/"+agent+"/sessions", "")
+	runner := aviary.given(s.send(session, "hello").ID)
+	if headers := runner.Environment["AVIARY_LLM_HEADERS"]; headers != `{"accept-language":"en","x-gateway-route":"team-a"}` {
+		t.Errorf("AVIARY_LLM_HEADERS = %s", headers)
 	}
-	// A forward proxy request goes where the pod sends it, without them.
-	if got := named(t, s.check(token, true, "/v1/chat/completions")); got != nil {
-		t.Errorf("forward proxy request endpoint = %+v, want none", got)
+	host := sandbox.Host{TLS: true, Name: "gateway.example.com", Port: 443}
+	key := sandbox.Secret{Host: host, Header: "authorization", Prefix: "Bearer ", URI: credentials.ProviderKey(uuid.MustParse(provider))}
+	if egress := aviary.made(runner.Sandbox).Egress; !reflect.DeepEqual(egress, sandbox.Egress{Secrets: []sandbox.Secret{key}}) {
+		t.Errorf("egress = %+v, want only the key", egress)
 	}
 
-	// Replaced headers apply from the next request of a running turn, and a
-	// provider without a key has its headers all the same.
+	// Replaced headers are those of the next turn, and a provider without a
+	// key has its headers all the same.
 	if status, _ := s.request("PUT", "/v1/providers/"+provider, gateway+`, "headers": [{"name": "x-gateway-route", "value": "team-b"}]}`, nil); status != http.StatusOK {
 		t.Fatalf("PUT provider: status %d, want 200", status)
 	}
-	got := named(t, s.check(token, false, "/v1/chat/completions"))
-	if got == nil || *got != (endpoint{host: "gateway.example.com", secure: "true", keyless: true, headers: "x-gateway-route: team-b\n"}) {
-		t.Errorf("endpoint after replacing the provider = %+v", got)
+	runner = runner.next(s, session)
+	if headers := runner.Environment["AVIARY_LLM_HEADERS"]; headers != `{"x-gateway-route":"team-b"}` {
+		t.Errorf("AVIARY_LLM_HEADERS after replacing the provider = %s", headers)
+	}
+	if egress := aviary.made(runner.Sandbox).Egress; !reflect.DeepEqual(egress, sandbox.Egress{Hosts: []sandbox.Host{host}}) {
+		t.Errorf("egress after replacing the provider = %+v", egress)
 	}
 }
 
-// The secret of a header is read when a model request needs it, as a key is:
+// The secret of a header is read when the gateway asks for it, as a key is:
 // a stored one is opened, and one in a secret store is read from the store.
-// A secret that cannot be read refuses the request with the reason.
+// The harness has a placeholder in its place. A secret that cannot be read
+// is refused with the reason.
 func TestModelRequestsCarryTheSecretsOfTheirHeaders(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -245,30 +172,37 @@ func TestModelRequestsCarryTheSecretsOfTheirHeaders(t *testing.T) {
 	provider := s.create("/v1/projects/"+project+"/providers", `{"name": "a gateway", "url": "https://gateway.example.com/v1",
 		"headers": [{"name": "x-token", "secret": {"value": "s3cret"}}, {"name": "x-team-token", "secret": `+in(kept, "team/gateway", "token")+`}]}`)
 	agent := s.agent(project, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
-	token := aviary.token(aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID).Sandbox)
+	runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
+	if headers := runner.Environment["AVIARY_LLM_HEADERS"]; headers != `{"x-team-token":"aviary","x-token":"aviary"}` {
+		t.Errorf("AVIARY_LLM_HEADERS = %s", headers)
+	}
+	id := uuid.MustParse(provider)
+	host := sandbox.Host{TLS: true, Name: "gateway.example.com", Port: 443}
+	token, team := credentials.ProviderHeader(id, "x-token"), credentials.ProviderHeader(id, "x-team-token")
+	want := sandbox.Egress{Secrets: []sandbox.Secret{{Host: host, Header: "x-token", URI: token}, {Host: host, Header: "x-team-token", URI: team}}}
+	if egress := aviary.made(runner.Sandbox).Egress; !reflect.DeepEqual(egress, want) {
+		t.Errorf("egress = %+v, want %+v", egress, want)
+	}
 
 	// A secret that a store holds goes without the line break at its end.
-	got := named(t, s.check(token, false, "/v1/chat/completions"))
-	if got == nil || *got != (endpoint{host: "gateway.example.com", secure: "true", keyless: true, headers: "x-token: s3cret\nx-team-token: t0ken\n"}) {
-		t.Errorf("model request endpoint = %+v", got)
+	for uri, secret := range map[string]string{token: "s3cret", team: "t0ken"} {
+		if got, code, why := s.fetch(runner.Sandbox, uri); code != codes.OK || got != secret {
+			t.Errorf("secret %s = %q, refused with %v %q", uri, got, code, why)
+		}
 	}
-	if got := named(t, s.check(token, true, "/v1/chat/completions")); got != nil {
-		t.Errorf("forward proxy request endpoint = %+v, want none", got)
-	}
-
 	// A Supervisor that has not read the secret reads it when it is needed.
 	for value, why := range map[string]string{
-		"t0ken\nx-other: a": "the secret of the model provider's header x-team-token in its secret store is not the value of an HTTP header\n",
-		"":                  "cannot read the model provider's header x-team-token from its secret store: the store has no value at the path and under the key\n",
+		"t0ken\nx-other: a": "the secret cannot be read: the secret of the model provider's header x-team-token in its secret store is not the value of an HTTP header",
+		"":                  "the secret cannot be read: cannot read the model provider's header x-team-token from its secret store: the store has no value at the path and under the key",
 	} {
 		aviary.secrets.put(address, "team/gateway", "token", value)
-		if status, said := refusal(aviary.supervisor().check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || said != why {
-			t.Errorf("request with the secret %q in the store: denied with %d %q", value, status, said)
+		if _, code, said := aviary.supervisor().fetch(runner.Sandbox, team); code != codes.Unavailable || said != why {
+			t.Errorf("the secret %q in the store: refused with %v %q", value, code, said)
 		}
 	}
 
 	// A secret sealed with the keys of another installation does not open.
-	record, err := aviary.records.Provider(context.Background(), uuid.MustParse(provider))
+	record, err := aviary.records.Provider(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,56 +212,43 @@ func TestModelRequestsCarryTheSecretsOfTheirHeaders(t *testing.T) {
 	if _, err := aviary.records.ReplaceProvider(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
-	if status, why := refusal(s.check(token, false, "/v1/chat/completions")); status != http.StatusServiceUnavailable || why != "cannot read the model provider's header x-token\n" {
-		t.Errorf("request with a secret that does not open: denied with %d %q", status, why)
+	if _, code, why := s.fetch(runner.Sandbox, token); code != codes.Unavailable || why != "the secret cannot be read: cannot decrypt the model provider's header x-token" {
+		t.Errorf("a secret that does not open: refused with %v %q", code, why)
+	}
+	// A header that the provider does not have has no secret.
+	if _, code, why := s.fetch(runner.Sandbox, credentials.ProviderHeader(id, "x-other")); code != codes.NotFound || why != "the model provider has no such header" {
+		t.Errorf("a header that the provider does not have: refused with %v %q", code, why)
 	}
 }
 
-// To the proxy, the local host of a provider's URL is the proxy itself. An
-// installation can name the host that stands in for it: the proxy then
-// connects there, on the port of the URL.
+// A sandbox reaches the local host of a provider's URL at the host that the
+// installation names in its place.
 func TestAProviderAtTheLocalHostIsReachedWhereTheInstallationSays(t *testing.T) {
 	t.Parallel()
-	for _, installed := range []struct {
-		localhost string
-		// upstreams are the hosts that the proxy connects to, by the URL of
-		// the provider.
-		upstreams map[string]string
+	aviary := install(t, func(config *driver.Config) { config.Localhost = "host.example.com" })
+	s := aviary.supervisor()
+	project := s.project()
+	for address, reached := range map[string]struct {
+		address string
+		host    sandbox.Host
 	}{
-		{"", map[string]string{
-			"http://localhost:11434/v1": "localhost:11434",
-			"http://127.0.0.1/v1":       "127.0.0.1",
-			"http://[::1]:8000/v1":      "[::1]:8000",
-		}},
-		{"host.example.com", map[string]string{
-			"http://localhost:11434/v1":        "host.example.com:11434",
-			"http://LocalHost/v1":              "host.example.com",
-			"http://127.0.0.1:8000/v1":         "host.example.com:8000",
-			"http://127.1.2.3/v1":              "host.example.com",
-			"https://[::1]:8443/v1":            "host.example.com:8443",
-			"http://localhost.example.com/v1":  "localhost.example.com",
-			"http://10.0.0.5:8000/v1":          "10.0.0.5:8000",
-			"https://api.example.com/v1":       "api.example.com",
-			"http://model.example.com:8000/v1": "model.example.com:8000",
-		}},
-		{"2001:db8::254", map[string]string{
-			"http://localhost:11434/v1": "[2001:db8::254]:11434",
-			"http://127.0.0.1/v1":       "[2001:db8::254]",
-		}},
+		"http://localhost:11434/v1":        {"http://host.example.com:11434/v1", sandbox.Host{Name: "host.example.com", Port: 11434}},
+		"http://LocalHost/v1":              {"http://host.example.com/v1", sandbox.Host{Name: "host.example.com", Port: 80}},
+		"http://127.0.0.1:8000/v1":         {"http://host.example.com:8000/v1", sandbox.Host{Name: "host.example.com", Port: 8000}},
+		"http://127.1.2.3/v1":              {"http://host.example.com/v1", sandbox.Host{Name: "host.example.com", Port: 80}},
+		"https://[::1]:8443/v1":            {"https://host.example.com:8443/v1", sandbox.Host{TLS: true, Name: "host.example.com", Port: 8443}},
+		"http://localhost.example.com/v1":  {"http://localhost.example.com/v1", sandbox.Host{Name: "localhost.example.com", Port: 80}},
+		"https://api.example.com/v1":       {"https://api.example.com/v1", sandbox.Host{TLS: true, Name: "api.example.com", Port: 443}},
+		"http://model.example.com:8000/v1": {"http://model.example.com:8000/v1", sandbox.Host{Name: "model.example.com", Port: 8000}},
 	} {
-		aviary := install(t)
-		aviary.localhost = installed.localhost
-		s := aviary.supervisor()
-		project := s.project()
-		for address, upstream := range installed.upstreams {
-			provider := s.create("/v1/projects/"+project+"/providers", `{"name": "`+unique("provider")+`", "url": "`+address+`"}`)
-			agent := s.agent(project, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
-			runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
-			got := named(t, s.check(aviary.token(runner.Sandbox), false, "/v1/chat/completions"))
-			secure := strconv.FormatBool(strings.HasPrefix(address, "https://"))
-			if got == nil || *got != (endpoint{host: upstream, secure: secure, keyless: true}) {
-				t.Errorf("with %q for the local host, the endpoint of a provider at %s = %+v, want the host %s", installed.localhost, address, got, upstream)
-			}
+		provider := s.create("/v1/projects/"+project+"/providers", `{"name": "`+unique("provider")+`", "url": "`+address+`"}`)
+		agent := s.agent(project, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
+		runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
+		if got := runner.Environment["AVIARY_LLM_BASE_URL"]; got != reached.address {
+			t.Errorf("a provider at %s: AVIARY_LLM_BASE_URL = %s, want %s", address, got, reached.address)
+		}
+		if egress := aviary.made(runner.Sandbox).Egress; !reflect.DeepEqual(egress, sandbox.Egress{Hosts: []sandbox.Host{reached.host}}) {
+			t.Errorf("a provider at %s: egress = %+v, want %+v", address, egress, reached.host)
 		}
 	}
 }

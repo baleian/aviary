@@ -1,6 +1,0 @@
-# Keeps the objects of the depot in the bucket of `make versitygw`:
-# make deploy VALUES=hack/kind/aviary-versitygw-values.yaml
-depot:
-  volume:
-    existingClaim: aviary-depot-bucket
-    accessMode: ReadWriteMany

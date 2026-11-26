@@ -36,6 +36,49 @@ func (suite suite) testConcurrentAnswerApproval(t *testing.T) {
 	}
 }
 
+// WaitedForAnswers adds up how long the turn's requests waited for their
+// answers.
+func (suite suite) testWaitedForAnswers(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	turn := st.running(st.session()).TurnID
+	waited := func() time.Duration {
+		t.Helper()
+		waited, err := st.WaitedForAnswers(ctx, turn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return waited
+	}
+	if waited := waited(); waited != 0 {
+		t.Errorf("WaitedForAnswers of a turn that asked nothing = %v, want 0", waited)
+	}
+	for _, id := range []string{"1", "2"} {
+		if err := st.AddApproval(ctx, turn, id, []byte(`{}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	if answered, err := st.AnswerApproval(ctx, turn, "1", "once", uuid.Nil); err != nil || !answered {
+		t.Fatalf("AnswerApproval = %t, %v", answered, err)
+	}
+	// The answered request waited, and the other one waits on.
+	before := waited()
+	time.Sleep(20 * time.Millisecond)
+	if after := waited(); before < 40*time.Millisecond || after-before < 20*time.Millisecond || after-before > time.Minute {
+		t.Errorf("WaitedForAnswers = %v and then %v, want both requests to count, and the one that waits to go on", before, after)
+	}
+	// A request that the end of its turn resolves waits no more.
+	if _, _, _, err := st.ResolveApproval(ctx, turn, "2", "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	resolved := waited()
+	time.Sleep(20 * time.Millisecond)
+	if again := waited(); again != resolved {
+		t.Errorf("WaitedForAnswers after the last request was resolved = %v and then %v, want no change", resolved, again)
+	}
+}
+
 func (suite suite) testApprovals(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -49,7 +92,7 @@ func (suite suite) testApprovals(t *testing.T) {
 		}
 		return requests
 	}
-	answers := func(of *store.Dispatch) []store.Answer {
+	answers := func(of *store.QueuedTurn) []store.Answer {
 		t.Helper()
 		var answers []store.Answer
 		var err error

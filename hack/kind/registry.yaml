@@ -1,0 +1,42 @@
+# The registry of the local cluster, which holds the harness images. Substrate
+# pulls the image of a sandbox itself, by its digest, and takes
+# localhost:5001 for the registry that substrate.atelet.localhostRegistry
+# names: it pulls such an image from this one over HTTP. make images puts the
+# images in from a node.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kind-registry
+  namespace: aviary-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kind-registry
+  template:
+    metadata:
+      labels:
+        app: kind-registry
+    spec:
+      containers:
+        - name: registry
+          image: registry:3@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+          ports:
+            - name: registry
+              containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /v2/
+              port: registry
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kind-registry
+  namespace: aviary-data
+spec:
+  selector:
+    app: kind-registry
+  ports:
+    - port: 5000
+      targetPort: registry

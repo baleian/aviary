@@ -13,9 +13,8 @@ import (
 )
 
 // Routine takes a session of its own through a turn whose message carries
-// an attachment and through the archiving and restoring of its home, and
-// does on the way what the Supervisors do for every message, every request
-// of a sandbox and every sweep. A plugin's test runs it on a database with many ended sessions and
+// an attachment, and does on the way what the Supervisors do for every
+// message, every request of a sandbox and every sweep. A plugin's test runs it on a database with many ended sessions and
 // turns, to check that this work does not read through them.
 func Routine(t *testing.T, st store.Store) {
 	t.Helper()
@@ -33,7 +32,7 @@ func Routine(t *testing.T, st store.Store) {
 	must("CreateAttachment", err)
 	unsent, err := s.CreateAttachment(ctx, store.Attachment{ID: uuid.New(), SessionID: session, Name: "unsent.txt", MediaType: "text/plain", Size: 1})
 	must("CreateAttachment", err)
-	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", []uuid.UUID{file.ID}, 500, 50)
+	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", []uuid.UUID{file.ID}, 500)
 	must("CreateTurn", err)
 	_, err = s.Attachment(ctx, file.ID)
 	must("Attachment", err)
@@ -58,10 +57,14 @@ func Routine(t *testing.T, st store.Store) {
 	must("StartTurn", err)
 	_, err = s.SessionTurn(ctx, session)
 	must("SessionTurn", err)
+	_, err = s.IdleSandboxes(ctx, 10, true)
+	must("IdleSandboxes", err)
 
 	must("AddApproval", s.AddApproval(ctx, turn.ID, "1", []byte(`{"options": [{"id": "once", "kind": "allow_once"}]}`)))
 	_, err = s.WaitingApprovals(ctx, turn.ID)
 	must("WaitingApprovals", err)
+	_, err = s.WaitedForAnswers(ctx, turn.ID)
+	must("WaitedForAnswers", err)
 	_, err = s.AnswerApproval(ctx, turn.ID, "1", "once", uuid.Nil)
 	must("AnswerApproval", err)
 	_, err = s.Answers(ctx, nil)
@@ -99,25 +102,6 @@ func Routine(t *testing.T, st store.Store) {
 	must("TurnItems", err)
 
 	must("SetSandboxState", s.SetSandboxState(ctx, session, "sandbox-1", store.SandboxAsleep))
-	claim := uuid.New()
-	if claimed, err := s.ClaimArchive(ctx, session, "sandbox-1", 1, claim, time.Now()); err != nil || !claimed {
-		t.Fatalf("ClaimArchive = %t, %v", claimed, err)
-	}
-	if archived, err := s.ArchiveSession(ctx, session, claim, 1, store.Archive{ID: uuid.New(), Bytes: 1}); err != nil || !archived {
-		t.Fatalf("ArchiveSession = %t, %v", archived, err)
-	}
-	_, err = s.LeftArchives(ctx, time.Now(), 100)
-	must("LeftArchives", err)
-	_, err = s.SandboxCounts(ctx)
-	must("SandboxCounts of an archived session", err)
-	if _, claimed, err := s.ClaimRestore(ctx, session, claim); err != nil || !claimed {
-		t.Fatalf("ClaimRestore = %t, %v", claimed, err)
-	}
-	_, err = s.SetSandbox(ctx, session, "", "sandbox-2")
-	must("SetSandbox of a session that is restored", err)
-	if restored, err := s.RestoreSession(ctx, session, claim, "sandbox-2"); err != nil || !restored {
-		t.Fatalf("RestoreSession = %t, %v", restored, err)
-	}
 	_, err = s.EndSession(ctx, session, "")
 	must("EndSession", err)
 }

@@ -12,13 +12,12 @@ name their mirrors in the environment, on the command line of `make`, or in
 
 | Variable | Mirror of |
 | --- | --- |
-| `DOCKER_IO`, `GCR_IO`, `GHCR_IO`, `PUBLIC_ECR_AWS`, `QUAY_IO`, `REGISTRY_K8S_IO` | The registry of that name: a registry, with a path if the mirror has one, such as `mirror.example.com/docker-hub`. The nodes of the local cluster pull the images of these registries from the mirrors as well, over HTTPS. |
+| `DOCKER_IO`, `GCR_IO`, `GHCR_IO`, `QUAY_IO`, `REGISTRY_K8S_IO` | The registry of that name: a registry, with a path if the mirror has one, such as `mirror.example.com/docker-hub`. The nodes of the local cluster pull the images of these registries from the mirrors as well, over HTTPS. |
 | `GOPROXY` | The Go module proxy. Go's own variable. |
 | `NPM_CONFIG_REGISTRY` | The npm registry. npm's own variable. |
 | `CRATES_IO` | crates.io: a registry as Cargo names one, such as `sparse+https://mirror.example.com/crates/index/`. |
 | `DEB_DEBIAN_ORG` | `http://deb.debian.org`, for the Debian packages of the harness images: an address that serves `debian` and `debian-security`, such as `https://mirror.example.com/deb`. The images keep it as the source of their packages. |
-| `AGENT_SANDBOX_REPO` | The repository of agent-sandbox, `https://github.com/kubernetes-sigs/agent-sandbox`, for its chart, which is in the source of its release. |
-| `MOUNTPOINT_S3_CSI_REPO` | The repository of the Mountpoint for Amazon S3 CSI driver, `https://github.com/awslabs/mountpoint-s3-csi-driver`, for its chart, which is a file of its release. Only `make versitygw` installs it. |
+| `SUBSTRATE_REPO` | The repository of Agent Substrate, `https://github.com/agent-substrate/substrate`, for the source of its release, of whose manifests `make chart` makes the chart of Substrate. |
 
 Most images are pulled by digests that the repository pins, so a mirror has
 to serve the images of its registry unchanged. The builds read the mirrors
@@ -26,6 +25,13 @@ of the packages, and the nodes those of the registries, without credentials;
 both trust the certificate authorities of their images. rustup takes the
 Rust toolchain from the server in its own variable, `RUSTUP_DIST_SERVER`.
 
+The nodes of the local cluster pull the images of Substrate from
+`ghcr.io`, or its mirror. The workers of Substrate pull the image of a
+sandbox themselves, without the mirrors of the nodes: the local cluster
+keeps the harness images and the runner image in a registry of its own. In a cluster of your
+own, `substrate.images.registry` names a mirror of the images of Substrate.
+
 A cluster of your own pulls the images that the values of the chart name:
-`supervisor.image`, `egressProxy.image`, `agent-sandbox.image.repository`
-and the `image` of each harness in `runtime.harnesses`.
+`supervisor.image`, `workers.image`, `substrate.keys.image`,
+`substrate.store.image`, the `image` of each harness in `runtime.harnesses`
+and `runtime.runner.image`.

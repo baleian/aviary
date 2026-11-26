@@ -1,0 +1,30 @@
+# Values of Substrate that differ from the defaults, to check that the chart
+# applies them.
+substrate:
+  images:
+    registry: mirror.example.com/substrate
+  kubernetesIssuer: https://oidc.example.com/id/0123
+  database:
+    secret: ""
+    owner: postgresql://owner:p1@db.example.com/substrate
+    readWrite: postgresql://readwrite:p2@db.example.com/substrate
+  snapshots:
+    uploadDelay: 1m
+    detachDelay: 2h
+  objectStorage:
+    location: s3://bucket/aviary/
+    region: eu-west-1
+    endpoint: http://s3.example.com:9000
+    pathStyle: true
+    secret: object-storage
+  serviceAccountAnnotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111111111111:role/substrate
+  atelet:
+    imageCredentialProvider:
+      binDir: /etc/image-credential-provider
+      config: /etc/image-credential-provider/config.json
+    localhostRegistry: registry.example.com:5000
+  telemetry:
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://collector.example.com:4317
+  keys:
+    image: registry.example.com/aviary-substrate-keys@sha256:3333333333333333333333333333333333333333333333333333333333333333

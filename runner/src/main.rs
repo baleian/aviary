@@ -6,43 +6,41 @@
 //!   GET  /turns/{turn}/events                streams the turn's events
 //!   POST /turns/{turn}/cancel                cancels the turn
 //!   PUT  /turns/{turn}/approvals/{request}   answers an approval request
-//!   GET  /home                               packs the home as an archive
-//!   PUT  /home                               unpacks an archive into the home
 //!   PUT  /files/{path}                       writes a file that a message carries
+//!   GET  /healthz                            answers once the runner serves
 //!
 //! The prompt of a turn is the text of its message, and after it a link to
 //! each of the files that the message carries.
 //!
 //! Every request is idempotent, so a caller can retry one whose outcome it
-//! does not know. Requests from the runner's own pod are refused, so that the
-//! agent cannot answer its own approval requests.
+//! does not know. Requests from the runner's own sandbox are refused, so that
+//! the agent cannot answer its own approval requests.
 //!
 //! The harness is started for the first turn and kept for the turns after it,
 //! until a turn has another approval mode, environment, instructions or set of
 //! MCP servers: that turn gets a new harness. The runner stores the harness
-//! session ID in the home, which outlives the pod, so a new harness and the
-//! runner in the session's next pod resume the same session.
+//! session ID in the home, which outlives the processes of the sandbox, so a
+//! new harness, and a new runner in a sandbox that kept only its files,
+//! resume the same session.
 //!
-//! A harness reaches its MCP servers through the Egress Proxy, as it reaches
-//! its model: every request carries the session token, and names its server
-//! by ID in the `x-aviary-mcp` header. A server of a transport that the
-//! harness does not support is left out, and every turn of the harness names
-//! it in an `mcp.unsupported` event. The calls of a server's tools name the
-//! server and the tool in `mcp`, if the image says how the harness titles
-//! them.
+//! A harness reaches its MCP servers at their URLs, with the headers of each.
+//! A server of a transport that the harness does not support is left out, and
+//! every turn of the harness names it in an `mcp.unsupported` event. The calls
+//! of a server's tools name the server and the tool in `mcp`, if the image
+//! says how the harness titles them.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::env;
 use std::error::Error;
+use std::ffi::OsString;
 use std::fmt::{self, Display};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -76,7 +74,6 @@ use tokio::sync::watch;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 mod files;
-mod home;
 
 const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
 const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
@@ -84,11 +81,6 @@ const INSTRUCTIONS_FILE: &str = "AVIARY_INSTRUCTIONS_FILE";
 const MCP_TOOL_TITLE: &str = "AVIARY_MCP_TOOL_TITLE";
 const MCP_SERVERS: &str = "AVIARY_MCP_SERVERS";
 const ADDRESS: &str = "AVIARY_RUNNER_ADDRESS";
-/// The session token, by which the Egress Proxy knows the turn.
-const TOKEN: &str = "AVIARY_LLM_API_KEY";
-
-/// The header that names the MCP server of a request to the Egress Proxy.
-const MCP_SERVER_HEADER: &str = "x-aviary-mcp";
 
 /// The listen address if `AVIARY_RUNNER_ADDRESS` is not set.
 const LISTENS: &str = "0.0.0.0:8700";
@@ -114,40 +106,44 @@ fn main() -> Result<(), Box<dyn Error>> {
         .block_on(serve())
 }
 
-/// Serves the HTTP API and runs turns until SIGTERM.
+/// Serves the HTTP API and runs turns until the process is killed.
 async fn serve() -> Result<(), Box<dyn Error>> {
+    // The harness works in the workspace of the session's home, which a new
+    // session does not have yet.
+    let workspace = Path::new(&env::var("HOME")?).join("workspace");
+    fs::create_dir_all(&workspace)?;
+    env::set_current_dir(&workspace)?;
     let address = env::var(ADDRESS).unwrap_or_else(|_| LISTENS.to_owned());
     let listener = TcpListener::bind(&address).await?;
     // Whoever starts the runner on port 0 reads the address from this line.
     let listens = listener.local_addr()?;
     println!("listening on {listens}");
-    // As PID 1 of its container, the runner must handle SIGTERM itself to
-    // stop when its pod is deleted.
+    // SIGTERM means that the worker of the sandbox is going away. The runner
+    // keeps serving, so that the sandbox can still be suspended, with the
+    // session in it, before the worker goes.
     let mut ended = signal(SignalKind::terminate())?;
+    tokio::spawn(async move {
+        while ended.recv().await.is_some() {
+            eprintln!("SIGTERM received; serving until the sandbox is suspended or deleted");
+        }
+    });
     let (orders, ordered) = mpsc::unbounded();
     let runner = Arc::new(Runner {
         turn: Mutex::new(None),
         changed: watch::Sender::new(()),
         orders,
-        unpacking: AtomicBool::new(false),
     });
     let mut routes = Router::new()
         .route("/turns/{turn}", put(start))
         .route("/turns/{turn}/events", get(events))
         .route("/turns/{turn}/cancel", post(cancel))
         .route("/turns/{turn}/approvals/{request}", put(answer))
-        // An archive of a home is as large as the home, and a file as large
-        // as the installation lets a message carry.
-        .route(
-            "/home",
-            get(home::send)
-                .put(home::receive)
-                .layer(DefaultBodyLimit::disable()),
-        )
+        // A file is as large as the installation lets a message carry.
         .route(
             "/files/{*path}",
             put(files::receive).layer(DefaultBodyLimit::disable()),
         )
+        .route("/healthz", get(healthy))
         .with_state(runner.clone());
     // On a loopback address, as in the tests, every caller is local.
     if !listens.ip().is_loopback() {
@@ -155,15 +151,17 @@ async fn serve() -> Result<(), Box<dyn Error>> {
     }
     let served = routes.into_make_service_with_connect_info::<Ours>();
     tokio::spawn(async move { axum::serve(listener, served).await });
-    tokio::select! {
-        () = run_turns(&runner, ordered) => {}
-        _ = ended.recv() => {}
-    }
+    run_turns(&runner, ordered).await;
     Ok(())
 }
 
-/// Whether a connection comes from the runner's own pod, that is, from a
-/// loopback address or from the pod's own address.
+/// Answers once the runner serves. The sandbox is woken up when it does.
+async fn healthy() -> &'static str {
+    "ok\n"
+}
+
+/// Whether a connection comes from the runner's own sandbox, that is, from a
+/// loopback address or from the sandbox's own address.
 #[derive(Clone, Copy)]
 struct Ours(bool);
 
@@ -178,7 +176,7 @@ impl Connected<IncomingStream<'_, TcpListener>> for Ours {
     }
 }
 
-/// Refuses requests from the runner's own pod.
+/// Refuses requests from the runner's own sandbox.
 async fn from_elsewhere(
     ConnectInfo(Ours(ours)): ConnectInfo<Ours>,
     request: Request,
@@ -187,7 +185,7 @@ async fn from_elsewhere(
     if ours {
         return (
             StatusCode::FORBIDDEN,
-            "requests from the runner's own pod are forbidden\n",
+            "requests from the runner's own sandbox are forbidden\n",
         )
             .into_response();
     }
@@ -202,9 +200,6 @@ struct Runner {
     changed: watch::Sender<()>,
     /// Sends started turns to the harness loop.
     orders: mpsc::UnboundedSender<Order>,
-    /// Whether an archive is being unpacked into the home. No turn starts
-    /// meanwhile.
-    unpacking: AtomicBool,
 }
 
 struct Turn {
@@ -260,14 +255,23 @@ struct Start {
 /// An MCP server of a turn.
 #[derive(Deserialize, Clone, PartialEq)]
 struct Mcp {
-    /// Names the server to the Egress Proxy.
+    /// Names the server in the events of the turn.
     id: String,
     /// Names the server, and its tools, to the harness.
     name: String,
     /// "http" for Streamable HTTP, or "sse".
     transport: String,
-    /// The server's address at the Egress Proxy.
     url: String,
+    /// Go with every request to the server.
+    #[serde(default)]
+    headers: Vec<Header>,
+}
+
+/// A header of the requests to an MCP server.
+#[derive(Deserialize, Clone, PartialEq)]
+struct Header {
+    name: String,
+    value: String,
 }
 
 /// The request body that answers an approval request.
@@ -283,12 +287,6 @@ enum Told {
 }
 
 impl Runner {
-    /// Reports whether a turn is running.
-    fn running(&self) -> bool {
-        let turn = self.turn.lock().expect("turn lock poisoned");
-        turn.as_ref().is_some_and(|turn| !turn.ended)
-    }
-
     /// Appends an event to the running turn, if there is one.
     fn emit(&self, name: &'static str, data: &Value) {
         let mut turn = self.turn.lock().expect("turn lock poisoned");
@@ -354,12 +352,14 @@ async fn start(
     let mut turn = runner.turn.lock().expect("turn lock poisoned");
     match turn.as_ref() {
         Some(turn) if turn.id == id => return StatusCode::NO_CONTENT,
-        Some(turn) if !turn.ended => return StatusCode::CONFLICT,
+        Some(turn) if !turn.ended => {
+            // A turn is given only once the one before it has ended for the
+            // Supervisor, so this one was left behind, as by a snapshot taken
+            // while it ran. It is stopped, and the new turn starts once it has.
+            let _ = turn.tell.unbounded_send(Told::Stop);
+            return StatusCode::CONFLICT;
+        }
         _ => {}
-    }
-    // Checked under the lock, as the unpacking checks the turn.
-    if runner.unpacking.load(Ordering::SeqCst) {
-        return StatusCode::CONFLICT;
     }
     let (tell, told) = mpsc::unbounded();
     *turn = Some(Turn {
@@ -522,16 +522,11 @@ async fn run_harness(
     orders: &mut mpsc::UnboundedReceiver<Order>,
     session: &mut Option<SessionId>,
 ) -> Result<Option<Order>, Failure> {
-    // The harness session of an earlier pod, if any.
+    // The harness session of an earlier runner, if any.
     if session.is_none() {
         *session = remembered()?;
     }
     instruct(&first.start.instructions)?;
-    let token = if first.start.mcp_servers.is_empty() {
-        String::new()
-    } else {
-        variable(TOKEN)?
-    };
     // Spawned here rather than by AcpAgent, to notice a harness that exits
     // between turns.
     let command = variable(HARNESS_COMMAND)?;
@@ -540,6 +535,7 @@ async fn run_harness(
         .into_config();
     let mut process = Command::new(command.command())
         .args(command.arguments())
+        .envs(installing()?)
         .envs(command.environment())
         .envs(&first.start.environment)
         // For an image that sets the harness up for each server.
@@ -646,7 +642,7 @@ async fn run_harness(
                 .partition(|server| supports(takes, server));
             let servers = supported
                 .into_iter()
-                .map(|server| given(server, &token))
+                .map(given)
                 .collect();
             for server in &unsupported {
                 eprintln!(
@@ -842,6 +838,23 @@ async fn run_harness(
     Ok(left)
 }
 
+/// Returns the environment in which what the agent installs goes into the
+/// session's home, which outlives the harness: npm and pip install under
+/// ~/.local, whose programs come first on the PATH. pip does so by itself
+/// where it cannot write to the system's Python, which Debian allows outside a
+/// virtual environment only with PIP_BREAK_SYSTEM_PACKAGES.
+fn installing() -> Result<[(&'static str, OsString); 3], Failure> {
+    let local = Path::new(&variable("HOME")?).join(".local");
+    let mut paths = vec![local.join("bin")];
+    paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
+    let path = env::join_paths(paths).map_err(Failure::runner)?;
+    Ok([
+        ("NPM_CONFIG_PREFIX", local.into_os_string()),
+        ("PATH", path),
+        ("PIP_BREAK_SYSTEM_PACKAGES", "1".into()),
+    ])
+}
+
 /// Writes the agent's instructions, even empty ones, to the file that the
 /// image names in `AVIARY_INSTRUCTIONS_FILE`.
 fn instruct(instructions: &str) -> Result<(), Failure> {
@@ -876,13 +889,13 @@ fn supports(takes: &McpCapabilities, server: &Mcp) -> bool {
     }
 }
 
-/// Returns the MCP server as the harness takes it, with the session token and
-/// the server's ID in every request.
-fn given(server: &Mcp, token: &str) -> McpServer {
-    let headers = vec![
-        HttpHeader::new("authorization", format!("Bearer {token}")),
-        HttpHeader::new(MCP_SERVER_HEADER, &server.id),
-    ];
+/// Returns the MCP server as the harness takes it.
+fn given(server: &Mcp) -> McpServer {
+    let headers: Vec<HttpHeader> = server
+        .headers
+        .iter()
+        .map(|header| HttpHeader::new(&header.name, &header.value))
+        .collect();
     if server.transport == "sse" {
         McpServer::Sse(McpServerSse::new(&server.name, &server.url).headers(headers))
     } else {

@@ -1,0 +1,77 @@
+# The PostgreSQL of Agent Substrate in the local cluster, installed by
+# `make substrate`. The passwords of its administrator and of the users of
+# Substrate are in the Secret substrate-postgres. The users exist once the
+# script of the release has run, which takes their passwords from the
+# environment of the container.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: substrate-postgres
+  namespace: aviary-data
+spec:
+  serviceName: substrate-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: substrate-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: substrate-postgres
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: postgres
+          image: postgres:18.7@sha256:2ea8630df176ad090ec92136dee850397c5af8781e4bcf2e4162593691c61bbc
+          env:
+            - name: POSTGRES_DB
+              value: substrate
+            - name: POSTGRES_USER
+              value: substrate
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: substrate-postgres
+                  key: admin
+            - name: OWNER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: substrate-postgres
+                  key: owner
+            - name: READ_WRITE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: substrate-postgres
+                  key: readWrite
+          ports:
+            - name: postgres
+              containerPort: 5432
+          # During initialization the server listens only on its Unix
+          # socket, and then restarts.
+          readinessProbe:
+            tcpSocket:
+              port: postgres
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: substrate-postgres
+  namespace: aviary-data
+spec:
+  selector:
+    app.kubernetes.io/name: substrate-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

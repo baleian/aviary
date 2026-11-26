@@ -62,26 +62,16 @@ select * from sessions where id = ?;
 update sessions set title = sqlc.arg(title) where id = sqlc.arg(id);
 
 -- name: SetSandbox :exec
--- A sandbox that is set is awake, or restoring if the session's home is
--- archived. Without a sandbox, such a session is archived.
+-- A sandbox that is set is asleep, as sandboxes are created.
 update sessions
-set sandbox_state = case when archive is not null and sqlc.narg(sandbox) is not null then 'restoring'
-                         when archive is not null then 'archived'
-                         when sqlc.narg(sandbox) is not null then 'awake' end,
-    sandbox = sqlc.narg(sandbox),
-    asleep_since = null
+set sandbox_state = if(sqlc.narg(sandbox) is null, null, 'asleep'),
+    sandbox = sqlc.narg(sandbox)
 where id = sqlc.arg(id);
 
 -- name: SetSandboxState :exec
--- Changes the state only while the session has the sandbox, with its home.
--- A sandbox that is asleep keeps the time since which it is: the time is
--- set before the state, by the state that the session had.
-update sessions
-set asleep_since = case when sqlc.arg(state) <> 'asleep' then null
-                        when sandbox_state = 'asleep' then asleep_since
-                        else now(6) end,
-    sandbox_state = sqlc.arg(state)
-where id = sqlc.arg(id) and sandbox = sqlc.arg(sandbox) and archive is null;
+-- Changes the state only while the session has the sandbox.
+update sessions set sandbox_state = sqlc.arg(state)
+where id = sqlc.arg(id) and sandbox = sqlc.arg(sandbox);
 
 -- name: ListSessionsWithSandbox :many
 select * from sessions where sandbox is not null;
@@ -91,51 +81,6 @@ select * from sessions where sandbox is not null;
 select sandbox_state as state, count(*) as sandboxes from sessions
 where sandbox is not null and ended_at is null
 group by sandbox_state;
-
--- name: CountArchivedSessions :one
--- Counts the sessions that have not ended and have an archive for a home,
--- and no sandbox.
-select count(*) from sessions where archived_at is not null and ended_at is null and sandbox is null;
-
--- name: CountSessionTurns :one
--- Returns the number of the session's turns, and how many have not ended.
-select count(*) as turns, cast(coalesce(sum(ended_at is null), 0) as signed) as unfinished from turns where session_id = ?;
-
--- name: ClaimSession :exec
-update sessions set claim = sqlc.arg(claim), claimed_at = now(6) where id = sqlc.arg(id);
-
--- name: ArchiveSession :exec
-update sessions
-set archive = sqlc.arg(archive), archive_bytes = sqlc.arg(bytes), archived_at = now(6), claim = null,
-    sandbox = null, sandbox_state = 'archived', asleep_since = null
-where id = sqlc.arg(id);
-
--- name: ClaimRestore :exec
--- A sandbox that the session has from an earlier restoring is no longer its
--- own.
-update sessions
-set claim = sqlc.arg(claim), claimed_at = now(6), sandbox = null, sandbox_state = 'archived'
-where id = sqlc.arg(id);
-
--- name: RestoreSession :execrows
-update sessions
-set archive = null, archive_bytes = null, archived_at = null, claim = null, sandbox_state = 'awake'
-where id = sqlc.arg(id) and claim = sqlc.arg(claim) and sandbox = sqlc.arg(sandbox) and archive is not null;
-
--- name: ListLeftArchives :many
--- Lists the sessions that have ended and still have an archive.
-select * from sessions where archived_at is not null and ended_at is not null order by archived_at limit ?;
-
--- name: ListOldArchives :many
--- Lists the sessions that have not ended and were archived before before.
-select * from sessions
-where archived_at < sqlc.arg(before) and ended_at is null and sandbox is null
-order by archived_at limit ?;
-
--- name: ForgetArchive :exec
-update sessions
-set archive = null, archive_bytes = null, archived_at = null, sandbox_state = if(sandbox is null, null, sandbox_state)
-where id = sqlc.arg(id) and archive = sqlc.arg(archive) and ended_at is not null;
 
 -- name: ListSessions :many
 -- Lists the agent's sessions with IDs below before, newest first: IDs
@@ -311,7 +256,7 @@ delete from attachments where id = ? and turn_id is null;
 
 -- name: ListLeftAttachments :many
 -- Lists the sessions that ended before before and may have left attachments
--- in the depot.
+-- in the object storage.
 select id from sessions
 where has_attachments = true and ended_at < sqlc.arg(before)
 order by ended_at limit ?;
@@ -344,20 +289,47 @@ where turns.id = ?;
 -- name: CountQueuedTurns :one
 select count(*) from turns where state = 'queued';
 
--- name: CountRunningTurns :one
--- Counts the dispatching and running turns, which both take room to run.
-select count(*) from turns where state in ('dispatching', 'running');
-
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
 
 -- name: NextTurns :many
-select turns.id as turn_id, agents.harness, cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
+-- Lists the oldest queued turns, with the sandboxes of their sessions.
+select turns.id as turn_id, turns.session_id, agents.harness, coalesce(sessions.sandbox, '') as sandbox,
+       coalesce(sessions.sandbox_state, '') as sandbox_state,
+       cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
+limit ?;
+
+-- name: IdleSandboxes :many
+-- Lists the sessions whose sandboxes are recorded awake and that have no
+-- unfinished turn, the longest idle first: idle is the microseconds since
+-- the session's last turn ended. With waiting, a session whose unfinished
+-- turn waits for a person and is not asked to stop is idle too, since the
+-- oldest of the turn's requests that wait for an answer was made.
+select sessions.id, coalesce(sessions.sandbox, '') as sandbox,
+       cast(timestampdiff(microsecond,
+                          coalesce((select last.ended_at from turns as last
+                                    where last.session_id = sessions.id order by last.seq desc limit 1),
+                                   (select min(approvals.requested_at) from turns
+                                    join approvals on approvals.turn_id = turns.id
+                                    where turns.session_id = sessions.id and turns.state = 'running'
+                                      and approvals.answered_at is null and approvals.resolved_at is null),
+                                   sessions.created_at),
+                          now(6)) as signed) as idle
+from sessions
+where sessions.sandbox is not null and sessions.sandbox_state = 'awake'
+  and (not exists (select 1 from turns
+                   where turns.session_id = sessions.id and turns.state in ('queued', 'dispatching', 'running'))
+       or sqlc.arg(waiting) and exists (select 1 from turns
+                                        join approvals on approvals.turn_id = turns.id
+                                        where turns.session_id = sessions.id and turns.state = 'running'
+                                          and turns.cancel_requested_at is null
+                                          and approvals.answered_at is null and approvals.resolved_at is null))
+order by idle desc, sessions.id
 limit ?;
 
 -- name: DispatchTurn :execrows
@@ -483,6 +455,13 @@ where approvals.turn_id = sqlc.arg(turn_id) and approvals.id = sqlc.arg(id)
 select request from approvals
 where turn_id = ? and answered_at is null and resolved_at is null
 order by requested_at, id;
+
+-- name: WaitedForAnswers :one
+-- The microseconds that the turn's requests waited for their answers, until
+-- now for those that wait. A request that the turn's end resolved waited
+-- until then.
+select cast(coalesce(sum(timestampdiff(microsecond, requested_at, coalesce(answered_at, resolved_at, now(6)))), 0) as signed) as waited
+from approvals where turn_id = ?;
 
 -- name: Answers :many
 -- Lists the answers not yet delivered to the harnesses of unfinished turns:

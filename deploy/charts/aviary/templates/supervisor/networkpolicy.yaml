@@ -1,0 +1,29 @@
+# Only the egress gateway of Substrate asks the Supervisors for the secrets of
+# the sandboxes' requests, and the Supervisors check its certificate as well.
+# The API and the metrics take any caller.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aviary-supervisor
+  labels:
+    app.kubernetes.io/name: aviary
+    app.kubernetes.io/component: supervisor
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: aviary
+      app.kubernetes.io/component: supervisor
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 9092}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.substrate.namespace }}
+          podSelector:
+            matchLabels:
+              app: atenet-egress
+      ports:
+        - {protocol: TCP, port: 50051}

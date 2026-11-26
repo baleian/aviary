@@ -46,13 +46,11 @@ const SANDBOXES: Record<
 > = {
   awake: ["Awake"],
   asleep: ["Asleep", "moon"],
-  archived: ["Archived", "box"],
-  restoring: ["Restoring", "box"],
   lost: ["Lost", "warn"],
 };
 
-// SandboxBadge says whether the sandbox of a session is awake, asleep,
-// archived or lost. With always, it also says that there is none: not yet,
+// SandboxBadge says whether the sandbox of a session is awake, asleep or
+// lost. With always, it also says that there is none: not yet,
 // or no longer.
 export function SandboxBadge({
   session,

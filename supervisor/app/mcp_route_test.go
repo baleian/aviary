@@ -1,37 +1,23 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"slices"
 	"testing"
 
-	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 
+	"aviary/supervisor/internal/credentials"
+	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/internal/sandbox/runnertest"
 )
 
-// checkMcp asks the Supervisor about a request of the model listener with the
-// token that names the MCP server, as a harness sends it to one.
-func (s *supervisor) checkMcp(token, server, path string) *authv3.CheckResponse {
-	s.t.Helper()
-	answer, err := s.proxies.Check(context.Background(), &authv3.CheckRequest{Attributes: &authv3.AttributeContext{
-		Request: &authv3.AttributeContext_Request{Http: &authv3.AttributeContext_HttpRequest{
-			Headers: map[string]string{"authorization": "Bearer " + token, "x-aviary-mcp": server}, Path: path,
-		}},
-		ContextExtensions: map[string]string{"listener": "llm"},
-	}})
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	return answer
-}
-
-// A harness reaches the MCP servers of its session through the model listener
-// of the Egress Proxy: a request names its server, and goes to the server with
-// the server's headers, as long as the session has it on.
+// A harness reaches the MCP servers that its session has on at their URLs,
+// with their headers. It has a placeholder in place of each secret, which
+// the egress gateway replaces as long as the session has the server on.
 func TestRequestsToTheMcpServersOfASession(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -45,71 +31,58 @@ func TestRequestsToTheMcpServersOfASession(t *testing.T) {
 	agent := s.agent(project, `{"harness": "opencode", "mcp_servers": ["`+tracker+`"]}`)
 	session := s.create("/v1/agents/"+agent+"/sessions", "")
 	runner := aviary.given(s.send(session, "hello").ID)
-	token := aviary.token(runner.Sandbox)
-	// The harness of a turn reaches the servers that the session has on at
-	// the proxy, under the path of each server's URL.
-	if want := []runnertest.McpServer{{ID: tracker, Name: "tracker", Transport: "http", URL: "http://127.0.0.2:8080/mcp"}}; !slices.Equal(runner.McpServers, want) {
+	want := []runnertest.McpServer{{ID: tracker, Name: "tracker", Transport: "http", URL: "https://tracker.example.com/mcp",
+		Headers: []runnertest.McpHeader{{Name: "authorization", Value: credentials.Placeholder}, {Name: "x-team", Value: "a team"}}}}
+	if !reflect.DeepEqual(runner.McpServers, want) {
 		t.Errorf("MCP servers of the turn = %+v, want %+v", runner.McpServers, want)
 	}
-
-	// The request goes to the server with its headers, the server's token in
-	// place of the session's, and without the header that names the server.
-	answer := s.checkMcp(token, tracker, "/mcp")
-	if got := named(t, answer); got == nil || *got != (endpoint{host: "tracker.example.com", secure: "true", authorization: "Bearer t0ken", headers: "x-team: a team\n"}) {
-		t.Errorf("request to the server of the agent: %+v", got)
+	secret := credentials.McpServerHeader(uuid.MustParse(tracker), "authorization")
+	egress := aviary.made(runner.Sandbox).Egress
+	if !slices.Contains(egress.Secrets, sandbox.Secret{Host: sandbox.Host{TLS: true, Name: "tracker.example.com", Port: 443}, Header: "authorization", URI: secret}) ||
+		len(egress.Secrets) != 2 || len(egress.Hosts) != 0 {
+		t.Errorf("egress = %+v, want the key of the provider and the secret of the server", egress)
 	}
-	if removed := answer.GetOkResponse().GetHeadersToRemove(); !slices.Equal(removed, []string{"x-aviary-mcp"}) {
-		t.Errorf("headers removed from the request: %v", removed)
-	}
-	fields := answer.GetDynamicMetadata().GetFields()
-	if fields["mcp_server"].GetStringValue() != tracker || fields["turn"].GetStringValue() != runner.ID || fields["provider"] != nil {
-		t.Errorf("metadata of the request: %v", fields)
-	}
-	if status, why := refusal(s.checkMcp(token, tracker, "/other")); status != http.StatusNotFound || why != "requests to the MCP server must be under the path /mcp\n" {
-		t.Errorf("request at another path: %d %q", status, why)
+	if got, code, why := s.fetch(runner.Sandbox, secret); code != codes.OK || got != "Bearer t0ken" {
+		t.Errorf("the secret of the server = %q, refused with %v %q", got, code, why)
 	}
 
-	// A server that the session does not have is refused, and one that it
-	// turns on is reached from then on, in the same turn. A server of SSE is
-	// reached at any path of its host, where it says to send messages.
-	const off = "the MCP server is not on in the session\n"
-	for name, server := range map[string]string{"a server that is off": docs, "a server of another project": theirs, "no ID": "docs"} {
-		if status, why := refusal(s.checkMcp(token, server, "/sse")); status != http.StatusForbidden || why != off {
-			t.Errorf("%s: %d %q", name, status, why)
+	// The secrets of a server that the session does not have on are refused.
+	const off = "the MCP server is not on in the session"
+	for name, server := range map[string]string{"a server that is off": docs, "a server of another project": theirs} {
+		if _, code, why := s.fetch(runner.Sandbox, credentials.McpServerHeader(uuid.MustParse(server), "authorization")); code != codes.PermissionDenied || why != off {
+			t.Errorf("%s: refused with %v %q", name, code, why)
 		}
+	}
+	if _, code, _ := s.fetch(runner.Sandbox, "ate-secret://"+credentials.Class+"/default/mcp-servers/docs/headers/authorization"); code != codes.NotFound {
+		t.Errorf("a URI without the ID of a server: refused with %v, want NotFound", code)
 	}
 	if status, _ := s.request("PUT", "/v1/sessions/"+session+"/mcp-servers/"+docs, `{"enabled": true}`, nil); status != http.StatusOK {
 		t.Fatalf("turn the server on: status %d", status)
 	}
-	answer = s.checkMcp(token, docs, "/messages?session_id=1")
-	if got := named(t, answer); got == nil || *got != (endpoint{host: "docs.example.com:8080", secure: "false", keyless: true}) {
-		t.Errorf("request to a server that was turned on: %+v", got)
+	if _, code, why := s.fetch(runner.Sandbox, credentials.McpServerHeader(uuid.MustParse(docs), "authorization")); code != codes.NotFound || why != "the MCP server has no such header" {
+		t.Errorf("a header that the server does not have: refused with %v %q", code, why)
 	}
+	// A server that the session turns off gets no secrets from then on, in
+	// the same turn.
 	if status, _ := s.request("PUT", "/v1/sessions/"+session+"/mcp-servers/"+tracker, `{"enabled": false}`, nil); status != http.StatusOK {
 		t.Fatalf("turn the server off: status %d", status)
 	}
-	if status, why := refusal(s.checkMcp(token, tracker, "/mcp")); status != http.StatusForbidden || why != off {
-		t.Errorf("request to a server that was turned off: %d %q", status, why)
+	if _, code, why := s.fetch(runner.Sandbox, secret); code != codes.PermissionDenied || why != off {
+		t.Errorf("the secret of a server that was turned off: refused with %v %q", code, why)
 	}
 
-	// A request that names no server is a model request, and a forward proxy
-	// request goes where the pod sends it.
-	if got := named(t, s.check(token, false, "/v1/chat/completions")); got == nil || got.host != "api.example.com" {
-		t.Errorf("model request: %+v", got)
-	}
-	// Once the turn has ended, the token reaches nothing.
-	runner.report(started("harness-session"))
-	runner.report(finished("end_turn", nil))
-	eventually(t, patience, "the request of an ended turn is allowed", func() bool {
-		return codes.Code(s.checkMcp(token, docs, "/sse").GetStatus().GetCode()) != codes.OK
-	})
 	// The next turn has the servers that the session has on by then. The
 	// runner names those that its harness does not support, and the turn
 	// keeps them.
+	runner.report(started("harness-session"))
+	runner.report(finished("end_turn", nil))
 	again := s.send(session, "again")
 	next := aviary.given(again.ID)
-	if want := []runnertest.McpServer{{ID: docs, Name: "docs", Transport: "sse", URL: "http://127.0.0.2:8080/sse"}}; !slices.Equal(next.McpServers, want) {
+	if want := []runnertest.McpServer{{ID: docs, Name: "docs", Transport: "sse", URL: "http://docs.example.com:8080/sse"}}; !reflect.DeepEqual(next.McpServers, want) {
 		t.Errorf("MCP servers of the next turn = %+v, want %+v", next.McpServers, want)
+	}
+	if hosts := aviary.made(next.Sandbox).Egress.Hosts; !slices.Equal(hosts, []sandbox.Host{{Name: "docs.example.com", Port: 8080}}) {
+		t.Errorf("hosts of the next turn = %+v, want the server's", hosts)
 	}
 	unsupported := map[string]any{"servers": []map[string]string{{"id": docs, "name": "docs", "transport": "sse"}}}
 	next.report(started("harness-session"))

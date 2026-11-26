@@ -1,5 +1,5 @@
 # Grafana for the local cluster, installed by `make grafana`, which keeps the
-# dashboard of deploy/grafana in the ConfigMap grafana-dashboards.
+# dashboards of deploy/grafana in the ConfigMap grafana-dashboards.
 apiVersion: v1
 kind: ConfigMap
 metadata:

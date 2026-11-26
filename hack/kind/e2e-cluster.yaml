@@ -5,6 +5,15 @@ nodes:
   - role: control-plane
   - role: worker
   - role: worker
+# Agent Substrate issues the certificates of its components and of the
+# Supervisors as pod certificates, and publishes the certificates that sign
+# them as cluster trust bundles.
+featureGates:
+  ClusterTrustBundle: true
+  ClusterTrustBundleProjection: true
+  PodCertificateRequest: true
+runtimeConfig:
+  "certificates.k8s.io/v1beta1": "true"
 # containerd reads the mirrors of registries from the files that
 # make cluster-up writes on the nodes.
 containerdConfigPatches:

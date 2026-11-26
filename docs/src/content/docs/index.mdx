@@ -46,9 +46,9 @@ import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
 
 <CardGrid>
   <Card title="Controlled egress" icon="random">
-    An agent reaches only the hosts that the installation allows, and every
-    request that leaves a sandbox is logged with the turn and the user that it
-    came from.
+    An agent reaches only the hosts that the installation and its turn allow,
+    and every secret that is put into a request is logged with the turn and
+    the user that it came from.
   </Card>
   <Card title="No keys in sandboxes" icon="padlock">
     Each agent names its model at a model provider that its project registers,
@@ -59,9 +59,8 @@ import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
     through the API.
   </Card>
   <Card title="Sleeping sessions" icon="moon">
-    A session that is not in use is put to sleep: its pod is deleted, so it uses
-    no CPU or memory, and its volume is kept. Its next turn continues in a new
-    pod.
+    A session that is not in use is put to sleep: a snapshot keeps it, so it
+    uses no CPU or memory. Its next turn wakes it where it was.
   </Card>
   <Card title="A queue" icon="list-format">
     The number of turns that run at once is a setting. Further turns wait in

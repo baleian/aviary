@@ -38,10 +38,10 @@ see `runner/src/main.rs`.
 | --- | --- |
 | `harness_error` | The harness could not be started or returned an error. This is also how a harness reports that the model endpoint refused it. |
 | `resume_failed` | The harness could not continue the session, because its saved conversation is missing or unreadable. The next turn of the session tries again, so a session whose harness cannot recover fails every turn. |
-| `startup_timed_out` | The harness did not receive the message within `runtime.maxStartupSeconds`, for example because the sandbox could not be created. The message says what the turn waited for. A sandbox that was still being created or woken is kept with the agent's files, and the session's next turn uses it. A turn that first restores the home of its session has `runtime.maxRestoreSeconds` more, and if it fails, the home stays archived for the session's next turn. |
+| `startup_timed_out` | The harness did not receive the message within `runtime.maxStartupSeconds`, for example because the sandbox could not be created. The message says what the turn waited for, such as a worker with room for the sandbox. A sandbox that was still being created or woken is kept with the agent's files, and the session's next turn uses it. |
 | `timed_out` | The turn ran for longer than `runtime.maxTurnSeconds`. |
 | `sandbox_lost` | The session's sandbox is gone, with everything that the agent had in it. The next turn of the session gets a new one. |
-| `attachment_failed` | A file that the message carries could not be written into the session's sandbox, because its volume has no room. The message names the file. |
+| `attachment_failed` | A file that the message carries could not be written into the session's sandbox, because its home has no room. The message names the file. |
 | `session_expired` | The session was not used for longer than `sandboxes.retentionSeconds`. Its sandbox is gone, and the session has ended. A message fails this way only if it arrives before a Supervisor has ended the session. |
 | `runner_error` | The runner failed in another way. |
 

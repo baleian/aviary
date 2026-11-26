@@ -4,363 +4,454 @@ import (
 	"context"
 	"errors"
 	"net"
-	"net/url"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
+	ateapi "go.ate.dev/substrate/api/ateapi/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	k8stesting "k8s.io/client-go/testing"
-	agents "sigs.k8s.io/agent-sandbox/api/v1beta1"
-	"sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/fake"
-	typed "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/typed/api/v1beta1"
 )
 
-var ctx = context.Background()
+// control is a Substrate API in memory, with what the client uses of it.
+type control struct {
+	ateapi.UnimplementedControlServer
 
-// cluster returns a Client backed by a fake clientset, and the fake's
-// Sandboxes. The Egress Proxy is at localhost.
-func cluster(t *testing.T, settings Settings) (*Client, typed.SandboxInterface) {
+	mu        sync.Mutex
+	atespaces map[string]bool
+	templates map[string]*ateapi.ActorTemplate
+	actors    map[string]*ateapi.Actor
+	policies  map[string]*ateapi.EgressPolicy
+	// updates counts the updates of egress policies.
+	updates int
+	// resume is the error of the next resume, if not nil.
+	resume error
+	// workers are the workers and the actors that each hosts.
+	workers map[string][]*ateapi.ObjectRef
+	// draining are the workers that are going away.
+	draining map[string]bool
+	// denied refuses to make atespaces, as for a caller that owns only the
+	// atespace that the installation made.
+	denied bool
+}
+
+func (c *control) CreateAtespace(_ context.Context, request *ateapi.CreateAtespaceRequest) (*ateapi.Atespace, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	name := request.GetAtespace().GetMetadata().GetName()
+	if c.denied {
+		return nil, status.Error(codes.PermissionDenied, "not an owner of every atespace")
+	}
+	if c.atespaces[name] {
+		return nil, status.Error(codes.AlreadyExists, "atespace exists")
+	}
+	c.atespaces[name] = true
+	return request.GetAtespace(), nil
+}
+
+func (c *control) CreateActorTemplate(_ context.Context, request *ateapi.CreateActorTemplateRequest) (*ateapi.ActorTemplate, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	name := request.GetActorTemplate().GetMetadata().GetName()
+	if c.templates[name] != nil {
+		return nil, status.Error(codes.AlreadyExists, "template exists")
+	}
+	c.templates[name] = request.GetActorTemplate()
+	return request.GetActorTemplate(), nil
+}
+
+func (c *control) CreateActor(_ context.Context, request *ateapi.CreateActorRequest) (*ateapi.Actor, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	actor := proto.Clone(request.GetActor()).(*ateapi.Actor)
+	if c.actors[actor.GetMetadata().GetName()] != nil {
+		return nil, status.Error(codes.AlreadyExists, "actor exists")
+	}
+	actor.Metadata.Uid = uuid.NewString()
+	actor.Status = &ateapi.ActorStatus{State: ateapi.ActorState_ACTOR_STATE_SUSPENDED}
+	c.actors[actor.GetMetadata().GetName()] = actor
+	return actor, nil
+}
+
+func (c *control) GetActor(_ context.Context, request *ateapi.GetActorRequest) (*ateapi.Actor, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if actor := c.actors[request.GetActor().GetName()]; actor != nil {
+		return actor, nil
+	}
+	return nil, status.Error(codes.NotFound, "no actor")
+}
+
+// ListActors lists one actor a page.
+func (c *control) ListActors(_ context.Context, request *ateapi.ListActorsRequest) (*ateapi.ListActorsResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.atespaces[request.GetAtespace()] {
+		return nil, status.Error(codes.NotFound, "no atespace")
+	}
+	var names []string
+	for name := range c.actors {
+		if name > request.GetOptions().GetPageToken() {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return &ateapi.ListActorsResponse{}, nil
+	}
+	first := names[0]
+	for _, name := range names {
+		first = min(first, name)
+	}
+	next := ""
+	if len(names) > 1 {
+		next = first
+	}
+	return &ateapi.ListActorsResponse{Actors: []*ateapi.Actor{c.actors[first]}, NextPageToken: next}, nil
+}
+
+func (c *control) ResumeActor(_ context.Context, request *ateapi.ResumeActorRequest) (*ateapi.ResumeActorResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.resume; err != nil {
+		c.resume = nil
+		return nil, err
+	}
+	actor := c.actors[request.GetActor().GetName()]
+	if actor == nil {
+		return nil, status.Error(codes.NotFound, "no actor")
+	}
+	actor.Status.State = ateapi.ActorState_ACTOR_STATE_RUNNING
+	return &ateapi.ResumeActorResponse{}, nil
+}
+
+func (c *control) DeleteActor(_ context.Context, request *ateapi.DeleteActorRequest) (*ateapi.Actor, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	actor := c.actors[request.GetActor().GetName()]
+	switch {
+	case actor == nil:
+		return nil, status.Error(codes.NotFound, "no actor")
+	case request.GetOptions().GetUid() != "" && request.GetOptions().GetUid() != actor.GetMetadata().GetUid():
+		return nil, status.Error(codes.Aborted, "another actor")
+	}
+	delete(c.actors, request.GetActor().GetName())
+	return actor, nil
+}
+
+func (c *control) CreateActorEgressPolicy(_ context.Context, request *ateapi.CreateActorEgressPolicyRequest) (*ateapi.EgressPolicy, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	name := request.GetActor().GetName()
+	switch {
+	case c.actors[name] == nil:
+		return nil, status.Error(codes.NotFound, "no actor")
+	case c.policies[name] != nil:
+		return nil, status.Error(codes.AlreadyExists, "policy exists")
+	}
+	policy := proto.Clone(request.GetEgressPolicy()).(*ateapi.EgressPolicy)
+	policy.Metadata.Uid, policy.Metadata.Version = uuid.NewString(), 1
+	c.policies[name] = policy
+	return policy, nil
+}
+
+func (c *control) GetActorEgressPolicy(_ context.Context, request *ateapi.GetActorEgressPolicyRequest) (*ateapi.EgressPolicy, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if policy := c.policies[request.GetActor().GetName()]; policy != nil {
+		return policy, nil
+	}
+	return nil, status.Error(codes.NotFound, "no policy")
+}
+
+func (c *control) UpdateActorEgressPolicy(_ context.Context, request *ateapi.UpdateActorEgressPolicyRequest) (*ateapi.EgressPolicy, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current := c.policies[request.GetActor().GetName()]
+	given := request.GetEgressPolicy()
+	if current == nil || given.GetMetadata().GetUid() != current.GetMetadata().GetUid() || given.GetMetadata().GetVersion() != current.GetMetadata().GetVersion() {
+		return nil, status.Error(codes.Aborted, "the policy has changed")
+	}
+	policy := proto.Clone(given).(*ateapi.EgressPolicy)
+	policy.Metadata.Version++
+	c.policies[request.GetActor().GetName()] = policy
+	c.updates++
+	return policy, nil
+}
+
+func (c *control) ListWorkers(context.Context, *ateapi.ListWorkersRequest) (*ateapi.ListWorkersResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	listed := &ateapi.ListWorkersResponse{}
+	for name := range c.workers {
+		state := ateapi.WorkerState_WORKER_STATE_ACTIVE
+		if c.draining[name] {
+			state = ateapi.WorkerState_WORKER_STATE_DRAINING
+		}
+		listed.Workers = append(listed.Workers, &ateapi.Worker{Metadata: &ateapi.ResourceMetadata{Name: name}, Status: &ateapi.WorkerStatus{State: state}})
+	}
+	return listed, nil
+}
+
+func (c *control) ListWorkerActorAssignments(_ context.Context, request *ateapi.ListWorkerActorAssignmentsRequest) (*ateapi.ListWorkerActorAssignmentsResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	listed := &ateapi.ListWorkerActorAssignmentsResponse{}
+	for _, actor := range c.workers[request.GetWorker().GetName()] {
+		listed.ActorAssignments = append(listed.ActorAssignments, &ateapi.ActorAssignment{Actor: actor})
+	}
+	return listed, nil
+}
+
+// served returns a client of the sandboxes of the atespace "aviary", with the
+// harness "opencode", and the API that it calls.
+func served(t *testing.T) (*Client, *control) {
 	t.Helper()
-	settings.Namespace = "sessions"
-	settings.Proxy = &url.URL{Scheme: "http", Host: "localhost:3128"}
-	settings.Models = &url.URL{Scheme: "http", Host: "localhost:8080"}
-	sandboxes := fake.NewSimpleClientset().AgentsV1beta1().Sandboxes(settings.Namespace)
-	return &Client{sandboxes: sandboxes, settings: settings}, sandboxes
-}
-
-var opencode = Pod{
-	Harness: Harness{
-		Image: "harness-opencode:1",
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m"), corev1.ResourceMemory: resource.MustParse("1Gi")},
-			Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
-		},
-	},
-	Token: "the-token-of-the-session",
-}
-
-func TestTheSandboxOfASessionIsMadeWithItsVolume(t *testing.T) {
-	c, sandboxes := cluster(t, Settings{Volume: resource.MustParse("10Gi"), StorageClass: "fast", MaxToolOutputBytes: 100})
-	session := uuid.New()
-	request := Request{Session: session, Labels: map[string]string{"aviary.io/agent": "an-agent"}, Pod: opencode}
-	if err := c.Create(ctx, request); err != nil {
-		t.Fatal(err)
+	api := &control{
+		atespaces: map[string]bool{}, templates: map[string]*ateapi.ActorTemplate{}, actors: map[string]*ateapi.Actor{},
+		policies: map[string]*ateapi.EgressPolicy{}, workers: map[string][]*ateapi.ObjectRef{}, draining: map[string]bool{},
 	}
-	made, err := sandboxes.Get(ctx, Name(session), metav1.GetOptions{})
+	server := grpc.NewServer()
+	ateapi.RegisterControlServer(server, api)
+	// The connection is in memory, so that what the tests read of the API
+	// follows what it served.
+	listener := bufconn.Listen(1 << 20)
+	go server.Serve(listener)
+	t.Cleanup(server.Stop)
+	conn, err := grpc.NewClient("passthrough:///control", grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) }))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if made.Labels[SessionLabel] != session.String() || made.Labels["aviary.io/agent"] != "an-agent" ||
-		made.Spec.PodTemplate.ObjectMeta.Labels[SessionLabel] != session.String() {
-		t.Errorf("sandbox labels = %v, pod labels = %v", made.Labels, made.Spec.PodTemplate.ObjectMeta.Labels)
+	t.Cleanup(func() { conn.Close() })
+	c := &Client{
+		settings: Settings{
+			Atespace: "aviary", Pool: map[string]string{"pool": "sandboxes"}, Snapshot: "rootfs", Router: "https://router.example.com/",
+			Runner: "registry.example.com/runner@sha256:89ab",
+		},
+		conn: conn, control: ateapi.NewControlClient(conn), templates: map[string]*ateapi.ActorTemplate{}, made: map[string]bool{},
 	}
-	pod := made.Spec.PodTemplate.Spec
-	if *pod.AutomountServiceAccountToken || *pod.EnableServiceLinks {
-		t.Errorf("pod = %+v", pod)
-	}
-	// The agent does not run as root and cannot become root.
-	if who := pod.SecurityContext; !*who.RunAsNonRoot || *who.RunAsUser != agentUser || *who.RunAsGroup != agentUser ||
-		*who.FSGroup != agentUser || *who.FSGroupChangePolicy != corev1.FSGroupChangeOnRootMismatch ||
-		who.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Errorf("pod security context = %+v", who)
-	}
-	if may := pod.Containers[0].SecurityContext; *may.AllowPrivilegeEscalation || !slices.Equal(may.Capabilities.Drop, []corev1.Capability{"ALL"}) {
-		t.Errorf("container security context = %+v", may)
-	}
-	harness := pod.Containers[0]
-	if harness.Image != opencode.Harness.Image || !slices.Equal(harness.Command, []string{"aviary-session"}) ||
-		!harness.Resources.Requests.Cpu().Equal(resource.MustParse("250m")) || !harness.Resources.Limits.Memory().Equal(resource.MustParse("4Gi")) ||
-		harness.ReadinessProbe.TCPSocket.Port.IntValue() != RunnerPort ||
-		len(harness.VolumeMounts) != 1 || harness.VolumeMounts[0].Name != "home" || harness.VolumeMounts[0].MountPath != "/home" {
-		t.Errorf("harness container = %+v", harness)
-	}
-	// Outbound traffic goes through the Egress Proxy with the session token,
-	// which the harness also uses as its API key.
-	env := map[string]string{}
-	for _, variable := range harness.Env {
-		env[variable.Name] = variable.Value
-	}
-	through := "http://session:the-token-of-the-session@localhost:3128"
-	for name, value := range map[string]string{
-		"AVIARY_MAX_TOOL_OUTPUT_BYTES": "100",
-		"AVIARY_LLM_API_KEY":           "the-token-of-the-session",
-		"HTTP_PROXY":                   through, "HTTPS_PROXY": through, "http_proxy": through, "https_proxy": through,
-		"NO_PROXY": "localhost,127.0.0.1,::1,localhost", "no_proxy": "localhost,127.0.0.1,::1,localhost",
-	} {
-		if env[name] != value {
-			t.Errorf("env %s = %q, want %q", name, env[name], value)
-		}
-	}
-	if len(env) != 8 {
-		t.Errorf("env = %v", env)
-	}
-	// The pod finds the proxy in its hosts file, and other lookups fail fast.
-	if aliases := pod.HostAliases; len(aliases) != 1 || !slices.Equal(aliases[0].Hostnames, []string{"localhost"}) ||
-		!net.ParseIP(aliases[0].IP).IsLoopback() || pod.DNSConfig == nil || len(pod.DNSConfig.Options) != 3 {
-		t.Errorf("host aliases = %v, DNS config = %+v", aliases, pod.DNSConfig)
-	}
-	claims := made.Spec.VolumeClaimTemplates
-	if len(claims) != 1 || claims[0].Name != "home" || claims[0].Spec.StorageClassName == nil || *claims[0].Spec.StorageClassName != "fast" ||
-		!claims[0].Spec.Resources.Requests.Storage().Equal(resource.MustParse("10Gi")) {
-		t.Errorf("volume claim templates = %+v", claims)
-	}
-	if made.Spec.FailedPodPolicy != agents.FailedPodPolicyRecreate || made.Spec.ShutdownTime != nil {
-		t.Errorf("sandbox spec = %+v", made.Spec)
-	}
-
-	// Creating it again is not an error.
-	if err := c.Create(ctx, request); err != nil {
-		t.Errorf("second Create = %v", err)
-	}
-	// A sandbox with a lifetime is deleted with its volume when it expires.
-	kept := uuid.New()
-	if err := c.Create(ctx, Request{Session: kept, Pod: opencode, Kept: time.Hour}); err != nil {
-		t.Fatal(err)
-	}
-	made, err = sandboxes.Get(ctx, Name(kept), metav1.GetOptions{})
+	template, err := c.template("opencode", Harness{
+		Image:     "registry.example.com/opencode@sha256:0123",
+		Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi")}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if until, policy := made.Spec.ShutdownTime, made.Spec.ShutdownPolicy; until == nil || time.Until(until.Time) < 59*time.Minute ||
-		policy == nil || *policy != agents.ShutdownPolicyDelete {
-		t.Errorf("shutdown time = %v, shutdown policy = %v", until, made.Spec.ShutdownPolicy)
-	}
-	// Without a storage class, the volume uses the default class.
-	c, sandboxes = cluster(t, Settings{Volume: resource.MustParse("1Gi")})
-	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
-		t.Fatal(err)
-	}
-	made, err = sandboxes.Get(ctx, Name(session), metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if claims := made.Spec.VolumeClaimTemplates; len(claims) != 1 || claims[0].Spec.StorageClassName != nil {
-		t.Errorf("volume claim templates = %+v, want one without a storage class", claims)
-	}
+	c.templates["opencode"] = template
+	return c, api
 }
 
-func TestWhatASandboxDoesIsSeenInItsStatus(t *testing.T) {
-	// condition returns a condition observed at generation 3.
-	condition := func(kind agents.ConditionType, status metav1.ConditionStatus, reason, message string) metav1.Condition {
-		return metav1.Condition{Type: string(kind), Status: status, Reason: reason, Message: message, ObservedGeneration: 3}
-	}
-	third := metav1.ObjectMeta{Generation: 3}
-	now := metav1.Now()
-	for _, test := range []struct {
-		what    string
-		sandbox agents.Sandbox
-		state   State
-		message string
-		address string
-	}{
-		{what: "created", state: Starting},
-		{
-			what: "pod not ready",
-			sandbox: agents.Sandbox{ObjectMeta: third, Status: agents.SandboxStatus{Conditions: []metav1.Condition{
-				condition(agents.SandboxConditionReady, metav1.ConditionFalse, "DependenciesNotReady", "the pod is pending"),
-			}}},
-			state: Starting, message: "DependenciesNotReady: the pod is pending",
-		},
-		{
-			what: "running",
-			sandbox: agents.Sandbox{ObjectMeta: third, Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
-				condition(agents.SandboxConditionReady, metav1.ConditionTrue, "DependenciesReady", ""),
-			}}},
-			state: Running, address: "http://10.0.0.7:8700",
-		},
-		{
-			what: "resumed with the previous pod's status",
-			sandbox: agents.Sandbox{ObjectMeta: metav1.ObjectMeta{Generation: 4}, Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
-				condition(agents.SandboxConditionReady, metav1.ConditionTrue, "DependenciesReady", ""),
-			}}},
-			state: Starting,
-		},
-		{
-			what: "suspended with the pod terminating",
-			sandbox: agents.Sandbox{
-				ObjectMeta: third,
-				Spec:       agents.SandboxSpec{OperatingMode: agents.SandboxOperatingModeSuspended},
-				Status: agents.SandboxStatus{PodIPs: []string{"10.0.0.7"}, Conditions: []metav1.Condition{
-					condition(agents.SandboxConditionReady, metav1.ConditionTrue, "DependenciesReady", ""),
-					condition(agents.SandboxConditionSuspended, metav1.ConditionFalse, "PodTerminating", ""),
-				}},
-			},
-			state: Asleep,
-		},
-		{
-			what: "suspended",
-			sandbox: agents.Sandbox{
-				ObjectMeta: third,
-				Spec:       agents.SandboxSpec{OperatingMode: agents.SandboxOperatingModeSuspended},
-				Status: agents.SandboxStatus{Conditions: []metav1.Condition{
-					condition(agents.SandboxConditionSuspended, metav1.ConditionTrue, "PodTerminated", ""),
-				}},
-			},
-			state: Asleep,
-		},
-		{
-			what: "expired",
-			sandbox: agents.Sandbox{ObjectMeta: third, Status: agents.SandboxStatus{Conditions: []metav1.Condition{
-				condition(agents.SandboxConditionReady, metav1.ConditionFalse, agents.SandboxReasonExpired, ""),
-			}}},
-			state: Lost, message: "it has expired",
-		},
-		{
-			what:    "being deleted",
-			sandbox: agents.Sandbox{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now}},
-			state:   Lost, message: "it is being deleted",
-		},
-	} {
-		if seen := seen(&test.sandbox); seen.State != test.state || seen.Message != test.message || seen.Address != test.address {
-			t.Errorf("%s: seen = %+v", test.what, seen)
-		}
-	}
-}
-
-func TestASandboxSleepsWakesIsKeptAndIsDeleted(t *testing.T) {
-	c, sandboxes := cluster(t, Settings{Volume: resource.MustParse("1Gi")})
+// A sandbox is made asleep from the template of its harness, with the egress
+// of its session, which a later Create or SetEgress replaces.
+func TestCreate(t *testing.T) {
+	c, api := served(t)
+	ctx := context.Background()
 	session := uuid.New()
 	name := Name(session)
-	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
+	egress := Egress{Hosts: []Host{{TLS: true, Name: "api.example.com", Port: 443}}}
+	if err := c.Create(ctx, Request{Session: session, Harness: "opencode", Egress: egress}); err != nil {
 		t.Fatal(err)
 	}
-	spec := func() agents.SandboxSpec {
-		t.Helper()
-		made, err := sandboxes.Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
+	if err := c.Create(ctx, Request{Session: session, Harness: "opencode", Egress: egress}); err != nil {
+		t.Fatalf("create again: %v", err)
+	}
+	if len(api.templates) != 1 || len(api.actors) != 1 || !api.atespaces["aviary"] || api.updates != 0 {
+		t.Errorf("made %d templates, %d actors, atespaces %v, %d policy updates", len(api.templates), len(api.actors), api.atespaces, api.updates)
+	}
+	template := c.templates["opencode"]
+	if !strings.HasPrefix(template.GetMetadata().GetName(), "opencode-") || api.actors[name].GetActorTemplate().GetName() != template.GetMetadata().GetName() ||
+		template.GetSnapshotConfig().GetPreferredFidelity() != ateapi.SnapshotFidelity_SNAPSHOT_FIDELITY_ROOTFS ||
+		template.GetResources().GetLimits().GetCpuMillicores() != 2000 || template.GetWorkerSelector().GetMatchLabels()["pool"] != "sandboxes" {
+		t.Errorf("template %v of actor %v", template, api.actors[name])
+	}
+	// The sandbox runs the runner from the runner's image.
+	container := template.GetContainers()[0]
+	mounted := map[string]string{}
+	for _, mount := range container.GetVolumeMounts() {
+		mounted[mount.GetName()] = mount.GetMountPath()
+	}
+	var runner string
+	for _, volume := range template.GetVolumes() {
+		if volume.GetName() == "runner" {
+			runner = volume.GetImage().GetReference()
+		}
+	}
+	if !slices.Equal(container.GetCommand(), []string{"/opt/aviary/aviary-runner"}) || mounted["runner"] != "/opt/aviary" ||
+		runner != "registry.example.com/runner@sha256:89ab" {
+		t.Errorf("container %v of the template, with the runner %q", container, runner)
+	}
+	seen, err := c.Sandbox(ctx, name)
+	if err != nil || seen.State != Asleep || seen.Session != session.String() || seen.UID == "" {
+		t.Errorf("Sandbox = %+v, %v; want the session's, asleep", seen, err)
+	}
+
+	changed := Egress{Hosts: []Host{{TLS: true, Name: "other.example.com", Port: 443}}}
+	if err := c.SetEgress(ctx, name, changed); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := changed.rules()
+	if rules := api.policies[name].GetRules(); api.updates != 1 || len(rules) != 1 || !proto.Equal(rules[0], want[0]) {
+		t.Errorf("policy after SetEgress: %v, %d updates", rules, api.updates)
+	}
+	if err := c.SetEgress(ctx, Name(uuid.New()), changed); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetEgress of no sandbox = %v, want ErrNotFound", err)
+	}
+	if err := c.Create(ctx, Request{Session: uuid.New(), Harness: "codex"}); err == nil {
+		t.Error("Create with a harness that is not configured succeeded")
+	}
+}
+
+// An installation that makes the atespace itself may let the Supervisors own
+// only that atespace.
+func TestCreateInTheAtespaceOfTheInstallation(t *testing.T) {
+	c, api := served(t)
+	api.denied = true
+	if err := c.Create(context.Background(), Request{Session: uuid.New(), Harness: "opencode"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.templates) != 1 || len(api.actors) != 1 {
+		t.Errorf("made %d templates and %d actors, want 1 of each", len(api.templates), len(api.actors))
+	}
+}
+
+// A harness changes its template's name, since a template does not change.
+func TestTemplateName(t *testing.T) {
+	c, _ := served(t)
+	harness := Harness{
+		Image:     "registry.example.com/opencode@sha256:0123",
+		Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi")}},
+	}
+	first, err := c.template("opencode", harness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.Image = "registry.example.com/opencode@sha256:4567"
+	second, err := c.template("opencode", harness)
+	if err != nil || first.GetMetadata().GetName() == second.GetMetadata().GetName() {
+		t.Errorf("templates of two images: %s and %s, %v", first.GetMetadata().GetName(), second.GetMetadata().GetName(), err)
+	}
+	c.settings.Runner = "registry.example.com/runner@sha256:cdef"
+	third, err := c.template("opencode", harness)
+	if err != nil || third.GetMetadata().GetName() == second.GetMetadata().GetName() {
+		t.Errorf("templates of two runners: %s and %s, %v", second.GetMetadata().GetName(), third.GetMetadata().GetName(), err)
+	}
+	harness.Resources.Limits = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")}
+	if _, err := c.template("opencode", harness); err == nil {
+		t.Error("a harness without a CPU limit has a template")
+	}
+	harness.Resources.Limits = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi")}
+	c.settings.Runner = ""
+	if _, err := c.template("opencode", harness); err == nil {
+		t.Error("a harness has a template without the image of the runner")
+	}
+}
+
+func TestSandboxStates(t *testing.T) {
+	for state, want := range map[ateapi.ActorState]State{
+		ateapi.ActorState_ACTOR_STATE_RUNNING:    Running,
+		ateapi.ActorState_ACTOR_STATE_RESUMING:   Starting,
+		ateapi.ActorState_ACTOR_STATE_SUSPENDING: Asleep,
+		ateapi.ActorState_ACTOR_STATE_SUSPENDED:  Asleep,
+		ateapi.ActorState_ACTOR_STATE_CRASHED:    Crashed,
+		ateapi.ActorState_ACTOR_STATE_REVERTING:  Crashed,
+		ateapi.ActorState_ACTOR_STATE_DELETING:   Lost,
+	} {
+		actor := &ateapi.Actor{Metadata: &ateapi.ResourceMetadata{Name: "session-a"}, Status: &ateapi.ActorStatus{State: state}}
+		if got := seen(actor).State; got != want {
+			t.Errorf("an actor %v is %s, want %s", state, got, want)
+		}
+	}
+}
+
+// Resume tells a pool without room, and a crashed sandbox, from other
+// failures.
+func TestResume(t *testing.T) {
+	c, api := served(t)
+	ctx := context.Background()
+	session := uuid.New()
+	name := Name(session)
+	if err := c.Create(ctx, Request{Session: session, Harness: "opencode"}); err != nil {
+		t.Fatal(err)
+	}
+	api.resume = status.Error(codes.ResourceExhausted, "no worker has room")
+	if err := c.Resume(ctx, name); !errors.Is(err, ErrNoWorker) {
+		t.Errorf("Resume without room = %v, want ErrNoWorker", err)
+	}
+	api.actors[name].Status = &ateapi.ActorStatus{State: ateapi.ActorState_ACTOR_STATE_CRASHED, Crash: &ateapi.ActorCrash{Message: "out of memory"}}
+	api.resume = status.Error(codes.FailedPrecondition, "the actor has crashed")
+	if err := c.Resume(ctx, name); !errors.Is(err, ErrCrashed) || !strings.Contains(err.Error(), "out of memory") {
+		t.Errorf("Resume of a crashed sandbox = %v, want ErrCrashed with its message", err)
+	}
+	api.actors[name].Status = &ateapi.ActorStatus{State: ateapi.ActorState_ACTOR_STATE_SUSPENDED}
+	if err := c.Resume(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if seen, err := c.Sandbox(ctx, name); err != nil || seen.State != Running {
+		t.Errorf("Sandbox after Resume = %+v, %v; want it running", seen, err)
+	}
+	if err := c.Resume(ctx, Name(uuid.New())); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Resume of no sandbox = %v, want ErrNotFound", err)
+	}
+}
+
+// Sandboxes lists the sandboxes of sessions over pages, and Delete deletes
+// one only if it has the UID, when the UID is given.
+func TestSandboxesAndDelete(t *testing.T) {
+	c, api := served(t)
+	ctx := context.Background()
+	if all, err := c.Sandboxes(ctx); err != nil || len(all) != 0 {
+		t.Errorf("Sandboxes before the atespace exists = %v, %v; want none", all, err)
+	}
+	sessions := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
+	for _, session := range sessions {
+		if err := c.Create(ctx, Request{Session: session, Harness: "opencode"}); err != nil {
 			t.Fatal(err)
 		}
-		return made.Spec
 	}
-	if err := c.Suspend(ctx, name, ""); err != nil || spec().OperatingMode != agents.SandboxOperatingModeSuspended {
-		t.Errorf("after Suspend: operating mode = %s, err = %v", spec().OperatingMode, err)
-	}
-	// Keeping a sleeping sandbox reports it as asleep.
-	turn := uuid.New()
-	if kept, err := c.Keep(ctx, name, turn, time.Time{}); err != nil || kept.State != Asleep {
-		t.Errorf("Keep of a suspended sandbox = %+v, %v", kept, err)
-	}
-	// Resume replaces the whole pod spec.
-	if err := c.Resume(ctx, name, Pod{Harness: Harness{Image: "harness-opencode:2"}}); err != nil || spec().OperatingMode != agents.SandboxOperatingModeRunning {
-		t.Errorf("after Resume: operating mode = %s, err = %v", spec().OperatingMode, err)
-	}
-	if harness := spec().PodTemplate.Spec.Containers[0]; harness.Image != "harness-opencode:2" || len(harness.Resources.Requests) != 0 {
-		t.Errorf("resumed harness container = %+v", harness)
-	}
-	until := time.Now().Add(time.Hour).Truncate(time.Second)
-	if kept, err := c.Keep(ctx, name, turn, until); err != nil || kept.State == Asleep || !spec().ShutdownTime.Time.Equal(until) {
-		t.Errorf("Keep = %+v, shutdown time = %v, err = %v", kept, spec().ShutdownTime, err)
-	}
-	if _, err := c.Keep(ctx, name, turn, time.Time{}); err != nil || spec().ShutdownTime != nil {
-		t.Errorf("Keep without until: shutdown time = %v, err = %v", spec().ShutdownTime, err)
-	}
-	// Keep annotates the sandbox with the turn.
-	if made, err := sandboxes.Get(ctx, name, metav1.GetOptions{}); err != nil || made.Annotations["aviary.io/turn"] != turn.String() {
-		t.Errorf("Keep for turn %s: annotations = %v, err = %v", turn, made.Annotations, err)
+	api.actors["another-actor"] = &ateapi.Actor{Metadata: &ateapi.ResourceMetadata{Atespace: "aviary", Name: "another-actor"}}
+	all, err := c.Sandboxes(ctx)
+	if err != nil || len(all) != len(sessions) {
+		t.Fatalf("Sandboxes = %v, %v; want the %d of the sessions", all, err, len(sessions))
 	}
 
-	if all, err := c.Sandboxes(ctx); err != nil || len(all) != 1 || all[0].Name != name || all[0].Session != session.String() {
-		t.Errorf("Sandboxes = %+v, %v", all, err)
+	name := Name(sessions[0])
+	uid := api.actors[name].GetMetadata().GetUid()
+	if err := c.Delete(ctx, name, uuid.NewString()); err != nil || api.actors[name] == nil {
+		t.Errorf("Delete with another UID = %v, and the sandbox is gone", err)
 	}
-	// Sandboxes without a session label are not listed.
-	if _, err := sandboxes.Create(ctx, &agents.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "another"}}, metav1.CreateOptions{}); err != nil {
-		t.Fatal(err)
+	if err := c.Delete(ctx, name, uid); err != nil || api.actors[name] != nil {
+		t.Errorf("Delete with its UID = %v, and the sandbox stays", err)
 	}
-	if all, err := c.Sandboxes(ctx); err != nil || len(all) != 1 {
-		t.Errorf("Sandboxes = %+v, %v", all, err)
-	}
-
 	if err := c.Delete(ctx, name, ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Sandbox(ctx, name); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Sandbox after Delete = %v, want ErrNotFound", err)
-	}
-	// Deleting a missing sandbox succeeds. The other changes return
-	// ErrNotFound.
-	if err := c.Delete(ctx, name, ""); err != nil {
-		t.Errorf("second Delete = %v", err)
-	}
-	for what, change := range map[string]func() error{
-		"Suspend": func() error { return c.Suspend(ctx, name, "") },
-		"Resume":  func() error { return c.Resume(ctx, name, opencode) },
-		"Keep": func() error {
-			_, err := c.Keep(ctx, name, turn, until)
-			return err
-		},
-	} {
-		if err := change(); !errors.Is(err, ErrNotFound) {
-			t.Errorf("%s of a deleted sandbox = %v, want ErrNotFound", what, err)
-		}
+		t.Errorf("Delete of no sandbox = %v", err)
 	}
 }
 
-// A sandbox that is deleted by its UID is deleted only if it is still that
-// one: the name of a session's sandbox is always the same.
-func TestASandboxIsDeletedOnlyIfItIsTheOneThatWasSeen(t *testing.T) {
-	clients := fake.NewSimpleClientset()
-	c, _ := cluster(t, Settings{Volume: resource.MustParse("1Gi")})
-	c.sandboxes = clients.AgentsV1beta1().Sandboxes("sessions")
-	session := uuid.New()
-	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
-		t.Fatal(err)
-	}
-	// The fake clientset ignores the precondition, so answer as the API
-	// server does for a sandbox with another UID.
-	var asked []string
-	clients.PrependReactor("delete", "sandboxes", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		options := action.(k8stesting.DeleteActionImpl).DeleteOptions
-		if options.Preconditions == nil || options.Preconditions.UID == nil {
-			asked = append(asked, "")
-			return false, nil, nil
-		}
-		asked = append(asked, string(*options.Preconditions.UID))
-		return true, nil, apierrors.NewConflict(schema.GroupResource{Group: "agents.x-k8s.io", Resource: "sandboxes"}, action.(k8stesting.DeleteAction).GetName(), errors.New("the UID in the precondition is not that of the object"))
-	})
-	if err := c.Delete(ctx, Name(session), "the-uid-of-an-earlier-sandbox"); err != nil {
-		t.Errorf("Delete of a sandbox with another UID = %v, want nothing deleted and no error", err)
-	}
-	if _, err := c.Sandbox(ctx, Name(session)); err != nil {
-		t.Errorf("the sandbox with another UID was deleted: %v", err)
-	}
-	if err := c.Delete(ctx, Name(session), ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Sandbox(ctx, Name(session)); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Sandbox after Delete = %v, want ErrNotFound", err)
-	}
-	if len(asked) != 2 || asked[0] != "the-uid-of-an-earlier-sandbox" || asked[1] != "" {
-		t.Errorf("deletions asked for the UIDs %q", asked)
+// Draining returns the sandboxes of the atespace on workers that go away.
+func TestDraining(t *testing.T) {
+	c, api := served(t)
+	api.workers["worker-a"] = []*ateapi.ObjectRef{{Atespace: "aviary", Name: "session-a"}, {Atespace: "other", Name: "session-b"}, {Atespace: "aviary", Name: "another-actor"}}
+	api.workers["worker-b"] = []*ateapi.ObjectRef{{Atespace: "aviary", Name: "session-c"}}
+	api.draining["worker-a"] = true
+	if names, err := c.Draining(context.Background()); err != nil || len(names) != 1 || names[0] != "session-a" {
+		t.Errorf("Draining = %v, %v; want session-a", names, err)
 	}
 }
 
-func TestASandboxIsPutToSleepOnlyAsItWasSeen(t *testing.T) {
-	clients := fake.NewSimpleClientset()
-	c, _ := cluster(t, Settings{Volume: resource.MustParse("1Gi")})
-	c.sandboxes = clients.AgentsV1beta1().Sandboxes("sessions")
-	session := uuid.New()
-	if err := c.Create(ctx, Request{Session: session, Pod: opencode}); err != nil {
-		t.Fatal(err)
-	}
-	// The fake clientset ignores resourceVersion, so return the conflict
-	// that the API server would.
-	var asked []string
-	clients.PrependReactor("patch", "sandboxes", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		patch := action.(k8stesting.PatchAction)
-		asked = append(asked, string(patch.GetPatch()))
-		return true, nil, apierrors.NewConflict(schema.GroupResource{Group: "agents.x-k8s.io", Resource: "sandboxes"}, patch.GetName(), errors.New("the object has been modified"))
-	})
-	if err := c.Suspend(ctx, Name(session), "7"); !errors.Is(err, ErrChanged) {
-		t.Errorf("Suspend with a stale version = %v, want ErrChanged", err)
-	}
-	if len(asked) != 1 || asked[0] != `{"metadata":{"resourceVersion":"7"},"spec":{"operatingMode":"Suspended"}}` {
-		t.Errorf("patches = %q", asked)
+// The runner of a sandbox is reached through the router, which the request
+// names the sandbox to.
+func TestRunnerThroughTheRouter(t *testing.T) {
+	c, _ := served(t)
+	runner := c.Runner("session-a")
+	if runner.address != "https://router.example.com" || runner.target != "aviary/session-a" {
+		t.Errorf("runner at %s for %s", runner.address, runner.target)
 	}
 }

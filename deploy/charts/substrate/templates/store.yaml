@@ -1,0 +1,174 @@
+{{- if not .Values.objectStorage.location }}
+{{- $volume := .Values.store.volume }}
+{{- if not (has $volume.accessMode (list "ReadWriteOnce" "ReadWriteMany")) }}
+{{- fail (printf "substrate.store.volume.accessMode: %q is neither ReadWriteOnce nor ReadWriteMany" $volume.accessMode) }}
+{{- end }}
+# The object storage without substrate.objectStorage.location: an S3 gateway
+# that keeps the object <key> of the bucket aviary as the file
+# buckets/aviary/<key> of its volume, and what it knows of an object besides
+# its bytes in files of its own. The gateways keep nothing else, so any of
+# them serves any request.
+{{- if not $volume.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: substrate-store
+  annotations:
+    # Uninstalling the chart keeps the snapshots and the files of messages,
+    # as it keeps the sessions that they belong to.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [{{ $volume.accessMode | quote }}]
+  {{- with $volume.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $volume.size | quote }}
+---
+{{- end }}
+{{- range list .Release.Namespace "ate-system" | uniq }}
+# Only the API server, atelet and the Supervisors reach the store, which the
+# policy below enforces, so its key is not kept secret from them.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: substrate-store
+  namespace: {{ . }}
+stringData:
+  accessKeyId: substrate
+  secretAccessKey: substrate-store
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: substrate-store
+spec:
+  replicas: {{ .Values.store.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: substrate-store
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: substrate-store
+    spec:
+      automountServiceAccountToken: false
+      {{- if eq $volume.accessMode "ReadWriteOnce" }}
+      # One node mounts the volume, so the gateways run on that node together.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: substrate-store
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # The group that a volume of a disk is given to, so that the gateway
+        # can write it.
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: versitygw
+          image: {{ .Values.store.image }}
+          env:
+            - name: ROOT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: substrate-store
+                  key: accessKeyId
+            - name: ROOT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: substrate-store
+                  key: secretAccessKey
+            - name: VGW_BACKEND
+              value: posix
+            - name: VGW_BACKEND_ARG
+              value: /store/buckets
+            # In files, not in extended attributes, which not every volume
+            # takes.
+            - name: VGW_META_SIDECAR
+              value: /store/meta
+            - name: VGW_HEALTH
+              value: /health
+          ports:
+            - name: s3
+              containerPort: 7070
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: s3
+          {{- with .Values.store.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: store
+              mountPath: /store/buckets
+              subPath: buckets
+            - name: store
+              mountPath: /store/meta
+              subPath: meta
+            # A directory of the buckets is a bucket: the kubelet makes the
+            # directory of this mount before the gateway starts.
+            - name: store
+              mountPath: /store/bucket
+              subPath: buckets/aviary
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: store
+          persistentVolumeClaim:
+            claimName: {{ $volume.existingClaim | default "substrate-store" }}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: substrate-store
+spec:
+  selector:
+    app.kubernetes.io/name: substrate-store
+  ports:
+    - name: s3
+      port: 7070
+      targetPort: s3
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: substrate-store
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: substrate-store
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ate-system
+          podSelector:
+            matchExpressions:
+              - {key: app, operator: In, values: [ate-api-server, atelet]}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: aviary
+              app.kubernetes.io/component: supervisor
+      ports:
+        - {protocol: TCP, port: 7070}
+{{- end }}

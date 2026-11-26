@@ -16,8 +16,16 @@ fi
 # those of messages. A model that takes none refuses a prompt with a picture
 # and every prompt after it, so the model is asked first: if it refuses a
 # picture, OpenCode is told that it takes none, and tells the model of a
-# picture that it cannot be read.
-if [ "$(node /usr/local/lib/aviary/pictures.mjs)" = refused ]; then
-  export OPENCODE_CONFIG_CONTENT='{"provider": {"aviary": {"models": {"{env:AVIARY_LLM_MODEL}": {"modalities": {"input": ["text"], "output": ["text"]}}}}}}'
-fi
+# picture that it cannot be read. The provider's headers, an object in
+# AVIARY_LLM_HEADERS, go with every model request.
+AVIARY_PICTURES=$(node /usr/local/lib/aviary/pictures.mjs)
+export AVIARY_PICTURES
+OPENCODE_CONFIG_CONTENT=$(node --eval '
+  const aviary = {options: {headers: JSON.parse(process.env.AVIARY_LLM_HEADERS || "{}")}};
+  if (process.env.AVIARY_PICTURES === "refused") {
+    aviary.models = {[process.env.AVIARY_LLM_MODEL]: {modalities: {input: ["text"], output: ["text"]}}};
+  }
+  console.log(JSON.stringify({provider: {aviary}}));
+')
+export OPENCODE_CONFIG_CONTENT
 exec opencode acp

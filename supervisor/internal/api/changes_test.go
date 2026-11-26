@@ -26,7 +26,7 @@ func TestAStreamOfChangesEndsByItself(t *testing.T) {
 	t.Cleanup(func() { streamLife = life })
 	ctx, stop := context.WithCancel(context.Background())
 	t.Cleanup(stop)
-	server := httptest.NewServer(New(ctx, memorystore.New(), events.New(memorylog.New()), nil, nil, nil, Callers{}, nil))
+	server := httptest.NewServer(New(ctx, memorystore.New(), events.New(memorylog.New()), nil, nil, nil, Callers{}, http.DefaultClient))
 	t.Cleanup(server.Close)
 	created, err := http.Post(server.URL+"/v1/projects", "application/json", strings.NewReader(`{"slug": "a-project"}`))
 	if err != nil {

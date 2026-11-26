@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
 
 	"aviary/supervisor/events"
 	"aviary/supervisor/internal/driver"
+	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/store"
 )
 
@@ -45,8 +47,8 @@ func TestTurn(t *testing.T) {
 		t.Errorf("accepted turn = %+v", accepted)
 	}
 	runner := aviary.given(accepted.ID)
-	if image := aviary.service.Made()[runner.Sandbox].Pod.Harness.Image; image != "registry.example.com/harness-codex:1.0" {
-		t.Errorf("sandbox image = %s, want the codex harness", image)
+	if harness := aviary.made(runner.Sandbox).Harness; harness != "codex" {
+		t.Errorf("sandbox harness = %s, want codex", harness)
 	}
 	if runner.Text != "hello" || runner.Instructions != "Be brief." || runner.Approval != "" {
 		t.Errorf("runner turn = %+v", runner.Turn)
@@ -54,26 +56,16 @@ func TestTurn(t *testing.T) {
 	if state := s.turn(accepted.ID).State; state != "running" {
 		t.Errorf("turn state = %s, want running", state)
 	}
-	// While a turn runs, the session token is accepted for model and forward
-	// proxy requests, which are attributed to the turn.
-	token := aviary.token(runner.Sandbox)
-	for _, forward := range []bool{false, true} {
-		origin := s.origin(token, forward)
-		if origin["turn"] != accepted.ID || origin["session"] != session || origin["agent"] == "" || origin["project"] == "" {
-			t.Errorf("origin of the running turn's token = %v", origin)
-		}
-		// Without an identity provider, the message has no sender.
-		_, user := origin["user"]
-		if _, subject := origin["subject"]; user || subject {
-			t.Errorf("origin has a sender without an identity provider: %v", origin)
-		}
-		// Only model requests name a provider.
-		if _, provider := origin["provider"]; provider == forward {
-			t.Errorf("forward %t: provider = %q", forward, origin["provider"])
-		}
+	// While a turn runs, the gateway gets the secrets of its provider for the
+	// session's sandbox, and for no other.
+	key := aviary.made(runner.Sandbox).Egress.Secrets[0].URI
+	if got, code, why := s.fetch(runner.Sandbox, key); code != codes.OK || got != "sk-a-key" {
+		t.Errorf("the key of the running turn's provider = %q, refused with %v %q", got, code, why)
 	}
-	if origin := s.origin("another-token", false); origin != nil {
-		t.Errorf("origin of an unknown token = %v, want nil", origin)
+	for _, other := range []string{sandbox.Name(uuid.New()), "another-actor"} {
+		if _, code, why := s.fetch(other, key); code != codes.PermissionDenied {
+			t.Errorf("the key for the sandbox %s: refused with %v %q, want PermissionDenied", other, code, why)
+		}
 	}
 
 	runner.report(started("harness-session-1"))
@@ -122,8 +114,8 @@ func TestTurn(t *testing.T) {
 		said[1]["type"] != "tool_call" || said[1]["title"] != "ls" || said[1]["status"] != "completed" || said[1]["output"] != "a.txt" {
 		t.Errorf("turn items = %v", said)
 	}
-	if origin := s.origin(token, true); origin != nil {
-		t.Errorf("origin of an ended turn's token = %v, want nil", origin)
+	if _, code, why := s.fetch(runner.Sandbox, key); code != codes.PermissionDenied || why != "no turn runs in the session" {
+		t.Errorf("the key after the turn: refused with %v %q", code, why)
 	}
 	// The title is the client's to set: the session keeps its own.
 	var kept struct{ Title string }
@@ -207,11 +199,13 @@ func positions(t *testing.T, events []event) []int {
 	return positions
 }
 
-// Turns beyond the concurrency limit are queued in order, and are told their
-// position whenever it changes.
+// Turns that find no worker with room are queued in order, and are told
+// their position whenever it changes. A turn that ends leaves a sandbox that
+// is put to sleep to make room for the next.
 func TestQueue(t *testing.T) {
 	t.Parallel()
-	aviary := install(t, func(config *driver.Config) { config.MaxConcurrentTurns = 1 })
+	aviary := install(t)
+	aviary.service.Room(1)
 	s := aviary.supervisor()
 	// told returns the distinct positions that a turn was told.
 	told := func(events []event) []int { return slices.Compact(positions(t, events)) }
@@ -224,7 +218,7 @@ func TestQueue(t *testing.T) {
 	second, third, fourth := s.send(s.session(), "two"), s.send(s.session(), "three"), s.send(s.session(), "four")
 	for _, waiting := range []turn{second, third, fourth} {
 		if state := s.turn(waiting.ID).State; state != "queued" {
-			t.Errorf("turn beyond the limit is %s, want queued", state)
+			t.Errorf("turn without room is %s, want queued", state)
 		}
 	}
 
@@ -272,14 +266,58 @@ func TestQueue(t *testing.T) {
 	}
 }
 
+// When no worker has room for the sandbox of a queued turn, the sandbox that
+// has been idle the longest is put to sleep to make room. A sandbox whose turn
+// runs is not, and the queued turn waits until a turn ends.
+func TestIdleSandboxesMakeRoom(t *testing.T) {
+	t.Parallel()
+	aviary := install(t)
+	aviary.service.Room(2)
+	s := aviary.supervisor()
+	// begin sends text to the session and returns the runner that has it.
+	begin := func(session, text string) *runner {
+		t.Helper()
+		r := aviary.given(s.send(session, text).ID)
+		r.report(started("harness-session"))
+		return r
+	}
+	states := func(when string, expected map[*runner]sandbox.State) {
+		t.Helper()
+		for r, state := range expected {
+			if seen := aviary.service.State(r.Sandbox); seen != state {
+				t.Errorf("%s: sandbox of turn %q is %s, want %s", when, r.Text, seen, state)
+			}
+		}
+	}
+
+	older, newer, busy := s.session(), s.session(), s.session()
+	first := begin(older, "first")
+	first.report(finished("end_turn", nil))
+	second := begin(newer, "second")
+	second.report(finished("end_turn", nil))
+	running := begin(busy, "running")
+	states("a third session needs room", map[*runner]sandbox.State{first: sandbox.Asleep, second: sandbox.Running, running: sandbox.Running})
+
+	again := begin(older, "again")
+	states("the first session needs room again", map[*runner]sandbox.State{second: sandbox.Asleep, running: sandbox.Running, again: sandbox.Running})
+
+	waiting := s.send(newer, "waiting")
+	if state := s.turn(waiting.ID).State; state != "queued" {
+		t.Errorf("turn while every awake sandbox runs a turn is %s, want queued", state)
+	}
+	running.report(finished("end_turn", nil))
+	last := aviary.given(waiting.ID)
+	states("a turn ended", map[*runner]sandbox.State{running: sandbox.Asleep, again: sandbox.Running, last: sandbox.Running})
+}
+
 // The queue is limited in length and in waiting time.
 func TestQueueLimits(t *testing.T) {
 	t.Parallel()
 	aviary := install(t, func(config *driver.Config) {
-		config.MaxConcurrentTurns = 1
 		config.MaxQueuedTurns = 1
 		config.MaxQueueWait = time.Second
 	})
+	aviary.service.Room(1)
 	s := aviary.supervisor()
 
 	running := s.send(s.session(), "one")
