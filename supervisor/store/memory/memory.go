@@ -56,7 +56,8 @@ type session struct {
 	// mcp are the MCP servers that the session turned on or off where it
 	// differs from its agent.
 	mcp map[uuid.UUID]bool
-	// attachments is whether the depot may have attachments of the session.
+	// attachments is whether the object storage may have attachments of the
+	// session.
 	attachments bool
 }
 

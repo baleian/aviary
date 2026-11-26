@@ -48,11 +48,11 @@ func TestSubstrate(t *testing.T) {
 		registryReplacement, credentialProvider                             bool
 	}{
 		// The store of the chart.
-		{values: "default", registry: "ghcr.io/agent-substrate/substrate", location: "s3://snapshots/", upload: "5m", detach: "30m",
+		{values: "default", registry: "ghcr.io/agent-substrate/substrate", location: "s3://aviary/", upload: "5m", detach: "30m",
 			database: "substrate-database", storageSecret: "substrate-store",
 			storage: map[string]string{"AWS_REGION": "us-east-1", "AWS_ENDPOINT_URL": "http://substrate-store.aviary-system.svc:7070", "AWS_S3_USE_PATH_STYLE": "true",
 				"AWS_ACCESS_KEY_ID": "secret substrate-store accessKeyId", "AWS_SECRET_ACCESS_KEY": "secret substrate-store secretAccessKey"}},
-		{values: "substrate", registry: "mirror.example.com/substrate", location: "s3://snapshots/aviary/", upload: "1m", detach: "2h",
+		{values: "substrate", registry: "mirror.example.com/substrate", location: "s3://bucket/aviary/", upload: "1m", detach: "2h",
 			database: "substrate-database", storageSecret: "object-storage",
 			storage: map[string]string{"AWS_REGION": "eu-west-1", "AWS_ENDPOINT_URL": "http://s3.example.com:9000", "AWS_S3_USE_PATH_STYLE": "true",
 				"AWS_ACCESS_KEY_ID": "secret object-storage accessKeyId", "AWS_SECRET_ACCESS_KEY": "secret object-storage secretAccessKey"},
@@ -112,6 +112,17 @@ func TestSubstrate(t *testing.T) {
 			}
 			if _, set := storage["AWS_ACCESS_KEY_ID"]; set != (test.storageSecret != "") {
 				t.Errorf("%s: %v object storage env = %v", test.values, at(workload, "metadata", "name"), storage)
+			}
+		}
+		// The Supervisors keep the files that messages carry in the same
+		// object storage.
+		supervisor := variables(container(find(objects, "Deployment", "aviary-supervisor"), "supervisor"))
+		if supervisor["AVIARY_OBJECT_STORAGE"] != test.location {
+			t.Errorf("%s: Supervisor object storage = %q, want %s", test.values, supervisor["AVIARY_OBJECT_STORAGE"], test.location)
+		}
+		for name, want := range test.storage {
+			if supervisor[name] != want {
+				t.Errorf("%s: Supervisor object storage %s = %q, want %q", test.values, name, supervisor[name], want)
 			}
 		}
 		database := variables(container(api, "ate-api-server"))
@@ -189,16 +200,17 @@ func TestSubstrateSettings(t *testing.T) {
 	}
 }
 
-// Without a location of the snapshots, the store of the chart keeps them in
-// a volume, which it makes or which the values name, and only the API
-// server and atelet reach it.
+// Without a location of the object storage, the store of the chart keeps the
+// snapshots and the files of messages in a volume, which it makes or which
+// the values name, and only the API server, atelet and the Supervisors reach
+// it.
 func TestSubstrateStore(t *testing.T) {
 	for _, test := range []struct {
 		values, claim  string
 		made, together bool
 	}{
 		{values: "default", claim: "substrate-store", made: true, together: true},
-		{values: "claim", claim: "snapshots"},
+		{values: "claim", claim: "objects"},
 	} {
 		objects := chart(t, test.values)
 		store := find(objects, "Deployment", "substrate-store")
@@ -225,10 +237,12 @@ func TestSubstrateStore(t *testing.T) {
 		if !reflect.DeepEqual(namespaces, []any{"aviary-system", "ate-system"}) {
 			t.Errorf("%s: store key in the namespaces %v, want the release's and ate-system", test.values, namespaces)
 		}
-		from := at(find(objects, "NetworkPolicy", "substrate-store"), "spec", "ingress", 0, "from", 0)
-		if at(from, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "ate-system" ||
-			!reflect.DeepEqual(at(from, "podSelector", "matchExpressions", 0, "values"), []any{"ate-api-server", "atelet"}) {
-			t.Errorf("%s: store reached from %v, want the API server and atelet", test.values, from)
+		from := at(find(objects, "NetworkPolicy", "substrate-store"), "spec", "ingress", 0, "from")
+		if count(from) != 2 || at(from, 0, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "ate-system" ||
+			!reflect.DeepEqual(at(from, 0, "podSelector", "matchExpressions", 0, "values"), []any{"ate-api-server", "atelet"}) ||
+			at(from, 1, "namespaceSelector") != nil ||
+			!reflect.DeepEqual(at(from, 1, "podSelector", "matchLabels"), at(find(objects, "Deployment", "aviary-supervisor"), "spec", "selector", "matchLabels")) {
+			t.Errorf("%s: store reached from %v, want the API server, atelet and the Supervisors", test.values, from)
 		}
 	}
 

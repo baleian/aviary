@@ -1,6 +1,6 @@
 ---
 title: Metrics
-description: The Prometheus metrics of the Supervisors, the state of the installation, the depots and the Egress Proxies.
+description: The Prometheus metrics of the Supervisors and of the state of the installation.
 ---
 
 A Supervisor serves Prometheus metrics on port 9092 at `/metrics`. The port
@@ -48,21 +48,9 @@ false leaves the pod out.
 | `aviary_turns_oldest_age_seconds` | Age of the oldest turn of each `harness` and `state`: the time since its message for a queued turn, and since it left the queue for the others. 0 without such a turn. An age well beyond the limit of its state, `runtime.maxQueueWaitSeconds`, `runtime.maxStartupSeconds` or `runtime.maxTurnSeconds`, means that no Supervisor is ending the turn. |
 | `aviary_approvals_waiting` | Approval requests that wait for a person's answer, by `harness`. A turn can have several. |
 
-## Depot
-
-A depot serves its metrics on the same port and path. Each depot reports its
-own requests, and all of them report the same of the volume, which they
-share:
-
-| Metric | Description |
-| --- | --- |
-| `aviary_depot_request_duration_seconds` | Time that a depot took to serve a request for an object, by `operation`: `write`, `read` or `delete`, and by `outcome`: `done`; `refused`, if the request could not be served as it was made, as for a key that has no object; or `failed`, if the depot or its volume failed it. |
-| `aviary_depot_object_bytes_total` | Bytes of the objects that were written and read, by `operation`. |
-| `aviary_depot_volume_capacity_bytes`, `aviary_depot_volume_available_bytes` | Size of the volume that holds the objects, and how much of it is free. A scrape fails while the volume cannot be read. |
-
 ## Dashboard
 
 The Grafana dashboard in `deploy/grafana/aviary.json` charts the metrics of
-the Supervisors, of the state and of the depots, and can be imported into any
+the Supervisors and of the state, and can be imported into any
 Grafana with a Prometheus data source. `deploy/grafana/substrate.json`
 charts those of Agent Substrate.

@@ -1,10 +1,15 @@
 {{- if and (not .Values.objectStorage.secret) .Values.objectStorage.accessKeyId }}
+{{- range list .Release.Namespace "ate-system" | uniq }}
+# For Substrate in ate-system, and for the Supervisors, which keep the files
+# that messages carry in the same object storage.
 apiVersion: v1
 kind: Secret
 metadata:
   name: substrate-object-storage
-  namespace: ate-system
+  namespace: {{ . }}
 stringData:
-  accessKeyId: {{ .Values.objectStorage.accessKeyId | quote }}
-  secretAccessKey: {{ required "substrate.objectStorage.secretAccessKey is required with substrate.objectStorage.accessKeyId" .Values.objectStorage.secretAccessKey | quote }}
+  accessKeyId: {{ $.Values.objectStorage.accessKeyId | quote }}
+  secretAccessKey: {{ required "substrate.objectStorage.secretAccessKey is required with substrate.objectStorage.accessKeyId" $.Values.objectStorage.secretAccessKey | quote }}
+---
+{{- end }}
 {{- end }}

@@ -251,8 +251,8 @@ func (suite suite) testUnsentAttachments(t *testing.T) {
 	}
 }
 
-// A session whose attachments the depot may have is listed once it has
-// ended, until the depot has none of them.
+// A session whose attachments the object storage may have is listed once it
+// has ended, until the object storage has none of them.
 func (suite suite) testLeftAttachments(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -274,7 +274,8 @@ func (suite suite) testLeftAttachments(t *testing.T) {
 	if left(soon) {
 		t.Error("LeftAttachments lists a session that has not ended")
 	}
-	// The depot keeps the attachments of a session that has not ended.
+	// The object storage keeps the attachments of a session that has not
+	// ended.
 	if err := st.ForgetAttachments(ctx, expected); err != nil {
 		t.Fatal(err)
 	}

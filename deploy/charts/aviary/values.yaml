@@ -3,6 +3,10 @@ supervisor:
   # Any replica can serve any request.
   replicas: 1
   podAnnotations: {}
+  # Annotations of the service account of the Supervisors, which keep the
+  # files that messages carry in the object storage: for example, the role
+  # that IRSA gives them.
+  serviceAccountAnnotations: {}
   resources:
     requests: {cpu: 100m, memory: 128Mi}
     # Leaves room for the output of long turns, which is held in memory
@@ -78,43 +82,21 @@ stateMetrics:
     requests: {cpu: 10m, memory: 64Mi}
     limits: {memory: 128Mi}
 
-# The depot, which keeps the files that messages carry as objects in a
-# volume. Its pods run the image of the Supervisor, and only the Supervisors
-# can connect to them.
-depot:
-  # Any replica can serve any request.
-  replicas: 1
-  podAnnotations: {}
-  resources:
-    requests: {cpu: 50m, memory: 64Mi}
-    limits: {memory: 512Mi}
-  # The volume that holds the objects. Every replica mounts it, and
-  # uninstalling the chart keeps it.
-  volume:
-    size: 30Gi
-    # Empty uses the default storage class of the cluster.
-    storageClass: ""
-    # ReadWriteOnce is a volume that one node mounts, such as a disk: the
-    # replicas run on that node together. ReadWriteMany is a volume that
-    # many nodes mount at once, such as a network file system or a mounted
-    # bucket: the replicas run on any node.
-    accessMode: ReadWriteOnce
-    # A claim of your own in the namespace of the release, instead of the
-    # one that the chart makes. accessMode says how it can be mounted.
-    existingClaim: ""
-
 # Agent Substrate, which runs the sandboxes. The chart installs it from the
 # manifests of its release, with the values under substrate that
 # deploy/charts/substrate/values.yaml describes, of which substrate.database
-# is required. Its
-# installation names the Supervisors as the credential provider aviary.io,
-# at aviary-supervisor.<namespace of the release>.svc:50051, lets them manage
+# is required. The Supervisors keep the files that messages carry in its
+# object storage, under attachments/. Its installation names the
+# Supervisors as the credential provider aviary.io, at
+# aviary-supervisor.<namespace of the release>.svc:50051, lets them manage
 # the actors of the atespace and read the workers, and lets their router
 # requests in. The namespace of the release has the label
 # ate.dev/api-access=true, so that the Supervisors reach the API.
 substrate:
   # Whether the chart installs Substrate. Without it, Substrate is installed
-  # in the cluster for Aviary as above.
+  # in the cluster for Aviary as above, and messages carry files only if
+  # substrate.objectStorage names the location of its object storage, with
+  # substrate.objectStorage.secret as its key if it needs one.
   install: true
   # The namespace of the control plane of Substrate.
   namespace: ate-system

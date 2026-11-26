@@ -38,8 +38,7 @@ Kubernetes 1.37.
 `make deploy` installs [Agent Substrate](../operate/installation.md#agent-substrate)
 with the chart, from the manifests of the release, which `make` takes from
 the source of the release and renders with the patches in
-`deploy/charts/substrate/kustomize`, with the store of its snapshots in a
-volume. `make substrate` installs what Substrate needs in the cluster: a
+`deploy/charts/substrate/kustomize`, with its object storage in a volume. `make substrate` installs what Substrate needs in the cluster: a
 PostgreSQL of its own, with the users and the schema that the script of the
 release makes, and a registry. `make images` puts the harness images in the
 registry, and names them by their digests for `make deploy` in
@@ -59,7 +58,6 @@ The cluster can have more:
 | `make web` | The [web UI](../use/web-ui.md), built from `web/`, at http://localhost:8082. |
 | `make keycloak` | Keycloak as an identity provider: see [Authentication](../operate/authentication.md#try-it-locally). |
 | `make openbao`, `make vault` | A secret store: see [Secret stores](../use/secret-stores.md#try-it-locally). |
-| `make versitygw` | An S3 gateway, with its bucket as a volume for the depot: see [Sessions and storage](../operate/storage.md#try-a-bucket-locally). |
 | `make grafana` | [Prometheus](https://prometheus.io), which scrapes the metrics of Aviary, and [Grafana](https://grafana.com) with the Aviary dashboard, at http://localhost:3000. |
 | `make headlamp` | [Headlamp](https://headlamp.dev), a web UI for the resources, logs and events of the cluster, at http://localhost:4466. |
 
@@ -74,9 +72,9 @@ DATA=/home/me/aviary-data
 ```
 
 `make cluster-up` then makes a cluster whose nodes keep their volumes in the
-directory, under `volumes`: the database, the objects of the depot, and those
-of Substrate, with the snapshots of the sandboxes, each in a directory named
-after its claim.
+directory, under `volumes`: the database, and the object storage, with the
+snapshots of the sandboxes and the files of messages, each in a directory
+named after its claim.
 `make postgres`, `make mysql` and `make deploy` keep the passwords of the
 database and the encryption key, which that data depends on, under
 `secrets`. A cluster that is made with the directory again has the projects,

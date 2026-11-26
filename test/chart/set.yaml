@@ -21,17 +21,14 @@ supervisor:
   allowedOrigins: [https://aviary.example.com]
 stateMetrics:
   enabled: false
-depot:
-  replicas: 3
-  volume:
-    size: 100Gi
-    storageClass: shared
-    accessMode: ReadWriteMany
 # Substrate installed apart from Aviary.
 substrate:
   install: false
   namespace: substrate-system
   atespace: team-a
+  objectStorage:
+    location: s3://bucket/aviary/
+    secret: object-storage
 workers:
   replicas: 5
   image: registry.example.com/ateworker-gvisor@sha256:1111111111111111111111111111111111111111111111111111111111111111

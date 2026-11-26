@@ -26,6 +26,7 @@ file of your own sets them: with `--values` when the chart is
 | `supervisor.secretStores.cacheSeconds` | Seconds that a value read from a secret store is cached. Default 60. 0 reads the store whenever the egress gateway asks for the secret. |
 | `supervisor.auth.provider` | The identity provider that authenticates API requests: its `kind`, and `settings` for a provider of that kind. If `kind` is empty, the default, requests are not authenticated. See [Authentication](../operate/authentication.md). |
 | `supervisor.auth.admins`, `.users` | Groups of the identity provider whose members administer the installation, and groups whose members may use the API besides the administrators. Both are empty by default: nobody is an administrator, and every authenticated user may use the API. |
+| `supervisor.serviceAccountAnnotations` | Annotations of the service account of the Supervisors, which keep the files that messages carry in the [object storage](../operate/storage.md#the-object-storage), such as the role that IRSA gives them. |
 | `supervisor.allowedOrigins` | Origins whose pages may call the API from a browser, such as `https://aviary.example.com`. `*` is every origin. Empty by default: a browser then lets only pages at the address of the API call it. |
 
 ## State metrics
@@ -34,29 +35,20 @@ file of your own sets them: with `--values` when the chart is
 | --- | --- |
 | `stateMetrics.enabled`, `.resources` | Whether the installation serves its [state metrics](./metrics.md), and the resource requests and limits of the pod that serves them. Default true. |
 
-## Depot
-
-| Value | Description |
-| --- | --- |
-| `depot.replicas`, `.resources` | Number of [depot](../operate/storage.md#the-depot) replicas, and the resource requests and limits of their pods. Any replica can serve any request. Default 1. |
-| `depot.volume.size`, `.storageClass` | The volume that holds the objects of the depot. Default 30Gi, in the default storage class of the cluster. Storage that has no limit of its own, such as a network file system, does not enforce the size. |
-| `depot.volume.accessMode` | `ReadWriteOnce`, the default, for a volume that one node mounts: the depots run on that node together. `ReadWriteMany` for a volume that many nodes mount at once: the depots run on any node. |
-| `depot.volume.existingClaim` | A claim of your own in the release namespace that holds the objects, instead of the one that the chart makes. `depot.volume.accessMode` says how it can be mounted. |
-
 ## Agent Substrate
 
 | Value | Description |
 | --- | --- |
-| `substrate.install` | Whether the chart installs [Agent Substrate](../operate/installation.md#agent-substrate) in `ate-system`. Default true. Without it, the cluster has Substrate installed for Aviary. |
+| `substrate.install` | Whether the chart installs [Agent Substrate](../operate/installation.md#agent-substrate) in `ate-system`. Default true. Without it, the cluster has Substrate installed for Aviary, and messages carry files only if `substrate.objectStorage.location` names the object storage, with `substrate.objectStorage.secret` as its key if it needs one. |
 | `substrate.namespace` | The namespace of the control plane of Substrate, whose API, router and egress gateway the Supervisors reach. Default `ate-system`. |
 | `substrate.atespace` | The atespace that holds the sandboxes and their templates. Default `aviary`. |
-| `substrate.snapshots.location` | The S3 location of the snapshots of sleeping sandboxes, such as `s3://my-bucket/` or `s3://my-bucket/prefix/`. Without it, the chart's store keeps them in a volume. See [Sessions and storage](../operate/storage.md#the-store). |
-| `substrate.snapshots.uploadDelay` | How long after it is taken a snapshot is uploaded to the store. Default `5m`. |
-| `substrate.snapshots.detachDelay` | How long after it is taken a snapshot leaves the worker that took it. Until then, the sandbox wakes on that worker if it has room, and afterwards from the store. Default `30m`. |
-| `substrate.store.volume.size`, `.storageClass`, `.accessMode`, `.existingClaim` | The volume of the store of the snapshots without `substrate.snapshots.location`, in the namespace of the release, as for the depot: by default 30Gi of the cluster's default storage class, `ReadWriteOnce`. With `ReadWriteMany` the gateways of the store run on any node. Uninstalling the chart keeps the claim that it made. |
+| `substrate.objectStorage.location` | The S3 location of the object storage, which keeps the snapshots of sleeping sandboxes and the files that messages carry, such as `s3://my-bucket/` or `s3://my-bucket/prefix/`. Without it, the chart's store keeps them in a volume. See [Sessions and storage](../operate/storage.md#the-object-storage). |
+| `substrate.snapshots.uploadDelay` | How long after it is taken a snapshot is uploaded to the object storage. Default `5m`. |
+| `substrate.snapshots.detachDelay` | How long after it is taken a snapshot leaves the worker that took it. Until then, the sandbox wakes on that worker if it has room, and afterwards from the object storage. Default `30m`. |
+| `substrate.store.volume.size`, `.storageClass`, `.accessMode`, `.existingClaim` | The volume of the object storage without `substrate.objectStorage.location`, in the namespace of the release: by default 30Gi of the cluster's default storage class, `ReadWriteOnce`, which one node mounts, and the gateways of the store run on that node together. With `ReadWriteMany` they run on any node. `existingClaim` is a claim of your own instead of the one that the chart makes, which uninstalling the chart keeps. Storage that has no limit of its own, such as a network file system, does not enforce the size. |
 | `substrate.store.replicas`, `.resources`, `.image` | The gateways of the store: their number, default 1, their resource requests and limits, and their image. |
-| `substrate.objectStorage.region`, `.endpoint`, `.pathStyle` | The S3 API of `substrate.snapshots.location`: its region, default `us-east-1`; the endpoint of a store other than Amazon S3; and whether buckets are in the path, as many such stores need. |
-| `substrate.objectStorage.secret` | A Secret in `ate-system` with an access key for the location, under `accessKeyId` and `secretAccessKey`. Without it the chart makes one of `substrate.objectStorage.accessKeyId` and `.secretAccessKey`, and without those the API server and atelet use the identity of their service accounts. |
+| `substrate.objectStorage.region`, `.endpoint`, `.pathStyle` | The S3 API of `substrate.objectStorage.location`: its region, default `us-east-1`; the endpoint of a store other than Amazon S3; and whether buckets are in the path, as many such stores need. |
+| `substrate.objectStorage.secret` | A Secret with an access key for the location, under `accessKeyId` and `secretAccessKey`, in `ate-system` and in the namespace of the release. Without it the chart makes those of `substrate.objectStorage.accessKeyId` and `.secretAccessKey`, and without those the API server, atelet and the Supervisors use the identity of their service accounts. |
 | `substrate.serviceAccountAnnotations` | Annotations of the service accounts of the API server and of atelet, which move the snapshots, such as the role that IRSA gives them. |
 | `substrate.database.secret` | A Secret in `ate-system` with the connection strings of the owner user and of the read-write user of Substrate's PostgreSQL database, under `owner` and `readWrite`. Without it the chart makes one of `substrate.database.owner` and `.readWrite`. `substrate.database.schema`, `.ownerRole` and `.readWriteRole` name the schema and the roles that the users have, by default those that the script of the release makes. |
 | `substrate.kubernetesIssuer` | The issuer of the service account tokens of the cluster, against which Substrate checks the tokens of its callers. Default that of a cluster made with kubeadm, `https://kubernetes.default.svc.cluster.local`. |

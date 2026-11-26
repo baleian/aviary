@@ -17,9 +17,10 @@ your own. Aviary has only run on a local cluster so far: see
 - **What [Agent Substrate](#agent-substrate) needs**, which the chart
   installs to run the sandboxes: a PostgreSQL database, and nodes and a
   Kubernetes that it runs on.
-- **Storage for volumes**: one for the depot, and one for the snapshots of
-  sleeping sandboxes unless they are kept in an S3 bucket: see
-  [Sessions and storage](./storage.md).
+- **Storage for a volume** of the object storage, which keeps the
+  snapshots of sleeping sandboxes and the files that messages carry, unless
+  they are kept in an S3 bucket: see
+  [Sessions and storage](./storage.md#the-object-storage).
 
 ## Agent Substrate
 
@@ -36,13 +37,15 @@ needs:
   and the schema, with `psql` variables for their names and passwords. The
   chart takes their connection strings from a Secret in `ate-system`, under
   the keys `owner` and `readWrite`.
-- **A store for the snapshots** of sleeping sandboxes: see
-  [Sessions and storage](./storage.md#the-snapshot). By default the chart
-  keeps them in a volume, through an S3 gateway of its own. With
-  `substrate.snapshots.location` they are kept in an S3 bucket, which the API
-  server and the agent of Substrate on the nodes, atelet, reach with an
-  access key, or with the identity of their service accounts, which
-  `substrate.serviceAccountAnnotations` can give a role.
+- **An object storage** for the snapshots of sleeping sandboxes, which
+  keeps the files that messages carry as well: see
+  [Sessions and storage](./storage.md#the-object-storage). By default the
+  chart keeps them in a volume, through an S3 gateway of its own. With
+  `substrate.objectStorage.location` they are kept in an S3 bucket, which
+  the API server and the agent of Substrate on the nodes, atelet, and the
+  Supervisors reach with an access key, or with the identity of their
+  service accounts, which `substrate.serviceAccountAnnotations` and
+  `supervisor.serviceAccountAnnotations` can give a role.
 - **The issuer of the service account tokens** of the cluster,
   `substrate.kubernetesIssuer`, against which its API checks the tokens of
   the Supervisors. On EKS, it is the OpenID Connect issuer of the cluster.
@@ -123,9 +126,10 @@ The names and the keys are values of the chart: see
 
 Substrate reads its own in `ate-system`: the connection strings of its
 database, in `substrate.database.secret`, and the access key of a bucket of
-`substrate.snapshots.location`, if it uses one, in
-`substrate.objectStorage.secret`. Without these names the chart makes the
-two Secrets of the strings and the key in its values.
+`substrate.objectStorage.location`, if it uses one, in
+`substrate.objectStorage.secret`, which the Supervisors read in the release
+namespace. Without these names the chart makes the Secrets of the strings
+and the key in its values.
 
 ## Installing
 

@@ -9,10 +9,10 @@ substrate:
     owner: postgresql://owner:p1@db.example.com/substrate
     readWrite: postgresql://readwrite:p2@db.example.com/substrate
   snapshots:
-    location: s3://snapshots/aviary/
     uploadDelay: 1m
     detachDelay: 2h
   objectStorage:
+    location: s3://bucket/aviary/
     region: eu-west-1
     endpoint: http://s3.example.com:9000
     pathStyle: true

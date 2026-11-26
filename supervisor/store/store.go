@@ -297,7 +297,8 @@ func McpServerHeaderPlace(id uuid.UUID, name string) string {
 }
 
 // Attachment is a file that a message to a session carries, or that was
-// uploaded for a message to carry. Its bytes are an object of the depot.
+// uploaded for a message to carry. Its bytes are an object in the object
+// storage.
 type Attachment struct {
 	ID        uuid.UUID `json:"id"`
 	SessionID uuid.UUID `json:"-"`
@@ -651,15 +652,15 @@ type Store interface {
 	// state without sandboxes may be absent from the map.
 	SandboxCounts(ctx context.Context) (map[string]int, error)
 
-	// ExpectAttachments records that the depot may have attachments of the
-	// session. It is called before the first is written there, so that none
-	// is left when the session ends. It returns ErrNotFound if there is no
+	// ExpectAttachments records that the object storage may have attachments
+	// of the session. It is called before the first is written there, so that
+	// none is left when the session ends. It returns ErrNotFound if there is no
 	// such session, and ErrSessionEnded if it has ended.
 	ExpectAttachments(ctx context.Context, sessionID uuid.UUID) error
 
 	// CreateAttachment records a file that was uploaded for a message of the
 	// attachment's session to carry, with the ID that it is given, since the
-	// file is in the depot under that ID. It returns ErrNotFound if there is
+	// file is in the object storage under that ID. It returns ErrNotFound if there is
 	// no such session, and ErrSessionEnded if it has ended.
 	CreateAttachment(ctx context.Context, attachment Attachment) (Attachment, error)
 
@@ -680,12 +681,12 @@ type Store interface {
 	DeleteAttachment(ctx context.Context, id uuid.UUID) (bool, error)
 
 	// LeftAttachments returns up to limit sessions that ended before before
-	// and whose attachments the depot may still have, in the order in which
-	// they ended.
+	// and whose attachments the object storage may still have, in the order
+	// in which they ended.
 	LeftAttachments(ctx context.Context, before time.Time, limit int) ([]uuid.UUID, error)
 
-	// ForgetAttachments records that the depot has no attachments of the
-	// session, which has ended.
+	// ForgetAttachments records that the object storage has no attachments
+	// of the session, which has ended.
 	ForgetAttachments(ctx context.Context, sessionID uuid.UUID) error
 
 	// EndSession ends the session, which then accepts no messages, and

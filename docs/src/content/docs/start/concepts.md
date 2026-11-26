@@ -78,6 +78,7 @@ See [Secret stores](../use/secret-stores.md).
   what the agent does.
 - The **workers** of Agent Substrate hold the sandboxes while they are
   awake, and its **egress gateway** is the only way out of a sandbox.
-- The **depot** keeps the files that messages carry.
+- The **object storage** keeps the snapshots of sleeping sandboxes and the
+  files that messages carry.
 
 [How it works](./how-it-works.md) shows them together.

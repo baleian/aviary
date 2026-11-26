@@ -105,7 +105,7 @@ Sends a message. Body: `{"text": "...", "attachments": ["..."]}`, where `attachm
 POST /v1/sessions/{id}/attachments?name=...
 ```
 
-Uploads a file for a message of the session to carry. The body is the file, `name` its name, and `Content-Type` what it is. Returns 201 with the attachment: `{"id": "...", "name": "...", "media_type": "...", "size": 0}`. The name is kept without its directories, control characters and leading dots. Besides admins, only the creator of the session may. Returns 413 `attachment_too_large` if the file is larger than `runtime.maxAttachmentBytes`, 507 `storage_full` if the [depot](../../operate/storage.md#the-depot) has no room for it, 403 `attachments_disabled` if the installation takes no attachments, and 409 if the session has ended. A file that no message carries within an hour is deleted.
+Uploads a file for a message of the session to carry. The body is the file, `name` its name, `Content-Type` what it is, and `Content-Length` its size. Returns 201 with the attachment: `{"id": "...", "name": "...", "media_type": "...", "size": 0}`. The name is kept without its directories, control characters and leading dots. Besides admins, only the creator of the session may. Returns 411 `length_required` without the size of the file, 413 `attachment_too_large` if the file is larger than `runtime.maxAttachmentBytes`, 507 `storage_full` if the [object storage](../../operate/storage.md#the-object-storage) has no room for it, 403 `attachments_disabled` if the installation takes no attachments, and 409 if the session has ended. A file that no message carries within an hour is deleted.
 
 ### Download a file
 

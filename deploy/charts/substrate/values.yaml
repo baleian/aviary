@@ -34,23 +34,42 @@ database:
   readWriteRole: substrate_readwrite
 
 # The snapshots of sleeping sandboxes. A worker keeps the snapshot that it
-# took, and uploads it to the location; a sandbox that wakes on another
-# worker, or after its snapshot has left its worker, wakes from the location.
+# took, and uploads it to the object storage; a sandbox that wakes on another
+# worker, or after its snapshot has left its worker, wakes from there.
 snapshots:
-  # The S3 location of the snapshots, such as s3://bucket/ or
-  # s3://bucket/prefix/. Empty: the store below keeps them.
-  location: ""
   # How long after it is taken a snapshot is uploaded.
   uploadDelay: 5m
   # How long after it is taken a snapshot leaves its worker. Until then, the
   # sandbox wakes on that worker if it has room.
   detachDelay: 30m
 
-# The store of the snapshots without snapshots.location, in the namespace of
-# the release: an S3 gateway that keeps each snapshot as files of its
-# volume, which can be any volume of the cluster, such as a disk, a
-# directory of the node or a network file system. Only the API server and
-# atelet reach it.
+# The object storage of the installation, which keeps the snapshots and the
+# files that messages carry, through its S3 API.
+objectStorage:
+  # Its location, such as s3://bucket/ or s3://bucket/prefix/. Empty: the
+  # store below.
+  location: ""
+  region: us-east-1
+  # The endpoint of a store other than Amazon S3, such as
+  # http://s3.example.com:9000.
+  endpoint: ""
+  # Whether to address buckets in the path rather than in the host name, as
+  # many stores other than Amazon S3 need.
+  pathStyle: false
+  # A Secret with an access key under the keys accessKeyId and
+  # secretAccessKey, in ate-system and in the namespace of the release.
+  # Empty: the chart makes those of the key below, and without one the API
+  # server, atelet and the Supervisors use the identity of their service
+  # accounts.
+  secret: ""
+  accessKeyId: ""
+  secretAccessKey: ""
+
+# The object storage without objectStorage.location, in the namespace of the
+# release: an S3 gateway that keeps each object as a file of its volume,
+# which can be any volume of the cluster, such as a disk, a directory of the
+# node or a network file system. Only the API server, atelet and the
+# Supervisors reach it.
 store:
   image: versity/versitygw:v1.11.0@sha256:8319a530d08d537426e2f855bae5280709795dc73a3f0c347973ef915d6343c5
   replicas: 1
@@ -66,23 +85,6 @@ store:
     # A claim of your own in the namespace of the release, instead of the
     # one that the chart makes. accessMode says how it can be mounted.
     existingClaim: ""
-
-# The S3 API of snapshots.location.
-objectStorage:
-  region: us-east-1
-  # The endpoint of a store other than Amazon S3, such as
-  # http://s3.example.com:9000.
-  endpoint: ""
-  # Whether to address buckets in the path rather than in the host name, as
-  # many stores other than Amazon S3 need.
-  pathStyle: false
-  # A Secret in ate-system with an access key, under the keys accessKeyId
-  # and secretAccessKey. Empty: the chart makes the Secret of the key below,
-  # and without one the API server and atelet use the identity of their
-  # service accounts.
-  secret: ""
-  accessKeyId: ""
-  secretAccessKey: ""
 
 # Annotations of the service accounts of the API server and of atelet, which
 # move the snapshots: for example, the role that IRSA gives them.

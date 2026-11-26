@@ -9,16 +9,18 @@ supervisor:
     allowedHosts:
       - openbao.aviary-data:8200
     cacheSeconds: 5
-depot:
-  replicas: 2
 substrate:
   atelet:
     localhostRegistry: kind-registry.aviary-data.svc.cluster.local:5000
   snapshots:
     # Short, so that a session that sleeps between two tests wakes from the
-    # store of the snapshots.
+    # object storage.
     uploadDelay: 5s
     detachDelay: 30s
+  # Two gateways share the volume of the object storage, and either serves
+  # any request.
+  store:
+    replicas: 2
 workers:
   replicas: 2
   resources:

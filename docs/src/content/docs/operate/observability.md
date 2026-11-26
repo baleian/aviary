@@ -5,8 +5,8 @@ description: Where the metrics, the logs and the records of an installation are.
 
 ## Metrics
 
-The Supervisors, the state of the installation and the depots serve
-Prometheus metrics, each pod on port 9092 at `/metrics`.
+The Supervisors and the state of the installation serve Prometheus
+metrics, each pod on port 9092 at `/metrics`.
 [Metrics](../reference/metrics.md) lists them. The components of Agent
 Substrate in `ate-system` serve metrics of their own at `/metrics`: the API
 servers, atelet and the router on their ports named `prometheus` or

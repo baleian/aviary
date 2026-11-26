@@ -97,8 +97,7 @@ spec:
               value: /var/run/substrate/podidentity/trust-bundle.pem
             - name: AVIARY_SUBSTRATE_EGRESS_GATEWAY
               value: spiffe://cluster.local/ns/{{ $substrate }}/sa/atenet-egress
-            - name: AVIARY_DEPOT_URL
-              value: http://aviary-depot.{{ .Release.Namespace }}:8080
+            {{- include "aviary.objectStorageEnv" . | nindent 12 }}
             - name: AVIARY_HARNESSES
               value: {{ .Values.runtime.harnesses | toJson | quote }}
             - name: AVIARY_MAX_CONCURRENT_TURNS

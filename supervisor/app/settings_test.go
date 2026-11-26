@@ -33,7 +33,7 @@ var settings = map[string]string{
 	substrateRouter:    "https://atenet-router.ate-system.svc.cluster.local:443",
 	routerName:         "atenet-router.ate-system.svc",
 	substrateIdentity:  "/var/run/secrets/substrate/identity.pem",
-	depotURL:           "http://aviary-depot.aviary-system:8080",
+	objectStorage:      "s3://aviary/",
 	harnesses: `{"opencode": {"image": "registry.example/opencode@sha256:0123",
 		"resources": {"limits": {"cpu": "2", "memory": "4Gi"}}}}`,
 	maxConcurrentTurns: "50",
@@ -59,7 +59,7 @@ func set(t *testing.T, changed map[string]string) {
 func TestDriverConfig(t *testing.T) {
 	t.Run("valid settings", func(t *testing.T) {
 		set(t, nil)
-		config, err := driverConfig()
+		config, err := driverConfig(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,8 +75,8 @@ func TestDriverConfig(t *testing.T) {
 		if hosts := []sandbox.Host{{TLS: true, Name: "*", Port: 443}, {Name: "pypi.example.com", Port: 80}}; !slices.Equal(config.Hosts, hosts) {
 			t.Errorf("Hosts = %+v, want %+v", config.Hosts, hosts)
 		}
-		if config.Depot == nil || config.Localhost != "" {
-			t.Errorf("unexpected depot or local host in config %+v", config)
+		if config.Objects == nil || config.Localhost != "" {
+			t.Errorf("unexpected object storage or local host in config %+v", config)
 		}
 		if config.MaxAttachmentBytes != 64<<20 || config.MaxAttachments != 10 {
 			t.Errorf("unexpected limits of attachments in config %+v", config)
@@ -86,14 +86,14 @@ func TestDriverConfig(t *testing.T) {
 	t.Run("optional limits disabled", func(t *testing.T) {
 		set(t, map[string]string{
 			maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", maxAttachments: "0",
-			sandboxIdle: "0", sandboxRetention: "1", sandboxHosts: "[]",
+			sandboxIdle: "0", sandboxRetention: "1", sandboxHosts: "[]", objectStorage: "",
 		})
-		config, err := driverConfig()
+		config, err := driverConfig(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.MaxAttachments != 0 ||
-			config.Idle != 0 || config.Retention != time.Second || len(config.Hosts) != 0 {
+			config.Idle != 0 || config.Retention != time.Second || len(config.Hosts) != 0 || config.Objects != nil {
 			t.Errorf("unexpected limits in config %+v", config)
 		}
 	})
@@ -104,7 +104,7 @@ func TestDriverConfig(t *testing.T) {
 		{harnesses, `{"opencode": {"image": "registry.example/opencode@sha256:0123", "resources": {"limits": {"cpu": "lots"}}}}`},
 		{sandboxHosts, ""}, {sandboxHosts, `"https://*"`}, {sandboxHosts, `["*"]`}, {sandboxHosts, `["https://10.0.0.1"]`},
 		{sandboxIdle, ""}, {sandboxIdle, "-1"}, {sandboxIdle, "5m"},
-		{depotURL, ""}, {depotURL, "aviary-depot:8080"}, {depotURL, "https://aviary-depot:8080"},
+		{objectStorage, "aviary"}, {objectStorage, "gs://aviary/"},
 		{sandboxRetention, ""}, {sandboxRetention, "-1"},
 		{maxConcurrentTurns, ""}, {maxConcurrentTurns, "0"}, {maxConcurrentTurns, "many"},
 		{maxQueuedTurns, ""}, {maxQueuedTurns, "-1"},
@@ -118,8 +118,8 @@ func TestDriverConfig(t *testing.T) {
 		t.Run(wrong.name+"="+wrong.value, func(t *testing.T) {
 			set(t, map[string]string{wrong.name: wrong.value})
 			// The error names the invalid setting.
-			if config, err := driverConfig(); err == nil || !strings.Contains(err.Error(), wrong.name) {
-				t.Errorf("driverConfig() = %+v, %v; want an error naming the setting", config, err)
+			if config, err := driverConfig(t.Context()); err == nil || !strings.Contains(err.Error(), wrong.name) {
+				t.Errorf("driverConfig = %+v, %v; want an error naming the setting", config, err)
 			}
 		})
 	}

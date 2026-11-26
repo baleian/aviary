@@ -282,7 +282,7 @@ delete from attachments where id = @id and turn_id is null;
 
 -- name: ListLeftAttachments :many
 -- Lists the sessions that ended before before and may have left attachments
--- in the depot.
+-- in the object storage.
 select id from sessions
 where has_attachments and ended_at is not null and ended_at < @before
 order by ended_at limit @count;

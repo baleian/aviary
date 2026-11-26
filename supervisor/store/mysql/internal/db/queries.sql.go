@@ -1379,7 +1379,7 @@ type ListLeftAttachmentsParams struct {
 }
 
 // Lists the sessions that ended before before and may have left attachments
-// in the depot.
+// in the object storage.
 func (q *Queries) ListLeftAttachments(ctx context.Context, arg ListLeftAttachmentsParams) ([]key.ID, error) {
 	rows, err := q.db.QueryContext(ctx, listLeftAttachments, arg.Before, arg.Limit)
 	if err != nil {

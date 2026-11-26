@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 668" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 662" role="img" aria-labelledby="title desc">
   <title id="title">The parts of Aviary</title>
-  <desc id="desc">Clients call the Supervisor. The Supervisor has the API of Agent Substrate create, wake and put to sleep a sandbox for each session on its workers, gives the turns to the runner in the sandbox through the router of Substrate, and keeps files in the depot. When a session sleeps, a snapshot of its sandbox and its home is kept in the store of the snapshots, a volume or an S3 bucket, and the session can wake from it on any worker. A sandbox reaches the outside only through the egress gateway of Substrate, which asks the Supervisor for the secrets of the turn.</desc>
+  <desc id="desc">Clients call the Supervisor. The Supervisor has the API of Agent Substrate create, wake and put to sleep a sandbox for each session on its workers, and gives the turns to the runner in the sandbox through the router of Substrate. The object storage, a volume or an S3 bucket, keeps the files that messages carry and the snapshots of sleeping sandboxes with their homes, from which a session can wake on any worker. A sandbox reaches the outside only through the egress gateway of Substrate, which asks the Supervisor for the secrets of the turn.</desc>
   <style>
     svg {
       --bg: #ffffff; --frame: #d9e0ea;
@@ -56,141 +56,134 @@
     <marker id="w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head way" d="M0 0 10 5 0 10z"/></marker>
   </defs>
 
-  <rect class="bg" x="0.5" y="0.5" width="899" height="667" rx="14"/>
+  <rect class="bg" x="0.5" y="0.5" width="899" height="661" rx="14"/>
 
 
   <!-- Clients -->
-  <text class="z" x="20" y="50">CLIENTS</text>
-  <rect class="box" x="20" y="60" width="116" height="46" rx="8"/>
-  <text class="n c" x="78" y="80">Web UI</text>
-  <text class="d c" x="78" y="96">in the browser</text>
-  <rect class="box" x="20" y="116" width="116" height="46" rx="8"/>
-  <text class="n c" x="78" y="136">API clients</text>
-  <text class="d c" x="78" y="152">your own tools</text>
-  <path class="e" d="M136 83H152M136 139H152M152 83V139"/>
-  <path class="e" d="M152 103H248" marker-end="url(#a)"/>
-  <text class="l c" x="189" y="96">messages</text>
-  <path class="e" d="M250 121H154" marker-end="url(#a)"/>
-  <text class="l c" x="189" y="137">events</text>
+  <text class="z" x="20" y="140">CLIENTS</text>
+  <rect class="box" x="20" y="150" width="116" height="46" rx="8"/>
+  <text class="n c" x="78" y="170">Web UI</text>
+  <text class="d c" x="78" y="186">in the browser</text>
+  <rect class="box" x="20" y="206" width="116" height="46" rx="8"/>
+  <text class="n c" x="78" y="226">API clients</text>
+  <text class="d c" x="78" y="242">your own tools</text>
+  <path class="e" d="M136 173H152M136 229H152M152 173V229"/>
+  <path class="e" d="M152 193H248" marker-end="url(#a)"/>
+  <text class="l c" x="189" y="186">messages</text>
+  <path class="e" d="M250 211H154" marker-end="url(#a)"/>
+  <text class="l c" x="189" y="227">events</text>
 
   <!-- What the Supervisor is connected to -->
-  <rect class="zone" x="20" y="206" width="194" height="246" rx="12"/>
-  <text class="z" x="34" y="226">YOUR SERVICES</text>
-  <rect class="box" x="32" y="236" width="170" height="44" rx="8"/>
-  <text class="n" x="44" y="254">Database</text>
-  <text class="d" x="44" y="270">PostgreSQL, MySQL</text>
-  <rect class="box" x="32" y="288" width="170" height="44" rx="8"/>
-  <text class="n" x="44" y="306">Event log</text>
-  <text class="d" x="44" y="322">Valkey, Redis</text>
-  <rect class="box" x="32" y="340" width="170" height="44" rx="8"/>
-  <text class="n" x="44" y="358">Identity provider</text>
-  <text class="d" x="44" y="374">OpenID Connect</text>
-  <rect class="box" x="32" y="392" width="170" height="44" rx="8"/>
-  <text class="n" x="44" y="410">Secret stores</text>
-  <text class="d" x="44" y="426">of the projects</text>
-  <path class="e" d="M250 166H186V204" marker-end="url(#a)"/>
-  <text class="l r" x="178" y="192">through plugins</text>
+  <rect class="zone" x="20" y="296" width="194" height="246" rx="12"/>
+  <text class="z" x="34" y="316">YOUR SERVICES</text>
+  <rect class="box" x="32" y="326" width="170" height="44" rx="8"/>
+  <text class="n" x="44" y="344">Database</text>
+  <text class="d" x="44" y="360">PostgreSQL, MySQL</text>
+  <rect class="box" x="32" y="378" width="170" height="44" rx="8"/>
+  <text class="n" x="44" y="396">Event log</text>
+  <text class="d" x="44" y="412">Valkey, Redis</text>
+  <rect class="box" x="32" y="430" width="170" height="44" rx="8"/>
+  <text class="n" x="44" y="448">Identity provider</text>
+  <text class="d" x="44" y="464">OpenID Connect</text>
+  <rect class="box" x="32" y="482" width="170" height="44" rx="8"/>
+  <text class="n" x="44" y="500">Secret stores</text>
+  <text class="d" x="44" y="516">of the projects</text>
+  <path class="e" d="M250 256H186V294" marker-end="url(#a)"/>
+  <text class="l r" x="178" y="282">through plugins</text>
 
   <!-- The cluster -->
-  <rect class="cluster" x="226" y="24" width="662" height="460" rx="14"/>
+  <rect class="cluster" x="226" y="24" width="662" height="454" rx="14"/>
   <text class="z" x="242" y="44">KUBERNETES CLUSTER</text>
-  <rect class="hub back" x="258" y="56" width="210" height="118" rx="10"/>
-  <rect class="hub back" x="254" y="60" width="210" height="118" rx="10"/>
-  <rect class="hub" x="250" y="64" width="210" height="118" rx="10"/>
-  <text class="t" x="266" y="90">Supervisor</text>
-  <text class="d" x="266" y="113">serves the API</text>
-  <text class="d" x="266" y="131">queues and runs the turns</text>
-  <text class="d" x="266" y="149">gives the secrets of a turn</text>
+  <rect class="hub back" x="258" y="146" width="210" height="118" rx="10"/>
+  <rect class="hub back" x="254" y="150" width="210" height="118" rx="10"/>
+  <rect class="hub" x="250" y="154" width="210" height="118" rx="10"/>
+  <text class="t" x="266" y="180">Supervisor</text>
+  <text class="d" x="266" y="203">serves the API</text>
+  <text class="d" x="266" y="221">queues and runs the turns</text>
+  <text class="d" x="266" y="239">gives the secrets of a turn</text>
+
+  <!-- The object storage -->
+  <rect class="box" x="250" y="56" width="630" height="48" rx="10"/>
+  <text class="n c" x="565" y="77">Object storage</text>
+  <text class="d c" x="565" y="94">a volume or an S3 bucket</text>
+  <path class="e" d="M306 106V152" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l" x="314" y="134">attachments</text>
+  <path class="e" d="M820 106V140" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l r" x="812" y="120">sleeps as a snapshot,</text>
+  <text class="l r" x="812" y="135">wakes on any worker</text>
 
   <!-- Agent Substrate: its API and router -->
-  <rect class="box" x="492" y="60" width="136" height="40" rx="8"/>
-  <text class="n c" x="560" y="78">Substrate API</text>
-  <text class="d c" x="560" y="93">actors, policies</text>
-  <path class="e" d="M470 80H490" marker-end="url(#a)"/>
-  <path class="e" d="M628 80H648" marker-end="url(#a)"/>
-  <text class="l c" x="560" y="118">creates, wakes,</text>
-  <text class="l c" x="560" y="133">puts to sleep</text>
-  <rect class="box" x="492" y="148" width="136" height="36" rx="8"/>
-  <text class="n c" x="560" y="171">Substrate router</text>
-  <path class="e" d="M470 166H490" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l c" x="560" y="202">turns down · events up</text>
+  <rect class="box" x="492" y="150" width="136" height="40" rx="8"/>
+  <text class="n c" x="560" y="168">Substrate API</text>
+  <text class="d c" x="560" y="183">actors, policies</text>
+  <path class="e" d="M470 170H490" marker-end="url(#a)"/>
+  <path class="e" d="M628 170H648" marker-end="url(#a)"/>
+  <text class="l c" x="560" y="208">creates, wakes,</text>
+  <text class="l c" x="560" y="223">puts to sleep</text>
+  <rect class="box" x="492" y="238" width="136" height="36" rx="8"/>
+  <text class="n c" x="560" y="261">Substrate router</text>
+  <path class="e" d="M470 256H490" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l c" x="560" y="292">turns down · events up</text>
 
   <!-- The workers and the sandboxes on them -->
-  <rect class="closed" x="650" y="52" width="230" height="200" rx="12"/>
-  <text class="z" x="664" y="72">WORKERS</text>
-  <text class="m r" x="866" y="72">aviary-runtime</text>
-  <rect class="box back" x="672" y="88" width="188" height="148" rx="10"/>
-  <rect class="box back" x="668" y="92" width="188" height="148" rx="10"/>
-  <rect class="box" x="664" y="96" width="188" height="148" rx="10"/>
-  <text class="n" x="676" y="117">Session sandbox</text>
-  <text class="d" x="676" y="133">gVisor · no API keys</text>
-  <rect class="box" x="676" y="149" width="64" height="34" rx="6"/>
-  <text class="n c" x="708" y="171">runner</text>
-  <rect class="box" x="768" y="149" width="72" height="34" rx="6"/>
-  <text class="n c" x="804" y="171">harness</text>
-  <path class="e" d="M742 166H766" marker-start="url(#a)" marker-end="url(#a)"/>
-  <path class="e" d="M630 166H674" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l c" x="754" y="197">ACP</text>
-  <rect class="box" x="676" y="206" width="164" height="28" rx="14"/>
-  <text class="n c" x="758" y="225">/home</text>
-
-  <!-- The depot -->
-  <rect class="box back" x="266" y="388" width="144" height="64" rx="10"/>
-  <rect class="box back" x="262" y="392" width="144" height="64" rx="10"/>
-  <rect class="box" x="258" y="396" width="144" height="64" rx="10"/>
-  <text class="n c" x="330" y="422">Depot</text>
-  <text class="d c" x="330" y="440">objects in a volume</text>
-  <path class="e" d="M306 184V386" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l" x="314" y="290">attachments</text>
+  <rect class="closed" x="650" y="142" width="230" height="200" rx="12"/>
+  <text class="z" x="664" y="162">WORKERS</text>
+  <text class="m r" x="866" y="162">aviary-runtime</text>
+  <rect class="box back" x="672" y="178" width="188" height="148" rx="10"/>
+  <rect class="box back" x="668" y="182" width="188" height="148" rx="10"/>
+  <rect class="box" x="664" y="186" width="188" height="148" rx="10"/>
+  <text class="n" x="676" y="207">Session sandbox</text>
+  <text class="d" x="676" y="223">gVisor · no API keys</text>
+  <rect class="box" x="676" y="239" width="64" height="34" rx="6"/>
+  <text class="n c" x="708" y="261">runner</text>
+  <rect class="box" x="768" y="239" width="72" height="34" rx="6"/>
+  <text class="n c" x="804" y="261">harness</text>
+  <path class="e" d="M742 256H766" marker-start="url(#a)" marker-end="url(#a)"/>
+  <path class="e" d="M630 256H674" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l c" x="754" y="287">ACP</text>
+  <rect class="box" x="676" y="296" width="164" height="28" rx="14"/>
+  <text class="n c" x="758" y="315">/home</text>
 
   <!-- The egress gateway of Agent Substrate -->
-  <rect class="out back" x="438" y="292" width="220" height="64" rx="10"/>
-  <rect class="out back" x="434" y="296" width="220" height="64" rx="10"/>
-  <rect class="out" x="430" y="300" width="220" height="64" rx="10"/>
-  <text class="n c" x="540" y="326">Egress gateway</text>
-  <text class="d c" x="540" y="344">of Substrate: the only way out</text>
-  <path class="e" d="M444 300V184" marker-end="url(#a)"/>
-  <text class="l" x="452" y="234">asks for the secrets</text>
-  <text class="l" x="452" y="249">of the turn's provider</text>
-  <text class="l" x="452" y="264">and MCP servers</text>
-  <path class="e way" d="M766 252V332H660" marker-end="url(#w)"/>
-  <text class="l way r" x="756" y="290">all outbound</text>
-  <text class="l way r" x="756" y="305">traffic</text>
-
-  <!-- The store of the snapshots -->
-  <path class="e" d="M820 236V394" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l r" x="810" y="362">sleeps as a snapshot,</text>
-  <text class="l r" x="810" y="377">wakes on any worker</text>
-  <rect class="box" x="690" y="396" width="190" height="64" rx="10"/>
-  <text class="n c" x="785" y="422">Snapshot store</text>
-  <text class="d c" x="785" y="440">a volume or an S3 bucket</text>
+  <rect class="out back" x="438" y="382" width="220" height="64" rx="10"/>
+  <rect class="out back" x="434" y="386" width="220" height="64" rx="10"/>
+  <rect class="out" x="430" y="390" width="220" height="64" rx="10"/>
+  <text class="n c" x="540" y="416">Egress gateway</text>
+  <text class="d c" x="540" y="434">of Substrate: the only way out</text>
+  <path class="e" d="M444 390V274" marker-end="url(#a)"/>
+  <text class="l" x="452" y="324">asks for the secrets</text>
+  <text class="l" x="452" y="339">of the turn's provider</text>
+  <text class="l" x="452" y="354">and MCP servers</text>
+  <path class="e way" d="M766 342V422H660" marker-end="url(#w)"/>
+  <text class="l way" x="774" y="378">all outbound</text>
+  <text class="l way" x="774" y="393">traffic</text>
 
   <!-- Where the egress gateway sends on -->
-  <rect class="zone" x="430" y="528" width="458" height="124" rx="12"/>
-  <text class="z" x="444" y="548">WHAT A SANDBOX REACHES</text>
-  <rect class="box" x="444" y="558" width="150" height="80" rx="8"/>
-  <text class="n c" x="519" y="579">Model endpoints</text>
-  <text class="d c" x="519" y="597">a provider's API,</text>
-  <text class="d c" x="519" y="612">an AI gateway,</text>
-  <text class="d c" x="519" y="627">your model server</text>
-  <rect class="box" x="604" y="558" width="124" height="80" rx="8"/>
-  <text class="n c" x="666" y="579">MCP servers</text>
-  <text class="d c" x="666" y="597">that the session</text>
-  <text class="d c" x="666" y="612">has on</text>
-  <rect class="box" x="738" y="558" width="136" height="80" rx="8"/>
-  <text class="n c" x="806" y="579">Other hosts</text>
-  <text class="d c" x="806" y="597">that the</text>
-  <text class="d c" x="806" y="612">installation allows</text>
-  <path class="e way" d="M540 364V526" marker-end="url(#w)"/>
-  <text class="l way" x="548" y="510">with the secrets put in, to the hosts of the turn only</text>
+  <rect class="zone" x="430" y="522" width="458" height="124" rx="12"/>
+  <text class="z" x="444" y="542">WHAT A SANDBOX REACHES</text>
+  <rect class="box" x="444" y="552" width="150" height="80" rx="8"/>
+  <text class="n c" x="519" y="573">Model endpoints</text>
+  <text class="d c" x="519" y="591">a provider's API,</text>
+  <text class="d c" x="519" y="606">an AI gateway,</text>
+  <text class="d c" x="519" y="621">your model server</text>
+  <rect class="box" x="604" y="552" width="124" height="80" rx="8"/>
+  <text class="n c" x="666" y="573">MCP servers</text>
+  <text class="d c" x="666" y="591">that the session</text>
+  <text class="d c" x="666" y="606">has on</text>
+  <rect class="box" x="738" y="552" width="136" height="80" rx="8"/>
+  <text class="n c" x="806" y="573">Other hosts</text>
+  <text class="d c" x="806" y="591">that the</text>
+  <text class="d c" x="806" y="606">installation allows</text>
+  <path class="e way" d="M540 454V520" marker-end="url(#w)"/>
+  <text class="l way" x="548" y="504">with the secrets put in, to the hosts of the turn only</text>
 
   <!-- Legend -->
-  <rect class="box back" x="28" y="570" width="26" height="16" rx="4"/>
-  <rect class="box back" x="24" y="574" width="26" height="16" rx="4"/>
-  <rect class="box" x="20" y="578" width="26" height="16" rx="4"/>
-  <text class="d" x="64" y="585">replicas, or</text>
-  <text class="d" x="64" y="600">one per session</text>
-  <rect class="closed" x="20" y="618" width="34" height="18" rx="5"/>
-  <text class="d" x="64" y="625">reached only through</text>
-  <text class="d" x="64" y="640">the router and the gateway</text>
+  <rect class="box back" x="28" y="564" width="26" height="16" rx="4"/>
+  <rect class="box back" x="24" y="568" width="26" height="16" rx="4"/>
+  <rect class="box" x="20" y="572" width="26" height="16" rx="4"/>
+  <text class="d" x="64" y="579">replicas, or</text>
+  <text class="d" x="64" y="594">one per session</text>
+  <rect class="closed" x="20" y="612" width="34" height="18" rx="5"/>
+  <text class="d" x="64" y="619">reached only through</text>
+  <text class="d" x="64" y="634">the router and the gateway</text>
 </svg>

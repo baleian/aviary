@@ -12,13 +12,12 @@ name their mirrors in the environment, on the command line of `make`, or in
 
 | Variable | Mirror of |
 | --- | --- |
-| `DOCKER_IO`, `GCR_IO`, `GHCR_IO`, `PUBLIC_ECR_AWS`, `QUAY_IO`, `REGISTRY_K8S_IO` | The registry of that name: a registry, with a path if the mirror has one, such as `mirror.example.com/docker-hub`. The nodes of the local cluster pull the images of these registries from the mirrors as well, over HTTPS. |
+| `DOCKER_IO`, `GCR_IO`, `GHCR_IO`, `QUAY_IO`, `REGISTRY_K8S_IO` | The registry of that name: a registry, with a path if the mirror has one, such as `mirror.example.com/docker-hub`. The nodes of the local cluster pull the images of these registries from the mirrors as well, over HTTPS. |
 | `GOPROXY` | The Go module proxy. Go's own variable. |
 | `NPM_CONFIG_REGISTRY` | The npm registry. npm's own variable. |
 | `CRATES_IO` | crates.io: a registry as Cargo names one, such as `sparse+https://mirror.example.com/crates/index/`. |
 | `DEB_DEBIAN_ORG` | `http://deb.debian.org`, for the Debian packages of the harness images: an address that serves `debian` and `debian-security`, such as `https://mirror.example.com/deb`. The images keep it as the source of their packages. |
 | `SUBSTRATE_REPO` | The repository of Agent Substrate, `https://github.com/agent-substrate/substrate`, for the source of its release, of whose manifests `make chart` makes the chart of Substrate. |
-| `MOUNTPOINT_S3_CSI_REPO` | The repository of the Mountpoint for Amazon S3 CSI driver, `https://github.com/awslabs/mountpoint-s3-csi-driver`, for its chart, which is a file of its release. Only `make versitygw` installs it. |
 
 Most images are pulled by digests that the repository pins, so a mirror has
 to serve the images of its registry unchanged. The builds read the mirrors

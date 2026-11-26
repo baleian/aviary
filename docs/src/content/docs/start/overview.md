@@ -68,5 +68,5 @@ Aviary is at an early stage and has only run on a local cluster.
   every request to its host, whatever the path: see
   [Network and egress](../operate/egress.md#secrets).
 - **Tested only on a local cluster.** Aviary has not run on a cloud
-  provider's Kubernetes or under load, and its depot has not run on a
-  network file system or a mounted bucket.
+  provider's Kubernetes or under load, and its object storage has not been
+  a network file system or a bucket of a cloud provider.

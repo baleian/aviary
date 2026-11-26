@@ -127,7 +127,7 @@ func TestRunMigrates(t *testing.T) {
 			t.Errorf("Run(%q): plugin calls %q, error %v", test.args, build.asked, err)
 		}
 	}
-	for _, wrong := range [][]string{{"migrate", "latest"}, {"migrate", "7", "8"}, {"serve"}, {"state-metrics", "7"}, {"depot", "7"}} {
+	for _, wrong := range [][]string{{"migrate", "latest"}, {"migrate", "7", "8"}, {"serve"}, {"state-metrics", "7"}, {"depot"}} {
 		build := &build{}
 		if err := Run(ctx, wrong, build.plugins()); err == nil || len(build.asked) != 0 {
 			t.Errorf("Run(%q): plugin calls %q, error %v; want an error and no calls", wrong, build.asked, err)

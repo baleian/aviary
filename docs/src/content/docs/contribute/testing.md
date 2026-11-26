@@ -87,7 +87,7 @@ make e2e & make cluster-up mysql valkey keycloak e2e E2E_CLUSTER=aviary-e2e-mysq
 ```
 
 If a test fails, the cluster is kept, and the logs of the Supervisors, the
-state metrics, the depots and of Substrate, the pods, and the cluster events
+state metrics and of Substrate, the pods, and the cluster events
 are written to `.out/e2e/<cluster>`. The
 cluster's kubeconfig is there too, until `make e2e-down` deletes the cluster:
 
@@ -116,8 +116,8 @@ until the session is ended, and the workers have room for a limited number.
 `test/e2e/values.yaml` shortens the idle time after which a session sleeps,
 so that the tests see sessions sleep and wake without a long wait, and the
 time for which a snapshot stays on its worker, so that a session that sleeps
-for longer wakes from the store of the snapshots. A turn that wakes its session waits for
-its sandbox to be restored from its snapshot.
+for longer wakes from the object storage. A turn that wakes its session
+waits for its sandbox to be restored from its snapshot.
 
 ## Writing a test
 

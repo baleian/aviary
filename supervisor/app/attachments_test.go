@@ -2,36 +2,33 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"aviary/supervisor/internal/depot"
 	"aviary/supervisor/internal/driver"
+	"aviary/supervisor/internal/objects/objectstest"
 )
 
-// attaching lets the messages of an installation carry files, which a depot
-// of the test keeps in the directory that is returned: up to three files of
-// a mebibyte each.
-func attaching(t *testing.T) (func(*driver.Config), string) {
+// attaching lets the messages of an installation carry files, which the
+// object storage that is returned keeps in the bucket "aviary": up to three
+// files of a mebibyte each.
+func attaching(t *testing.T) (func(*driver.Config), *objectstest.Server) {
 	t.Helper()
-	dir := t.TempDir()
-	objects := runDepot(t, dir)
+	server := objectstest.New(t)
+	objects := server.Store(t, "s3://aviary/")
 	return func(config *driver.Config) {
-		config.Depot = objects.Client
+		config.Objects = objects
 		config.MaxAttachmentBytes = 1 << 20
 		config.MaxAttachments = 3
-	}, dir
+	}, server
 }
 
 // attachment is an attachment as the API returns it.
@@ -112,18 +109,9 @@ func (s *supervisor) download(id string) (int, http.Header, string) {
 	return response.StatusCode, response.Header, string(body)
 }
 
-// kept returns the keys of the attachments in the depot's directory.
-func kept(t *testing.T, dir string) []string {
-	t.Helper()
-	keys := []string{}
-	found, err := filepath.Glob(filepath.Join(dir, "attachments", "*", "*"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range found {
-		keys = append(keys, strings.TrimPrefix(path, dir+"/"))
-	}
-	return keys
+// kept returns the keys of the attachments in the object storage.
+func kept(server *objectstest.Server) []string {
+	return server.Keys("aviary", "attachments/")
 }
 
 // carrying sends the message with the attachments, and returns the status
@@ -153,12 +141,12 @@ func carried(t *testing.T, turn map[string]any) []attachment {
 	return attachments
 }
 
-// A file is uploaded for a session and kept in the depot. A message carries
-// the files that it names, its turn lists them, and each can be downloaded
-// until the session ends.
+// A file is uploaded for a session and kept in the object storage. A
+// message carries the files that it names, its turn lists them, and each can
+// be downloaded until the session ends.
 func TestAttachmentsAreUploadedAndCarriedByAMessage(t *testing.T) {
 	t.Parallel()
-	attachments, dir := attaching(t)
+	attachments, objects := attaching(t)
 	aviary := install(t, attachments)
 	s := aviary.supervisor()
 	session := s.session()
@@ -168,16 +156,19 @@ func TestAttachmentsAreUploadedAndCarriedByAMessage(t *testing.T) {
 	if status != http.StatusCreated || pdf.ID == "" || pdf.Name != "보고서 2026.pdf" || pdf.MediaType != "application/pdf" || pdf.Size != int64(len(report)) {
 		t.Fatalf("upload = %d %+v %+v, want 201 with the file as it was sent", status, pdf, refused)
 	}
-	// A file whose size is not known beforehand is taken as well.
-	status, notes, refused := s.upload(session, "notes.txt", "", io.NopCloser(strings.NewReader("to do")))
+	status, notes, refused := s.upload(session, "notes.txt", "", strings.NewReader("to do"))
 	if status != http.StatusCreated || notes.Size != 5 || notes.MediaType != "application/octet-stream" {
-		t.Fatalf("upload of an unknown size and kind = %d %+v %+v, want 201 as application/octet-stream", status, notes, refused)
+		t.Fatalf("upload of an unknown kind = %d %+v %+v, want 201 as application/octet-stream", status, notes, refused)
 	}
 	for _, uploaded := range []attachment{pdf, notes} {
 		key := "attachments/" + session + "/" + uploaded.ID
-		if stored, err := os.ReadFile(filepath.Join(dir, key)); err != nil || int64(len(stored)) != uploaded.Size {
-			t.Errorf("the depot has %d bytes at %s, %v; want the %d of the file", len(stored), key, err, uploaded.Size)
+		if stored, found := objects.Object("aviary", key); !found || int64(len(stored)) != uploaded.Size {
+			t.Errorf("the object storage has %d bytes at %s; want the %d of the file", len(stored), key, uploaded.Size)
 		}
+	}
+	// A file is streamed to the object storage, which needs its size first.
+	if status, _, refused := s.upload(session, "unknown.txt", "", io.NopCloser(strings.NewReader("a"))); status != http.StatusLengthRequired || refused.Code != "length_required" {
+		t.Errorf("upload of an unknown size = %d %+v, want 411 length_required", status, refused)
 	}
 
 	status, accepted := s.carrying(session, "Summarize the report.", notes.ID, pdf.ID)
@@ -288,12 +279,12 @@ func TestAttachmentNamesAndKinds(t *testing.T) {
 	}
 }
 
-// A file that is larger than an attachment may be is refused, before it is
-// read if it says so, and nothing of it stays in the depot. A message
-// carries no more files than it may, and needs a text only without files.
+// A file that is larger than an attachment may be is refused before it is
+// read, and nothing of it stays in the object storage. A message carries no
+// more files than it may, and needs a text only without files.
 func TestAttachmentLimits(t *testing.T) {
 	t.Parallel()
-	attachments, dir := attaching(t)
+	attachments, objects := attaching(t)
 	aviary := install(t, attachments)
 	s := aviary.supervisor()
 	session := s.session()
@@ -311,17 +302,12 @@ func TestAttachmentLimits(t *testing.T) {
 	if status, uploaded, refused := s.upload(session, "most.bin", "", strings.NewReader(most)); status != http.StatusCreated || uploaded.Size != 1<<20 {
 		t.Fatalf("upload of the largest file = %d %+v %+v, want 201", status, uploaded, refused)
 	}
-	// One byte more is too large, whether the request says its size or not.
-	for what, larger := range map[string]io.Reader{
-		"says that it is too large": strings.NewReader(most + "b"),
-		"is too large":              io.NopCloser(strings.NewReader(most + "b")),
-	} {
-		if status, _, refused := s.upload(session, "larger.bin", "", larger); status != http.StatusRequestEntityTooLarge || refused.Code != "attachment_too_large" {
-			t.Errorf("upload that %s = %d %+v, want 413 attachment_too_large", what, status, refused)
-		}
+	// One byte more is too large.
+	if status, _, refused := s.upload(session, "larger.bin", "", strings.NewReader(most+"b")); status != http.StatusRequestEntityTooLarge || refused.Code != "attachment_too_large" {
+		t.Errorf("upload of a file that is too large = %d %+v, want 413 attachment_too_large", status, refused)
 	}
-	if left := kept(t, dir); len(left) != 1 {
-		t.Errorf("the depot has %v after refused uploads, want only the file that was taken", left)
+	if left := kept(objects); len(left) != 1 {
+		t.Errorf("the object storage has %v after a refused upload, want only the file that was taken", left)
 	}
 
 	var files []string
@@ -342,9 +328,9 @@ func TestAttachmentLimits(t *testing.T) {
 	// An installation that takes no attachments says so.
 	plain := install(t).supervisor()
 	other := plain.session()
-	// Nor does one without a depot take any, whatever its limits are.
+	// Nor does one without object storage take any, whatever its limits are.
 	bare := install(t, func(config *driver.Config) { config.MaxAttachmentBytes, config.MaxAttachments = 1<<20, 3 }).supervisor()
-	for what, without := range map[string]*supervisor{"attachments": plain, "a depot": bare} {
+	for what, without := range map[string]*supervisor{"attachments": plain, "object storage": bare} {
 		told = limits{-1, -1}
 		if status, _ := without.request("GET", "/v1/limits", "", &told); status != http.StatusOK || told != (limits{}) {
 			t.Errorf("GET /v1/limits of an installation without %s = %d %+v, want zeros", what, status, told)
@@ -405,7 +391,7 @@ func TestMessageRefusesAttachmentsThatAreNotItsOwn(t *testing.T) {
 // files of a session some time after it has ended.
 func TestAttachmentsAreDeletedWhenUnsentOrLeft(t *testing.T) {
 	t.Parallel()
-	attachments, dir := attaching(t)
+	attachments, objects := attaching(t)
 	aviary := install(t, attachments, func(config *driver.Config) {
 		config.UnsentFor = 300 * time.Millisecond
 		// Attachments are looked at only every few sweeps.
@@ -419,8 +405,8 @@ func TestAttachmentsAreDeletedWhenUnsentOrLeft(t *testing.T) {
 		t.Fatalf("message with an attachment = %d %v", status, accepted)
 	}
 	key := func(of attachment) string { return "attachments/" + session + "/" + of.ID }
-	eventually(t, patience, "the unsent attachment is still in the depot", func() bool {
-		left := kept(t, dir)
+	eventually(t, patience, "the unsent attachment is still in the object storage", func() bool {
+		left := kept(objects)
 		return len(left) == 1 && left[0] == key(sent)
 	})
 	if status, _, _ := s.download(unsent.ID); status != http.StatusNotFound {
@@ -439,9 +425,8 @@ func TestAttachmentsAreDeletedWhenUnsentOrLeft(t *testing.T) {
 	if status, _ := s.request("DELETE", "/v1/sessions/"+session, "", nil); status != http.StatusOK {
 		t.Fatalf("end session: status %d, want 200", status)
 	}
-	eventually(t, patience, "the attachments of the ended session are still in the depot", func() bool {
-		_, err := os.Stat(filepath.Join(dir, "attachments", session))
-		return os.IsNotExist(err)
+	eventually(t, patience, "the attachments of the ended session are still in the object storage", func() bool {
+		return len(objects.Keys("aviary", "attachments/"+session)) == 0
 	})
 	// The turn still names what its message carried.
 	var read map[string]any
@@ -450,25 +435,18 @@ func TestAttachmentsAreDeletedWhenUnsentOrLeft(t *testing.T) {
 	}
 }
 
-// full is a depot that has no room.
-type full struct{ driver.Depot }
-
-func (full) Put(_ context.Context, key string, body io.Reader) (int64, error) {
-	_, _ = io.Copy(io.Discard, body)
-	return 0, fmt.Errorf("depot: PUT %s: %w", key, depot.ErrFull)
-}
-
-// An upload for which the installation has no room is refused as such.
-func TestAnUploadIsRefusedWhenTheDepotIsFull(t *testing.T) {
+// An upload for which the object storage has no room is refused as such.
+func TestAnUploadIsRefusedWhenTheObjectStorageIsFull(t *testing.T) {
 	t.Parallel()
-	attachments, dir := attaching(t)
-	s := install(t, attachments, func(config *driver.Config) { config.Depot = full{config.Depot} }).supervisor()
+	attachments, objects := attaching(t)
+	s := install(t, attachments).supervisor()
+	objects.Fill()
 	status, _, refused := s.upload(s.session(), "a.txt", "text/plain", bytes.NewReader([]byte("a")))
 	if status != http.StatusInsufficientStorage || refused.Code != "storage_full" {
-		t.Errorf("upload to a full depot = %d %+v, want 507 storage_full", status, refused)
+		t.Errorf("upload to a full object storage = %d %+v, want 507 storage_full", status, refused)
 	}
-	if left := kept(t, dir); len(left) != 0 {
-		t.Errorf("the depot has %v after a refused upload", left)
+	if left := kept(objects); len(left) != 0 {
+		t.Errorf("the object storage has %v after a refused upload", left)
 	}
 }
 

@@ -57,10 +57,10 @@ type Sandboxes interface {
 	Runner(name string) *sandbox.Runner
 }
 
-// Depot keeps the files that messages carry. It is implemented by
-// *depot.Client.
-type Depot interface {
-	Put(ctx context.Context, key string, body io.Reader) (int64, error)
+// Objects keeps the files that messages carry. It is implemented by
+// *objects.Store.
+type Objects interface {
+	Put(ctx context.Context, key string, body io.Reader, size int64) error
 	Get(ctx context.Context, key string) (io.ReadCloser, int64, error)
 	Delete(ctx context.Context, key string) error
 }
@@ -100,9 +100,9 @@ type Config struct {
 	// MaxConcurrentTurns limits the number of running turns. Further turns
 	// are queued in the order in which they are accepted.
 	MaxConcurrentTurns int
-	// Depot keeps the files that messages carry. Without it, messages carry
-	// none.
-	Depot Depot
+	// Objects keeps the files that messages carry. Without it, messages
+	// carry none.
+	Objects Objects
 	// MaxAttachmentBytes limits the size of a file that a message carries.
 	MaxAttachmentBytes int64
 	// MaxAttachments limits the number of files that a message carries.

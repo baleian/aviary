@@ -1,6 +1,6 @@
 {{- $location := include "substrate.location" . -}}
 {{- if not (hasPrefix "s3://" $location) }}
-{{- fail "substrate.snapshots.location must be an S3 location, such as s3://bucket/" }}
+{{- fail "substrate.objectStorage.location must be an S3 location, such as s3://bucket/" }}
 {{- end -}}
 apiVersion: v1
 kind: ConfigMap

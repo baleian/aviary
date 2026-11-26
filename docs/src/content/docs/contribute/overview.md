@@ -10,7 +10,7 @@ This section is for those who change Aviary. It assumes
 
 | Path | Contents |
 | --- | --- |
-| `supervisor/` | The Supervisor, in Go: the API, the queue, the session sandboxes on Agent Substrate and their runners, the event streams, and the secrets that the egress gateway asks for. Its plugins are in `store/`, `events/`, `secret/` and `identity/`, and `plugins.go` lists those of the build. The depot is a command of the same program, in `internal/depot`. |
+| `supervisor/` | The Supervisor, in Go: the API, the queue, the session sandboxes on Agent Substrate and their runners, the event streams, and the secrets that the egress gateway asks for. Its plugins are in `store/`, `events/`, `secret/` and `identity/`, and `plugins.go` lists those of the build. |
 | `runner/` | The runner, in Rust. |
 | `web/` | The web UI, in TypeScript with React. |
 | `images/` | The images of the Supervisor, the runner, the harnesses and the web UI. |

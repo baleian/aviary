@@ -18,8 +18,8 @@ import (
 
 	"aviary/supervisor/events"
 	"aviary/supervisor/internal/credentials"
-	"aviary/supervisor/internal/depot"
 	"aviary/supervisor/internal/driver"
+	"aviary/supervisor/internal/objects"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
 )
@@ -917,7 +917,9 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure = errAttachmentTooLarge
 	case errors.Is(err, driver.ErrNoAttachments):
 		failure = errNoAttachments
-	case errors.Is(err, depot.ErrFull):
+	case errors.Is(err, driver.ErrLengthRequired):
+		failure = errLengthRequired
+	case errors.Is(err, objects.ErrFull):
 		failure = errStorageFull
 	default:
 		slog.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)

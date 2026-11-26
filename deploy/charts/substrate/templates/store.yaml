@@ -1,21 +1,21 @@
-{{- if not .Values.snapshots.location }}
+{{- if not .Values.objectStorage.location }}
 {{- $volume := .Values.store.volume }}
 {{- if not (has $volume.accessMode (list "ReadWriteOnce" "ReadWriteMany")) }}
 {{- fail (printf "substrate.store.volume.accessMode: %q is neither ReadWriteOnce nor ReadWriteMany" $volume.accessMode) }}
 {{- end }}
-# The store of the snapshots without substrate.snapshots.location: an S3
-# gateway that keeps the object <key> of the bucket snapshots as the file
-# snapshots/<key> of its volume, and what it knows of an object besides its
-# bytes in files of its own. The gateways keep nothing else, so any of them
-# serves any request.
+# The object storage without substrate.objectStorage.location: an S3 gateway
+# that keeps the object <key> of the bucket aviary as the file
+# buckets/aviary/<key> of its volume, and what it knows of an object besides
+# its bytes in files of its own. The gateways keep nothing else, so any of
+# them serves any request.
 {{- if not $volume.existingClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: substrate-store
   annotations:
-    # Uninstalling the chart keeps the snapshots, as it keeps the sessions
-    # that they belong to.
+    # Uninstalling the chart keeps the snapshots and the files of messages,
+    # as it keeps the sessions that they belong to.
     helm.sh/resource-policy: keep
 spec:
   accessModes: [{{ $volume.accessMode | quote }}]
@@ -28,8 +28,8 @@ spec:
 ---
 {{- end }}
 {{- range list .Release.Namespace "ate-system" | uniq }}
-# Only the API server and atelet reach the store, which the policy below
-# enforces, so its key is not kept secret from them.
+# Only the API server, atelet and the Supervisors reach the store, which the
+# policy below enforces, so its key is not kept secret from them.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -126,7 +126,7 @@ spec:
             # directory of this mount before the gateway starts.
             - name: store
               mountPath: /store/bucket
-              subPath: buckets/snapshots
+              subPath: buckets/aviary
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -165,6 +165,10 @@ spec:
           podSelector:
             matchExpressions:
               - {key: app, operator: In, values: [ate-api-server, atelet]}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: aviary
+              app.kubernetes.io/component: supervisor
       ports:
         - {protocol: TCP, port: 7070}
 {{- end }}

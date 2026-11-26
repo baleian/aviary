@@ -60,12 +60,12 @@ AVIARY_INCLUDE_<name>.
 
 {{/* The location of the snapshots: that of the values, or the store of the chart. */}}
 {{- define "substrate.location" -}}
-{{- .Values.snapshots.location | default "s3://snapshots/" -}}
+{{- .Values.objectStorage.location | default "s3://aviary/" -}}
 {{- end }}
 
 {{/* The Secret of the access key of the object storage, if any. */}}
 {{- define "substrate.objectStorageSecret" -}}
-{{- if not .Values.snapshots.location -}}
+{{- if not .Values.objectStorage.location -}}
 substrate-store
 {{- else if .Values.objectStorage.secret -}}
 {{- .Values.objectStorage.secret -}}
@@ -77,7 +77,7 @@ substrate-object-storage
 {{- define "substrate.objectStorageEnv" -}}
 {{- $endpoint := .Values.objectStorage.endpoint }}
 {{- $pathStyle := .Values.objectStorage.pathStyle }}
-{{- if not .Values.snapshots.location }}
+{{- if not .Values.objectStorage.location }}
 {{- $endpoint = printf "http://substrate-store.%s.svc:7070" .Release.Namespace }}
 {{- $pathStyle = true }}
 {{- end }}

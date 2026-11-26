@@ -16,14 +16,17 @@ import (
 )
 
 // A file that a message carries is uploaded before the message, and is an
-// object of the depot until its session ends. The session records that the
-// depot may have such objects before the first is written, so that none is
-// left behind: what is written but not recorded is deleted with the rest
-// when the session has ended.
+// object in the object storage until its session ends. The session records
+// that the object storage may have such objects before the first is written,
+// so that none is left behind: what is written but not recorded is deleted
+// with the rest when the session has ended.
 
 var (
 	// ErrNoAttachments means that the installation takes no attachments.
 	ErrNoAttachments = errors.New("the installation takes no attachments")
+	// ErrLengthRequired means that the uploader did not give the size of a
+	// file, which is streamed to the object storage as it is read.
+	ErrLengthRequired = errors.New("the length of the file is required")
 	// ErrAttachmentTooLarge means that a file is larger than an attachment
 	// may be.
 	ErrAttachmentTooLarge = errors.New("attachment is too large")
@@ -32,7 +35,7 @@ var (
 	ErrTooManyAttachments = errors.New("too many attachments")
 )
 
-// attachmentKey returns the key of the attachment in the depot. The
+// attachmentKey returns the key of the attachment in the object storage. The
 // attachments of a session are under attachmentsOf(session).
 func attachmentKey(session, attachment uuid.UUID) string {
 	return attachmentsOf(session) + "/" + attachment.String()
@@ -46,7 +49,7 @@ func attachmentsOf(session uuid.UUID) string {
 // carries, in bytes, and the largest number of files of one message. Both are
 // 0 if the installation takes no attachments.
 func (d *Driver) AttachmentLimits() (size int64, files int) {
-	if d.config.Depot == nil || d.config.MaxAttachments == 0 {
+	if d.config.Objects == nil || d.config.MaxAttachments == 0 {
 		return 0, 0
 	}
 	return d.config.MaxAttachmentBytes, d.config.MaxAttachments
@@ -54,16 +57,18 @@ func (d *Driver) AttachmentLimits() (size int64, files int) {
 
 // Attach keeps the file for a message of the session to carry, and returns
 // its record. by is the user who uploads it, or uuid.Nil if requests are not
-// authenticated, and declared is the size that the uploader gave, or -1. It
-// returns ErrNoAttachments if the installation takes none,
-// ErrAttachmentTooLarge if the file is larger than MaxAttachmentBytes, and
-// the errors of store.ExpectAttachments.
-func (d *Driver) Attach(ctx context.Context, sessionID, by uuid.UUID, name, mediaType string, declared int64, file io.Reader) (store.Attachment, error) {
-	if d.config.Depot == nil || d.config.MaxAttachments == 0 {
+// authenticated, and size is the size that the uploader gave, or -1. It
+// returns ErrNoAttachments if the installation takes none, ErrLengthRequired
+// if the size is not given, ErrAttachmentTooLarge if it is larger than
+// MaxAttachmentBytes, and the errors of store.ExpectAttachments.
+func (d *Driver) Attach(ctx context.Context, sessionID, by uuid.UUID, name, mediaType string, size int64, file io.Reader) (store.Attachment, error) {
+	if d.config.Objects == nil || d.config.MaxAttachments == 0 {
 		return store.Attachment{}, ErrNoAttachments
 	}
-	// A file that says that it is too large is refused before it is read.
-	if declared > d.config.MaxAttachmentBytes {
+	if size < 0 {
+		return store.Attachment{}, ErrLengthRequired
+	}
+	if size > d.config.MaxAttachmentBytes {
 		return store.Attachment{}, ErrAttachmentTooLarge
 	}
 	if err := d.store.ExpectAttachments(ctx, sessionID); err != nil {
@@ -74,24 +79,16 @@ func (d *Driver) Attach(ctx context.Context, sessionID, by uuid.UUID, name, medi
 		return store.Attachment{}, err
 	}
 	key := attachmentKey(sessionID, id)
-	// One byte more than a file may have tells a file that is too large.
-	size, err := d.config.Depot.Put(ctx, key, io.LimitReader(file, d.config.MaxAttachmentBytes+1))
-	if err != nil {
+	if err := d.config.Objects.Put(ctx, key, file, size); err != nil {
 		return store.Attachment{}, fmt.Errorf("write attachment: %w", err)
 	}
-	if size > d.config.MaxAttachmentBytes {
-		err = ErrAttachmentTooLarge
-	}
-	var attachment store.Attachment
-	if err == nil {
-		attachment, err = d.store.CreateAttachment(ctx, store.Attachment{
-			ID: id, SessionID: sessionID, Name: name, MediaType: mediaType, Size: size, CreatedBy: by,
-		})
-	}
+	attachment, err := d.store.CreateAttachment(ctx, store.Attachment{
+		ID: id, SessionID: sessionID, Name: name, MediaType: mediaType, Size: size, CreatedBy: by,
+	})
 	if err != nil {
 		// The request may be over. What stays is deleted with the session's
 		// other attachments.
-		if failure := d.config.Depot.Delete(context.WithoutCancel(ctx), key); failure != nil {
+		if failure := d.config.Objects.Delete(context.WithoutCancel(ctx), key); failure != nil {
 			slog.ErrorContext(ctx, "delete attachment that was not recorded", "session", sessionID, "attachment", id, "error", failure)
 		}
 		return store.Attachment{}, err
@@ -111,16 +108,16 @@ func (d *Driver) Attachment(ctx context.Context, id uuid.UUID) (store.Attachment
 	if err != nil {
 		return store.Attachment{}, nil, err
 	}
-	if session.EndedAt != nil || d.config.Depot == nil {
+	if session.EndedAt != nil || d.config.Objects == nil {
 		return store.Attachment{}, nil, store.ErrNotFound
 	}
-	file, size, err := d.config.Depot.Get(ctx, attachmentKey(attachment.SessionID, id))
+	file, size, err := d.config.Objects.Get(ctx, attachmentKey(attachment.SessionID, id))
 	if err != nil {
 		return store.Attachment{}, nil, fmt.Errorf("read attachment: %w", err)
 	}
 	if size != attachment.Size {
 		file.Close()
-		return store.Attachment{}, nil, fmt.Errorf("the depot has %d bytes of an attachment of %d", size, attachment.Size)
+		return store.Attachment{}, nil, fmt.Errorf("the object storage has %d bytes of an attachment of %d", size, attachment.Size)
 	}
 	return attachment, file, nil
 }
@@ -145,10 +142,10 @@ func (d *Driver) deliver(ctx context.Context, turn store.FollowedTurn, runner *s
 	}
 	var paths []string
 	for _, attachment := range carried[turn.ID] {
-		if d.config.Depot == nil {
-			return nil, errors.New("the installation has no depot")
+		if d.config.Objects == nil {
+			return nil, errors.New("the installation has no object storage")
 		}
-		file, size, err := d.config.Depot.Get(ctx, attachmentKey(turn.SessionID, attachment.ID))
+		file, size, err := d.config.Objects.Get(ctx, attachmentKey(turn.SessionID, attachment.ID))
 		if err != nil {
 			return nil, fmt.Errorf("read attachment %s: %w", attachment.Name, err)
 		}
@@ -156,7 +153,7 @@ func (d *Driver) deliver(ctx context.Context, turn store.FollowedTurn, runner *s
 		if size == attachment.Size {
 			err = runner.PutFile(ctx, path, file, size)
 		} else {
-			err = fmt.Errorf("the depot has %d bytes of %d", size, attachment.Size)
+			err = fmt.Errorf("the object storage has %d bytes of %d", size, attachment.Size)
 		}
 		file.Close()
 		if err != nil {
@@ -176,7 +173,7 @@ const leftAtOnce = 100
 // latter are deleted only UnsentFor after the session ended, when no upload
 // that began before can still be writing.
 func (d *Driver) discardAttachments(ctx context.Context) {
-	if d.config.Depot == nil {
+	if d.config.Objects == nil {
 		return
 	}
 	before := time.Now().Add(-d.config.UnsentFor)
@@ -195,7 +192,7 @@ func (d *Driver) discardAttachments(ctx context.Context) {
 			}
 			continue
 		}
-		if err := d.config.Depot.Delete(ctx, attachmentKey(attachment.SessionID, attachment.ID)); err != nil {
+		if err := d.config.Objects.Delete(ctx, attachmentKey(attachment.SessionID, attachment.ID)); err != nil {
 			slog.ErrorContext(ctx, "delete unsent attachment", "session", attachment.SessionID, "attachment", attachment.ID, "error", err)
 		}
 	}
@@ -205,7 +202,7 @@ func (d *Driver) discardAttachments(ctx context.Context) {
 		return
 	}
 	for _, session := range left {
-		if err := d.config.Depot.Delete(ctx, attachmentsOf(session)); err != nil {
+		if err := d.config.Objects.Delete(ctx, attachmentsOf(session)); err != nil {
 			slog.ErrorContext(ctx, "delete attachments of ended session", "session", session, "error", err)
 			continue
 		}
