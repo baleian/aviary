@@ -17,6 +17,9 @@ PUBLIC_ECR_AWS ?= public.ecr.aws
 QUAY_IO ?= quay.io
 REGISTRY_K8S_IO ?= registry.k8s.io
 export DOCKER_IO GCR_IO
+# The repository of Agent Substrate, whose source has its installer, or a
+# mirror of it.
+SUBSTRATE_REPO ?= https://github.com/agent-substrate/substrate
 # The repository of the Mountpoint for Amazon S3 CSI driver, whose releases
 # have its chart, or a mirror of it.
 MOUNTPOINT_S3_CSI_REPO ?= https://github.com/awslabs/mountpoint-s3-csi-driver
@@ -46,9 +49,12 @@ endif
 KEPT := $(abspath $(patsubst ~/%,$(HOME)/%,$(DATA)))
 NODE_IMAGE := $(DOCKER_IO)/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 # Agent Substrate, which runs the sandboxes: the release that make substrate
-# installs with its installer. The installer runs on this machine, in the
-# source of the release, and both come from the Go module proxy.
+# installs with its installer. The installer is built for this machine from
+# the source of the release, which is verified against its checksum and is
+# not kept in the repository, and runs in that source.
 SUBSTRATE := v1.0.1
+SUBSTRATE_SHA256 := a5ac0caa5e2bde5a0f8acd478db1b07a1b8f4942f594d570186dc0a5cd84cddb
+SUBSTRATE_SOURCE := .out/substrate-$(SUBSTRATE).tar.gz
 SUBSTRATE_OUT := .out/substrate-$(SUBSTRATE)
 # The harness images of the cluster, at its registry, by digest.
 HARNESS_VALUES := .out/$(CLUSTER)-harnesses.yaml
@@ -212,16 +218,22 @@ test-harness: build
 	AVIARY_HARNESS_IMAGES="$(HARNESS_IMAGES)" $(CARGO) test --locked --package aviary-runner --test harness -- \
 		--ignored --test-threads 3 $(TESTS)
 
-# The installer of Agent Substrate, built for this machine, and the source of
-# the release next to it, in which the installer runs.
-$(SUBSTRATE_OUT)/ate-setup:
+$(SUBSTRATE_SOURCE):
+	mkdir -p $(@D)
+	curl --fail --silent --show-error --location --output $@.new \
+		$(SUBSTRATE_REPO)/archive/refs/tags/$(SUBSTRATE).tar.gz
+	openssl dgst -sha256 -r $@.new | grep -q '^$(SUBSTRATE_SHA256) ' || \
+		{ echo "The checksum of $@.new is not $(SUBSTRATE_SHA256)." >&2; exit 1; }
+	mv $@.new $@
+
+# The installer of Agent Substrate, built for this machine in the source of
+# the release, in which it runs.
+$(SUBSTRATE_OUT)/ate-setup: $(SUBSTRATE_SOURCE)
 	mkdir -p $(SUBSTRATE_OUT)/source
+	tar --extract --gzip -m --file $< --directory $(SUBSTRATE_OUT)/source --strip-components 1
 	os=$$(uname -s | tr '[:upper:]' '[:lower:]') && \
 	case $$(uname -m) in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) echo "No build of the installer for $$(uname -m)." >&2; exit 1;; esac && \
-	$(call IN_GO,,--env GOOS=$$os --env GOARCH=$$arch --env GOFLAGS=-mod=mod) sh -c ' \
-		source=$$(go mod download -json go.ate.dev/substrate@$(SUBSTRATE) | sed -n "s/^.\"Dir\": \"\(.*\)\",$$/\1/p") && \
-		cp -R "$$source/." /src/$(SUBSTRATE_OUT)/source/ && chmod -R u+w /src/$(SUBSTRATE_OUT)/source && \
-		cd /src/$(SUBSTRATE_OUT)/source && go build -trimpath -o ../ate-setup.new ./cmd/ate-setup'
+	$(call GO,$(SUBSTRATE_OUT)/source,--env GOOS=$$os --env GOARCH=$$arch) build -trimpath -o ../ate-setup.new ./cmd/ate-setup
 	mv $(SUBSTRATE_OUT)/ate-setup.new $@
 
 $(MOUNTPOINT_S3_CSI_CHART):
