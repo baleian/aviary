@@ -310,8 +310,10 @@ func (c *Client) prepare(ctx context.Context, harness string) (string, error) {
 	if made {
 		return name, nil
 	}
+	// An installation that lets the Supervisors own only their atespace makes
+	// it itself.
 	_, err := c.control.CreateAtespace(ctx, &ateapi.CreateAtespaceRequest{Atespace: &ateapi.Atespace{Metadata: &ateapi.ResourceMetadata{Name: c.settings.Atespace}}})
-	if err != nil && status.Code(err) != codes.AlreadyExists {
+	if err != nil && status.Code(err) != codes.AlreadyExists && status.Code(err) != codes.PermissionDenied {
 		return "", fmt.Errorf("create atespace %s: %w", c.settings.Atespace, err)
 	}
 	_, err = c.control.CreateActorTemplate(ctx, &ateapi.CreateActorTemplateRequest{ActorTemplate: template})

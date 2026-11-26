@@ -37,12 +37,18 @@ type control struct {
 	workers map[string][]*ateapi.ObjectRef
 	// draining are the workers that are going away.
 	draining map[string]bool
+	// denied refuses to make atespaces, as for a caller that owns only the
+	// atespace that the installation made.
+	denied bool
 }
 
 func (c *control) CreateAtespace(_ context.Context, request *ateapi.CreateAtespaceRequest) (*ateapi.Atespace, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	name := request.GetAtespace().GetMetadata().GetName()
+	if c.denied {
+		return nil, status.Error(codes.PermissionDenied, "not an owner of every atespace")
+	}
 	if c.atespaces[name] {
 		return nil, status.Error(codes.AlreadyExists, "atespace exists")
 	}
@@ -280,6 +286,19 @@ func TestCreate(t *testing.T) {
 	}
 	if err := c.Create(ctx, Request{Session: uuid.New(), Harness: "codex"}); err == nil {
 		t.Error("Create with a harness that is not configured succeeded")
+	}
+}
+
+// An installation that makes the atespace itself may let the Supervisors own
+// only that atespace.
+func TestCreateInTheAtespaceOfTheInstallation(t *testing.T) {
+	c, api := served(t)
+	api.denied = true
+	if err := c.Create(context.Background(), Request{Session: uuid.New(), Harness: "opencode"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.templates) != 1 || len(api.actors) != 1 {
+		t.Errorf("made %d templates and %d actors, want 1 of each", len(api.templates), len(api.actors))
 	}
 }
 
