@@ -18,9 +18,9 @@ import (
 )
 
 // Service implements driver.Sandboxes in memory. A sandbox is made asleep, as
-// Substrate makes an actor, and its snapshot does not keep its processes: a
-// sandbox that is put to sleep or reverted wakes up with a runner that has no
-// turn.
+// Substrate makes an actor, and unless KeepProcesses is called its snapshot
+// does not keep its processes: a sandbox that is put to sleep or reverted
+// wakes up with a runner that has no turn.
 type Service struct {
 	*runnertest.Runners
 	// server serves the runner of each sandbox under /{name}/.
@@ -35,6 +35,8 @@ type Service struct {
 	// room is how many sandboxes the workers hold at once, or 0 for any
 	// number.
 	room int
+	// keeps makes the snapshots keep the processes.
+	keeps bool
 }
 
 type made struct {
@@ -176,16 +178,34 @@ func (s *Service) Suspend(_ context.Context, name string, durable bool) error {
 	})
 }
 
-// Revert puts the sandbox to sleep, as Suspend does: the fake keeps no
-// snapshot to go back to.
+// Revert puts the sandbox to sleep as its last snapshot has it, which the
+// fake takes to be one without a turn: it wakes up with a runner that has
+// none.
 func (s *Service) Revert(_ context.Context, name string) error {
-	return s.change(name, func(m *made) { m.message = ""; s.sleep(name, m) })
+	return s.change(name, func(m *made) {
+		m.message = ""
+		s.sleep(name, m)
+		m.runner = s.Runners.Runner(name, m.home)
+	})
 }
 
+// sleep cuts off the event streams of the sandbox's runner, which goes unless
+// the snapshots keep the processes.
 func (s *Service) sleep(name string, m *made) {
 	m.state = sandbox.Asleep
 	m.runner.Gone()
-	m.runner = s.Runners.Runner(name, m.home)
+	if !s.keeps {
+		m.runner = s.Runners.Runner(name, m.home)
+	}
+}
+
+// KeepProcesses makes the snapshots keep the processes, as memory snapshots
+// do: a sandbox that is put to sleep wakes up with its runner and the turn
+// that the runner has.
+func (s *Service) KeepProcesses() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keeps = true
 }
 
 // Delete deletes the sandbox, with its runner and its home, if uid is empty

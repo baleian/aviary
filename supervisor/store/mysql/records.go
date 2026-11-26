@@ -1345,8 +1345,8 @@ func (s *records) DispatchTurn(ctx context.Context, turnID uuid.UUID) (bool, err
 	return taken == 1, err
 }
 
-func (s *records) IdleSandboxes(ctx context.Context, limit int) ([]store.IdleSandbox, error) {
-	rows, err := s.queries.IdleSandboxes(ctx, int32(limit))
+func (s *records) IdleSandboxes(ctx context.Context, limit int, waiting bool) ([]store.IdleSandbox, error) {
+	rows, err := s.queries.IdleSandboxes(ctx, db.IdleSandboxesParams{Waiting: waiting, Limit: int32(limit)})
 	if err != nil {
 		return nil, err
 	}
@@ -1637,6 +1637,11 @@ func (s *records) WaitingApprovals(ctx context.Context, turnID uuid.UUID) ([]jso
 		return nil, err
 	}
 	return append([]json.RawMessage{}, rows...), nil
+}
+
+func (s *records) WaitedForAnswers(ctx context.Context, turnID uuid.UUID) (time.Duration, error) {
+	waited, err := s.queries.WaitedForAnswers(ctx, key.ID(turnID))
+	return since(waited), err
 }
 
 func (s *records) Answers(ctx context.Context, turnID *uuid.UUID) ([]store.Answer, error) {

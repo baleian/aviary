@@ -1147,15 +1147,29 @@ select sessions.id, coalesce(sessions.sandbox, '') as sandbox,
        cast(timestampdiff(microsecond,
                           coalesce((select last.ended_at from turns as last
                                     where last.session_id = sessions.id order by last.seq desc limit 1),
+                                   (select min(approvals.requested_at) from turns
+                                    join approvals on approvals.turn_id = turns.id
+                                    where turns.session_id = sessions.id and turns.state = 'running'
+                                      and approvals.answered_at is null and approvals.resolved_at is null),
                                    sessions.created_at),
                           now(6)) as signed) as idle
 from sessions
 where sessions.sandbox is not null and sessions.sandbox_state = 'awake'
-  and not exists (select 1 from turns
-                  where turns.session_id = sessions.id and turns.state in ('queued', 'dispatching', 'running'))
+  and (not exists (select 1 from turns
+                   where turns.session_id = sessions.id and turns.state in ('queued', 'dispatching', 'running'))
+       or ? and exists (select 1 from turns
+                                        join approvals on approvals.turn_id = turns.id
+                                        where turns.session_id = sessions.id and turns.state = 'running'
+                                          and turns.cancel_requested_at is null
+                                          and approvals.answered_at is null and approvals.resolved_at is null))
 order by idle desc, sessions.id
 limit ?
 `
+
+type IdleSandboxesParams struct {
+	Waiting interface{}
+	Limit   int32
+}
 
 type IdleSandboxesRow struct {
 	ID      key.ID
@@ -1165,9 +1179,11 @@ type IdleSandboxesRow struct {
 
 // Lists the sessions whose sandboxes are recorded awake and that have no
 // unfinished turn, the longest idle first: idle is the microseconds since
-// the session's last turn ended.
-func (q *Queries) IdleSandboxes(ctx context.Context, limit int32) ([]IdleSandboxesRow, error) {
-	rows, err := q.db.QueryContext(ctx, idleSandboxes, limit)
+// the session's last turn ended. With waiting, a session whose unfinished
+// turn waits for a person and is not asked to stop is idle too, since the
+// oldest of the turn's requests that wait for an answer was made.
+func (q *Queries) IdleSandboxes(ctx context.Context, arg IdleSandboxesParams) ([]IdleSandboxesRow, error) {
+	rows, err := q.db.QueryContext(ctx, idleSandboxes, arg.Waiting, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -2961,6 +2977,21 @@ type UpdateUserParams struct {
 func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) error {
 	_, err := q.db.ExecContext(ctx, updateUser, arg.Username, arg.DisplayName, arg.Subject)
 	return err
+}
+
+const waitedForAnswers = `-- name: WaitedForAnswers :one
+select cast(coalesce(sum(timestampdiff(microsecond, requested_at, coalesce(answered_at, resolved_at, now(6)))), 0) as signed) as waited
+from approvals where turn_id = ?
+`
+
+// The microseconds that the turn's requests waited for their answers, until
+// now for those that wait. A request that the turn's end resolved waited
+// until then.
+func (q *Queries) WaitedForAnswers(ctx context.Context, turnID key.ID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, waitedForAnswers, turnID)
+	var waited int64
+	err := row.Scan(&waited)
+	return waited, err
 }
 
 const waitingApprovals = `-- name: WaitingApprovals :many

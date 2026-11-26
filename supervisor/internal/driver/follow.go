@@ -22,8 +22,9 @@ type run struct {
 	told       *orders
 	dispatched time.Time
 	// changed is signaled when the deadline moves, and asked when the turn
-	// is cancelled.
-	changed, asked chan struct{}
+	// is cancelled. roused is signaled when an answer or a cancellation may
+	// have come for a turn that waits for a person.
+	changed, asked, roused chan struct{}
 
 	mu      sync.Mutex
 	sandbox string
@@ -75,7 +76,7 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 	given := received > 0 || turn.StartedAt != nil
 	r := &run{
 		turn: turn, told: told, dispatched: time.Now().Add(-turn.Dispatched),
-		changed: make(chan struct{}, 1), asked: make(chan struct{}, 1),
+		changed: make(chan struct{}, 1), asked: make(chan struct{}, 1), roused: make(chan struct{}, 1),
 		sandbox: turn.Sandbox, given: given, started: turn.StartedAt != nil,
 	}
 	if turn.CancelRequestedAt != nil {
@@ -99,7 +100,7 @@ func (d *Driver) run(ctx context.Context, turnID uuid.UUID, told *orders) {
 // turn up when it passes its deadline.
 func (d *Driver) watch(following context.Context, leave context.CancelFunc, r *run) {
 	for {
-		at, _ := r.limit(d.config)
+		at, _ := d.limit(following, r)
 		timer := time.NewTimer(time.Until(at))
 		select {
 		case <-following.Done():
@@ -107,7 +108,7 @@ func (d *Driver) watch(following context.Context, leave context.CancelFunc, r *r
 			return
 		case <-timer.C:
 			// The deadline may have moved since the timer was set.
-			if at, failure := r.limit(d.config); !time.Now().Before(at) {
+			if at, failure := d.limit(following, r); !time.Now().Before(at) {
 				r.giveUp(failure)
 				leave()
 				return
@@ -121,6 +122,7 @@ func (d *Driver) watch(following context.Context, leave context.CancelFunc, r *r
 					slog.WarnContext(following, "cancel turn on runner", "turn", r.turn.ID, "error", err)
 				}
 			}
+			poke(r.roused)
 		case <-r.told.answers:
 			d.answer(following, r)
 		}
@@ -150,6 +152,7 @@ func (d *Driver) answer(ctx context.Context, r *run) {
 			slog.WarnContext(ctx, "send approval answer to runner", "turn", r.turn.ID, "error", err)
 		}
 	}
+	poke(r.roused)
 }
 
 // reach gets the session's sandbox running and gives the turn to its runner,
@@ -470,12 +473,7 @@ func (d *Driver) read(ctx, following context.Context, r *run, runner *sandbox.Ru
 			r.giveUp(store.Failure{Reason: store.FailureSandboxLost, Message: "the session's sandbox crashed: " + seen.Message})
 			return
 		case gone == nil && seen.State == sandbox.Asleep:
-			// The sandbox was put to sleep with the turn, as when its worker
-			// went away. If its snapshot kept the turn, the turn goes on once
-			// it is woken up. Otherwise its runner reports the turn lost.
-			if err := d.sandboxes.Resume(following, id); err != nil {
-				slog.WarnContext(ctx, "wake the sandbox of a running turn", "turn", turn.ID, "sandbox", id, "error", err)
-			}
+			d.rouse(following, r, id)
 		}
 		select {
 		case <-time.After(d.again()):
@@ -486,6 +484,51 @@ func (d *Driver) read(ctx, following context.Context, r *run, runner *sandbox.Ru
 			after = recorded
 		}
 	}
+}
+
+// rouse wakes the sandbox of a running turn that was put to sleep with the
+// turn: while the turn waited for a person, or as when its worker went away.
+// If its snapshot kept the turn, the turn goes on. Otherwise its runner
+// reports the turn lost. While the turn waits for a person, the sandbox
+// sleeps on, since reading the turn would wake it: an answer or a
+// cancellation wakes it.
+func (d *Driver) rouse(ctx context.Context, r *run, id string) {
+	for d.waits(ctx, r) {
+		select {
+		case <-r.roused:
+		case <-time.After(d.config.Sweep):
+		case <-ctx.Done():
+			return
+		}
+	}
+	switch err := d.sandboxes.Resume(ctx, id); {
+	case errors.Is(err, sandbox.ErrNoWorker):
+		d.makeRoom(ctx)
+	case err != nil:
+		slog.WarnContext(ctx, "wake the sandbox of a running turn", "turn", r.turn.ID, "sandbox", id, "error", err)
+	default:
+		if err := d.store.SetSandboxState(ctx, r.turn.SessionID, id, store.SandboxAwake); err != nil {
+			slog.ErrorContext(ctx, "record sandbox state", "session", r.turn.SessionID, "sandbox", id, "error", err)
+		}
+		// An answer that came while the sandbox slept may not have reached
+		// the runner.
+		poke(r.told.answers)
+	}
+}
+
+// waits reports whether the turn waits for a person, so that its sandbox may
+// sleep meanwhile: with Halt, while one of its approval requests waits for an
+// answer and the turn is not cancelled.
+func (d *Driver) waits(ctx context.Context, r *run) bool {
+	if !d.config.Halt || r.stopped() {
+		return false
+	}
+	waiting, err := d.store.WaitingApprovals(ctx, r.turn.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "read the approval requests that wait", "turn", r.turn.ID, "error", err)
+		return false
+	}
+	return len(waiting) > 0
 }
 
 // errEnded stops reading the events of a turn that has ended.
@@ -614,13 +657,28 @@ func with(object []byte, name string, value any) ([]byte, error) {
 }
 
 // limit returns the turn's deadline, and the failure to report if the turn
-// has not ended by then.
-func (r *run) limit(config Config) (time.Time, store.Failure) {
+// has not ended by then. With Halt, the time that the turn's approval
+// requests waited for people does not count toward MaxTurn, since its sandbox
+// can sleep meanwhile.
+func (d *Driver) limit(ctx context.Context, r *run) (time.Time, store.Failure) {
+	var waited time.Duration
+	if d.config.Halt {
+		var err error
+		if waited, err = d.store.WaitedForAnswers(ctx, r.turn.ID); err != nil {
+			slog.ErrorContext(ctx, "read how long the turn waited for answers", "turn", r.turn.ID, "error", err)
+			// Looked at again soon.
+			return time.Now().Add(d.again()), store.Failure{}
+		}
+	}
+	return r.limit(d.config, waited)
+}
+
+// limit returns the turn's deadline once it has waited for people for
+// waited, and the failure to report then.
+func (r *run) limit(config Config, waited time.Duration) (time.Time, store.Failure) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Time spent waiting for approval counts too, since the sandbox runs
-	// meanwhile.
-	at := r.dispatched.Add(config.MaxTurn)
+	at := r.dispatched.Add(config.MaxTurn + waited)
 	failure := store.Failure{
 		Reason: store.FailureTimedOut, Message: fmt.Sprintf("the turn ran for longer than %s", config.MaxTurn),
 	}

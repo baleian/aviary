@@ -325,14 +325,21 @@ limit @max;
 -- name: IdleSandboxes :many
 -- Lists the sessions whose sandboxes are recorded awake and that have no
 -- unfinished turn, the longest idle first: idle is the seconds since the
--- session's last turn ended.
+-- session's last turn ended. With @waiting, a session whose unfinished turn
+-- waits for a person and is not asked to stop is idle too, since the oldest
+-- of the turn's requests that wait for an answer was made. A session's
+-- unfinished turn is its last.
 select sessions.id, coalesce(sessions.sandbox, '') as sandbox,
-       extract(epoch from now() - coalesce(last.ended_at, sessions.created_at))::float8 as idle
+       extract(epoch from now() - coalesce(last.ended_at, asked.at, sessions.created_at))::float8 as idle
 from sessions
-left join lateral (select turns.ended_at from turns
+left join lateral (select turns.id, turns.ended_at, turns.cancel_requested_at from turns
                    where turns.session_id = sessions.id order by turns.seq desc limit 1) as last on true
+left join lateral (select min(approvals.requested_at) as at from approvals
+                   where sqlc.arg(waiting)::boolean and last.ended_at is null and last.cancel_requested_at is null
+                     and approvals.turn_id = last.id and approvals.answered_at is null
+                     and approvals.resolved_at is null) as asked on true
 where sessions.sandbox is not null and sessions.sandbox_state = 'awake'
-  and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
+  and (last.id is null or last.ended_at is not null or asked.at is not null)
 order by idle desc, sessions.id
 limit @max;
 
@@ -467,6 +474,13 @@ where approvals.turn_id = @turn_id and approvals.id = @id
 select request from approvals
 where turn_id = @turn_id and answered_at is null and resolved_at is null
 order by requested_at, id;
+
+-- name: WaitedForAnswers :one
+-- The seconds that the turn's requests waited for their answers, until now
+-- for those that wait. A request that the turn's end resolved waited until
+-- then.
+select coalesce(sum(extract(epoch from coalesce(answered_at, resolved_at, now()) - requested_at)), 0)::float8 as waited
+from approvals where turn_id = @turn_id;
 
 -- name: Answers :many
 -- Lists the answers not yet delivered to the harnesses of unfinished turns:

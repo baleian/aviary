@@ -25,16 +25,17 @@ project says that an agent is waiting for you.
   read the workspace or changes a file, and Codex before a command runs
   outside its sandbox: see [Harness images](../operate/harness-images.md). None of
   them asks before its own tool reads a file that a message carries.
-- **A request waits as long as its turn may run.** The time spent waiting
-  counts toward `runtime.maxTurnSeconds`, because the sandbox keeps running
-  and keeps its room on its worker. A turn whose time
-  runs out while it waits fails as `timed_out`, and the session's next
-  message continues the conversation. Cancelling the turn ends its requests
-  as `cancelled`.
+- **A request waits until a person answers it.** With `memory` snapshots,
+  the default, the session sleeps after it has waited for
+  `sandboxes.idleSeconds`, and the answer wakes it where it was. The time
+  spent waiting does not count toward `runtime.maxTurnSeconds`. With other
+  snapshots the sandbox keeps running, the time counts, and a turn whose
+  time runs out while it waits fails as `timed_out`. Cancelling the turn
+  ends its requests as `cancelled`.
 - **What an option does depends on the harness too.** `allow_always` lasts
   as long as the harness remembers it: in OpenCode until the harness process
-  ends, for example when the session sleeps, and in Codex and Claude Code for
-  the rest of the session. After a refusal, OpenCode and Codex end the turn,
+  ends, as when the session sleeps without `memory` snapshots, and in Codex
+  and Claude Code for the rest of the session. After a refusal, OpenCode and Codex end the turn,
   Codex with the stop reason `cancelled`, while Claude Code tells the model
   and goes on.
 - **Approval is not a security boundary.** The harness that asks runs in

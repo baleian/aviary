@@ -155,6 +155,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"UnfinishedTurns":                     suite.testUnfinishedTurns,
 		"NotFound":                            suite.testNotFound,
 		"Approvals":                           suite.testApprovals,
+		"WaitedForAnswers":                    suite.testWaitedForAnswers,
 	} {
 		t.Run(name, test)
 	}

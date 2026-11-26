@@ -119,7 +119,9 @@ workers:
 sandboxes:
   # Seconds without a running turn after which a session is put to sleep:
   # its sandbox leaves its worker, and a snapshot keeps it. The next turn
-  # wakes it on a worker that has room. 0 disables sleeping.
+  # wakes it on a worker that has room. With memory snapshots, a turn that
+  # has waited this long for a person to answer it sleeps too, until the
+  # answer. 0 disables sleeping.
   idleSeconds: 300
   # Seconds after its last turn after which a session ends: its sandbox is
   # deleted with its snapshot, and its conversation stays in the database.
@@ -159,7 +161,8 @@ runtime:
   # image onto the worker. A turn that takes longer fails. 0 means no limit.
   maxStartupSeconds: 120
   # Seconds a turn may run after it leaves the queue, including the time it
-  # waits for approval. A turn that runs longer fails, and what runs in its
+  # waits for approval, except with memory snapshots, with which its sandbox
+  # can sleep meanwhile. A turn that runs longer fails, and what runs in its
   # sandbox is stopped.
   maxTurnSeconds: 1800
   # Maximum bytes of the input or output of a tool call that turn events

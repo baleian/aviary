@@ -45,7 +45,7 @@ false leaves the pod out.
 | --- | --- |
 | `aviary_sandboxes` | Sandboxes of the sessions that have not ended, by `state`: `awake`, `asleep` or `lost`, as the sessions say of their `sandbox`. |
 | `aviary_turns` | Turns that have not ended, by `harness` and `state`: `queued`; `starting`, from leaving the queue until the harness has the message; `running`; or `awaiting_approval`, while a request of the turn waits for a person. |
-| `aviary_turns_oldest_age_seconds` | Age of the oldest turn of each `harness` and `state`: the time since its message for a queued turn, and since it left the queue for the others. 0 without such a turn. An age well beyond the limit of its state, `runtime.maxQueueWaitSeconds`, `runtime.maxStartupSeconds` or `runtime.maxTurnSeconds`, means that no Supervisor is ending the turn. |
+| `aviary_turns_oldest_age_seconds` | Age of the oldest turn of each `harness` and `state`: the time since its message for a queued turn, and since it left the queue for the others. 0 without such a turn. An age well beyond the limit of its state, `runtime.maxQueueWaitSeconds`, `runtime.maxStartupSeconds` or `runtime.maxTurnSeconds`, means that no Supervisor is ending the turn; with `memory` snapshots, the time that a turn waits for approval does not count toward its limit. |
 | `aviary_approvals_waiting` | Approval requests that wait for a person's answer, by `harness`. A turn can have several. |
 
 ## Dashboard

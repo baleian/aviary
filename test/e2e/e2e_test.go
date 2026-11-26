@@ -42,9 +42,7 @@ const (
 	patience = 3 * time.Minute
 	// soon is how long a test waits for something that should follow at once.
 	soon = 30 * time.Second
-	// idle is sandboxes.idleSeconds in values.yaml, and look is how often the
-	// Supervisors look at the sandboxes.
-	idle = 30 * time.Second
+	// look is how often the Supervisors look at the sandboxes.
 	look = time.Minute
 )
 

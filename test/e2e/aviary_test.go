@@ -46,9 +46,9 @@ func TestAviary(t *testing.T) {
 				t.Parallel()
 				sleeps(t, harness)
 			})
-			t.Run(harness+" turn awaiting approval keeps its session awake", func(t *testing.T) {
+			t.Run(harness+" turn awaiting approval sleeps until it is answered", func(t *testing.T) {
 				t.Parallel()
-				keepsAwake(t, harness)
+				waitsAsleep(t, harness)
 			})
 			t.Run(harness+" agent uses the tools of MCP servers", func(t *testing.T) {
 				t.Parallel()
@@ -457,22 +457,18 @@ func attaches(t *testing.T) {
 	}
 }
 
-// A turn that waits for approval keeps its sandbox from sleeping, and goes on
-// when it is answered.
-func keepsAwake(t *testing.T, name string) {
+// A turn that waits for approval has its sandbox put to sleep after the idle
+// time, as an idle session has, and the answer wakes it where it was: the
+// snapshots keep the processes.
+func waitsAsleep(t *testing.T, name string) {
 	session := newAgent(t, fmt.Sprintf(`{"harness": %q, "approval": "ask"}`, name)).session(t)
-	accepted := send(t, session, "escalate touch "+unique("awake"))
+	accepted := send(t, session, "escalate touch "+unique("asleep"))
 	var asked approvalRequest
 	read(t, accepted.ID).until(t, "asked for approval", func(next event) bool {
 		return next.Type == "approval.requested" && json.Unmarshal([]byte(next.Data), &asked) == nil
 	})
 	waiting := actorOf(t, session)
-	// Past the idle time, and long enough for every Supervisor to have looked
-	// for idle sessions since.
-	time.Sleep(idle + look + 5*time.Second)
-	if still := actorOf(t, session); waiting == nil || still == nil || still.UID != waiting.UID || still.State != ateapi.ActorState_ACTOR_STATE_RUNNING {
-		t.Fatalf("sandbox of a turn awaiting approval = %+v, then %+v; want it running all along", waiting, still)
-	}
+	asleep(t, session)
 	// Other tests have turns too, so the state metrics are only checked to
 	// count this one.
 	for _, series := range []string{
@@ -497,6 +493,9 @@ func keepsAwake(t *testing.T, name string) {
 	// A new reader gives the turn the full patience from the answer.
 	if last := read(t, accepted.ID).end(t); last.Type != "turn.completed" {
 		t.Fatalf("turn approved after a long wait ended with %s %s, want turn.completed", last.Type, last.Data)
+	}
+	if woken := actorOf(t, session); waiting == nil || woken == nil || woken.UID != waiting.UID {
+		t.Errorf("sandbox of the turn = %+v, then %+v; want the same one, woken", waiting, woken)
 	}
 }
 

@@ -27,11 +27,13 @@ they are.
 
 The workers of Agent Substrate hold the sandboxes while they are awake: the
 running turns, and the sessions that were in use within the last
-`sandboxes.idleSeconds` unless a queued turn needs their room. A worker has
-the room of its `workers.resources`, and holds the sandboxes whose limits
-fit in it, so `workers.replicas` and `workers.resources` bound the sessions
-that are awake at once, and the resources that they take. A sleeping
-sandbox takes no room: its snapshot is in the
+`sandboxes.idleSeconds` unless a queued turn needs their room. With `memory`
+snapshots, a turn that waits for a person to answer it is idle as well: its
+sandbox sleeps as an idle session's does, and wakes with the answer. A
+worker has the room of its `workers.resources`, and holds the sandboxes
+whose limits fit in it, so `workers.replicas` and `workers.resources` bound
+the sessions that are awake at once, and the resources that they take. A
+sleeping sandbox takes no room: its snapshot is in the
 [object storage](./storage.md#the-object-storage), and a session that
 exists costs only that. To have more room, add workers, by hand or with an
 autoscaler of the WorkerPool.

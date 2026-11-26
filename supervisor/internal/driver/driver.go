@@ -34,6 +34,9 @@ const (
 	recheck = 5 * time.Second
 	// nextTurns is the number of queued turns that a dispatch looks at.
 	nextTurns = 1000
+	// lulled is the number of idle sandboxes that a look puts to sleep at
+	// most.
+	lulled = 1000
 	// placing is how long a dispatch waits to learn whether a worker took a
 	// sandbox that wakes up. A worker that takes it books its place before
 	// the sandbox is restored on it, and no worker having room is told at
@@ -90,7 +93,8 @@ type Config struct {
 	// keeps its processes has to be stopped that way.
 	Halt bool
 	// Idle is how long a session may go without a running turn before its
-	// sandbox is put to sleep. Zero disables sleeping.
+	// sandbox is put to sleep, and with Halt how long a turn may wait for a
+	// person before its sandbox is. Zero disables sleeping.
 	Idle time.Duration
 	// Retention is how long a session is kept after its last message. After
 	// that its sandbox is deleted, and the session ends. Zero keeps it until
@@ -402,9 +406,11 @@ func (d *Driver) wakeUp(ctx context.Context, id string) error {
 }
 
 // makeRoom puts to sleep the sandbox that has been idle the longest, so that
-// a turn that needs room gets it, and reports whether there was one.
+// a turn that needs room gets it, and reports whether there was one. With
+// Halt, the sandbox of a turn that waits for a person is idle too: its
+// snapshot keeps the turn.
 func (d *Driver) makeRoom(ctx context.Context) bool {
-	idle, err := d.store.IdleSandboxes(ctx, 1)
+	idle, err := d.store.IdleSandboxes(ctx, 1, d.config.Halt)
 	if err != nil {
 		slog.ErrorContext(ctx, "list idle sandboxes", "error", err)
 		return false
@@ -515,6 +521,9 @@ func (d *Driver) look(ctx context.Context) {
 	for _, session := range recorded {
 		d.tend(ctx, session, sandbox.Sandbox{Name: session.Sandbox, State: sandbox.Lost})
 	}
+	if d.config.Idle > 0 {
+		d.lull(ctx)
+	}
 	d.discardAttachments(ctx)
 }
 
@@ -553,9 +562,6 @@ func (d *Driver) tend(ctx context.Context, session store.Session, made sandbox.S
 		d.recover(ctx, session, made)
 	default:
 		d.correct(ctx, session, made)
-		if d.config.Idle > 0 && (made.State == sandbox.Running || made.State == sandbox.Starting) {
-			d.lull(ctx, session.ID, made)
-		}
 	}
 }
 
@@ -652,25 +658,28 @@ func (d *Driver) reap(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 	}
 }
 
-// lull puts the session's sandbox to sleep if the session's last turn ended
-// more than Idle ago. A turn that is given to the sandbox right between the
-// check and the suspension is stopped with it, unless the snapshot keeps the
-// processes: the follower of the turn then wakes the sandbox again, and the
-// turn goes on.
-func (d *Driver) lull(ctx context.Context, sessionID uuid.UUID, made sandbox.Sandbox) {
-	last, err := d.store.Turns(ctx, sessionID, math.MaxInt32, 1)
+// lull puts to sleep the sandboxes that have been idle for Idle: those of the
+// sessions whose last turns ended that long ago, and with Halt those of the
+// turns that have waited that long for a person. A turn that is given to a
+// sandbox right between the check and the suspension is stopped with it,
+// unless the snapshot keeps the processes: the follower of the turn then
+// wakes the sandbox again, and the turn goes on.
+func (d *Driver) lull(ctx context.Context) {
+	idle, err := d.store.IdleSandboxes(ctx, lulled, d.config.Halt)
 	if err != nil {
-		slog.ErrorContext(ctx, "read last turn of session", "session", sessionID, "error", err)
+		slog.ErrorContext(ctx, "list idle sandboxes", "error", err)
 		return
 	}
-	if len(last) > 0 && (last[0].EndedAt == nil || time.Since(*last[0].EndedAt) < d.config.Idle) {
-		return
-	}
-	switch err := d.suspend(ctx, sessionID, made.Name); {
-	case err == nil:
-		slog.InfoContext(ctx, "idle sandbox put to sleep", "session", sessionID, "sandbox", made.Name)
-	case !errors.Is(err, sandbox.ErrNotFound):
-		slog.ErrorContext(ctx, "put idle sandbox to sleep", "session", sessionID, "sandbox", made.Name, "error", err)
+	for _, each := range idle {
+		if each.Idle < d.config.Idle {
+			return
+		}
+		switch err := d.suspend(ctx, each.SessionID, each.Sandbox); {
+		case err == nil:
+			slog.InfoContext(ctx, "idle sandbox put to sleep", "session", each.SessionID, "sandbox", each.Sandbox, "idle", each.Idle)
+		case !errors.Is(err, sandbox.ErrNotFound):
+			slog.ErrorContext(ctx, "put idle sandbox to sleep", "session", each.SessionID, "sandbox", each.Sandbox, "error", err)
+		}
 	}
 }
 

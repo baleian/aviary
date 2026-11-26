@@ -376,7 +376,8 @@ func (suite suite) testConcurrentDispatchTurnAndCancelTurn(t *testing.T) {
 }
 
 // IdleSandboxes lists the awake sandboxes of the sessions that have no
-// unfinished turn, the longest idle first.
+// unfinished turn, the longest idle first, and with waiting those whose turns
+// wait for a person too.
 func (suite suite) testIdleSandboxes(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
@@ -388,6 +389,27 @@ func (suite suite) testIdleSandboxes(t *testing.T) {
 		if err := st.SetSandboxState(ctx, session, name, state); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// A turn that waits for a person, one whose request a person answered,
+	// and one that is asked to stop.
+	asking := func(name string) (uuid.UUID, uuid.UUID) {
+		t.Helper()
+		session := st.session()
+		sandboxOf(session, name, store.SandboxAwake)
+		turn := st.running(session).TurnID
+		if err := st.AddApproval(ctx, turn, "1", []byte(`{}`)); err != nil {
+			t.Fatal(err)
+		}
+		return session, turn
+	}
+	waits, _ := asking("waits")
+	answered, turn := asking("answered")
+	if ok, err := st.AnswerApproval(ctx, turn, "1", "once", uuid.Nil); err != nil || !ok {
+		t.Fatalf("AnswerApproval = %t, %v", ok, err)
+	}
+	stopping, turn := asking("stopping")
+	if _, _, err := st.CancelTurn(ctx, turn); err != nil {
+		t.Fatal(err)
 	}
 	// Two sessions whose turns ended, one after the other.
 	var ended []uuid.UUID
@@ -404,22 +426,31 @@ func (suite suite) testIdleSandboxes(t *testing.T) {
 	asleep := st.session()
 	sandboxOf(asleep, "asleep", store.SandboxAsleep)
 
-	idle, err := st.IdleSandboxes(ctx, 50)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The stores of the other tests have idle sandboxes too.
-	var mine []store.IdleSandbox
-	for _, each := range idle {
-		if slices.Contains(ended, each.SessionID) || each.SessionID == busy || each.SessionID == asleep {
-			mine = append(mine, each)
+	sessions := append([]uuid.UUID{busy, asleep, waits, answered, stopping}, ended...)
+	mine := func(waiting bool) ([]uuid.UUID, []store.IdleSandbox) {
+		t.Helper()
+		idle, err := st.IdleSandboxes(ctx, 1000, waiting)
+		if err != nil {
+			t.Fatal(err)
 		}
+		// The stores of the other tests have idle sandboxes too.
+		var ids []uuid.UUID
+		var mine []store.IdleSandbox
+		for _, each := range idle {
+			if slices.Contains(sessions, each.SessionID) {
+				ids, mine = append(ids, each.SessionID), append(mine, each)
+			}
+		}
+		return ids, mine
 	}
-	if len(mine) != 2 || mine[0].SessionID != ended[0] || mine[0].Sandbox != "idle-0" || mine[1].SessionID != ended[1] ||
-		mine[0].Idle < mine[1].Idle || mine[1].Idle < 0 {
-		t.Errorf("IdleSandboxes = %+v, want the two sessions whose turns ended, the earlier first", mine)
+	if ids, idle := mine(false); !slices.Equal(ids, ended) || idle[0].Sandbox != "idle-0" || idle[0].Idle < idle[1].Idle || idle[1].Idle < 0 {
+		t.Errorf("IdleSandboxes = %+v, want the two sessions whose turns ended, the earlier first", idle)
 	}
-	if one, err := st.IdleSandboxes(ctx, 1); err != nil || len(one) != 1 {
+	// The turn that waits began to wait before the others ended.
+	if ids, idle := mine(true); !slices.Equal(ids, []uuid.UUID{waits, ended[0], ended[1]}) || idle[0].Sandbox != "waits" {
+		t.Errorf("IdleSandboxes with the turns that wait = %+v, want the one that waits and then those that ended", idle)
+	}
+	if one, err := st.IdleSandboxes(ctx, 1, true); err != nil || len(one) != 1 {
 		t.Errorf("IdleSandboxes up to 1 = %+v, %v", one, err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"aviary/supervisor/internal/api"
 	"aviary/supervisor/internal/driver"
+	"aviary/supervisor/internal/sandbox"
 )
 
 // waiting returns the IDs of the pending approval requests of the turn.
@@ -35,6 +36,47 @@ func (s *supervisor) approve(turn, request, body string) (int, map[string]string
 	var reply map[string]string
 	status, _ := s.request("POST", "/v1/turns/"+turn+"/approvals/"+request, body, &reply)
 	return status, reply
+}
+
+// With snapshots that keep processes, the sandbox of a turn that has waited
+// for a person for the idle time sleeps, as that of an idle session does, and
+// an answer wakes it. The time that the turn waited does not count toward its
+// limit.
+func TestATurnThatWaitsSleeps(t *testing.T) {
+	t.Parallel()
+	aviary := install(t, func(config *driver.Config) {
+		config.Halt = true
+		config.Idle = 300 * time.Millisecond
+		config.MaxTurn = time.Second
+		// Sandboxes are looked at only every few sweeps.
+		config.Sweep = 20 * time.Millisecond
+	})
+	aviary.service.KeepProcesses()
+	s := aviary.supervisor()
+	turn := s.send(s.session(`{"harness": "opencode", "approval": "ask"}`), "hello")
+	runner := aviary.given(turn.ID)
+	runner.report(started("harness-session"))
+	runner.report(asks("1", "rm -r build"))
+	eventually(t, patience, "the sandbox of the turn that waits does not sleep", func() bool {
+		return aviary.service.State(runner.Sandbox) == sandbox.Asleep
+	})
+	time.Sleep(1500 * time.Millisecond)
+	if record := s.turn(turn.ID); record.EndedAt != nil || aviary.service.State(runner.Sandbox) != sandbox.Asleep {
+		t.Fatalf("turn that waited for longer than it may run = %+v, sandbox %s; want it to wait on, asleep",
+			record, aviary.service.State(runner.Sandbox))
+	}
+
+	if status, reply := s.approve(turn.ID, "1", `{"option_id": "once"}`); status != http.StatusAccepted {
+		t.Fatalf("approve = %d %v, want 202", status, reply)
+	}
+	if id, option := runner.answer(); id != "1" || option != "once" {
+		t.Errorf("runner got option %q for request %q", option, id)
+	}
+	runner.report(answered("1", "selected", "once"))
+	runner.report(finished("end_turn", nil))
+	if record := s.turn(turn.ID); record.State != "completed" {
+		t.Errorf("turn = %+v, want it completed", record)
+	}
 }
 
 // An approval request can be answered through any Supervisor.

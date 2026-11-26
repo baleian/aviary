@@ -458,11 +458,13 @@ type QueuedTurn struct {
 	Waited time.Duration
 }
 
-// IdleSandbox is the awake sandbox of a session that has no unfinished turn.
+// IdleSandbox is the awake sandbox of a session that has no unfinished turn,
+// or whose unfinished turn waits for a person.
 type IdleSandbox struct {
 	SessionID uuid.UUID
 	Sandbox   string
-	// Idle is how long ago the session's last turn ended.
+	// Idle is how long ago the session's last turn ended, or its unfinished
+	// turn began to wait for a person.
 	Idle time.Duration
 }
 
@@ -809,8 +811,10 @@ type Store interface {
 
 	// IdleSandboxes returns up to limit sessions whose sandboxes are
 	// recorded awake and that have no unfinished turn, the longest idle
-	// first.
-	IdleSandboxes(ctx context.Context, limit int) ([]IdleSandbox, error)
+	// first. With waiting, a session whose unfinished turn waits for a person
+	// is idle too, since the oldest of the turn's approval requests that wait
+	// for an answer was made, unless the turn is asked to stop.
+	IdleSandboxes(ctx context.Context, limit int, waiting bool) ([]IdleSandbox, error)
 
 	// CancelTurn cancels the turn. A queued turn ends at once; a dispatched
 	// turn is marked, and ends when its harness has stopped. CancelTurn returns
@@ -886,6 +890,10 @@ type Store interface {
 	// WaitingApprovals returns the turn's requests that wait for an answer,
 	// oldest first.
 	WaitingApprovals(ctx context.Context, turnID uuid.UUID) ([]json.RawMessage, error)
+
+	// WaitedForAnswers returns how long the turn's approval requests waited
+	// for their answers, together, until now for those that wait.
+	WaitedForAnswers(ctx context.Context, turnID uuid.UUID) (time.Duration, error)
 
 	// Answers returns the answers that have not yet been delivered to the
 	// harnesses of unfinished turns: those of turnID, or of all turns if

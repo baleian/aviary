@@ -71,14 +71,25 @@ type turn struct {
 	attachments []*store.Attachment
 }
 
+// asked returns when the oldest of the turn's approval requests that wait for
+// an answer was made, or zero if none waits.
+func (t *turn) asked() time.Time {
+	for _, approval := range t.approvals {
+		if !approval.answered && !approval.resolved {
+			return approval.requestedAt
+		}
+	}
+	return time.Time{}
+}
+
 type approval struct {
-	id                 string
-	request            json.RawMessage
-	requestedAt        time.Time
-	optionID           string
-	answeredBy         uuid.UUID
-	answered, resolved bool
-	resolvedAt         time.Time
+	id                     string
+	request                json.RawMessage
+	requestedAt            time.Time
+	optionID               string
+	answeredBy             uuid.UUID
+	answered, resolved     bool
+	answeredAt, resolvedAt time.Time
 }
 
 func New() *Store {
@@ -1430,7 +1441,7 @@ func (s *Store) DispatchTurn(ctx context.Context, turnID uuid.UUID) (bool, error
 	return true, nil
 }
 
-func (s *Store) IdleSandboxes(ctx context.Context, limit int) ([]store.IdleSandbox, error) {
+func (s *Store) IdleSandboxes(ctx context.Context, limit int, waiting bool) ([]store.IdleSandbox, error) {
 	if err := s.begin(ctx); err != nil {
 		return nil, err
 	}
@@ -1443,10 +1454,15 @@ func (s *Store) IdleSandboxes(ctx context.Context, limit int) ([]store.IdleSandb
 		}
 		since := session.CreatedAt
 		if last := len(session.turns); last > 0 {
-			if session.turns[last-1].EndedAt == nil {
+			turn := session.turns[last-1]
+			switch asked := turn.asked(); {
+			case turn.EndedAt != nil:
+				since = *turn.EndedAt
+			case waiting && turn.CancelRequestedAt == nil && !asked.IsZero():
+				since = asked
+			default:
 				continue
 			}
-			since = *session.turns[last-1].EndedAt
 		}
 		idle = append(idle, store.IdleSandbox{SessionID: session.ID, Sandbox: session.Sandbox, Idle: now.Sub(since)})
 	}
@@ -1748,7 +1764,7 @@ func (s *Store) AnswerApproval(ctx context.Context, turnID uuid.UUID, id, option
 	if kept == nil || kept.answered || kept.resolved || turn.EndedAt != nil {
 		return false, nil
 	}
-	kept.optionID, kept.answeredBy, kept.answered = optionID, by, true
+	kept.optionID, kept.answeredBy, kept.answered, kept.answeredAt = optionID, by, true, s.now()
 	return true, nil
 }
 
@@ -1766,6 +1782,30 @@ func (s *Store) WaitingApprovals(ctx context.Context, turnID uuid.UUID) ([]json.
 		}
 	}
 	return requests, nil
+}
+
+func (s *Store) WaitedForAnswers(ctx context.Context, turnID uuid.UUID) (time.Duration, error) {
+	if err := s.begin(ctx); err != nil {
+		return 0, err
+	}
+	defer s.mu.Unlock()
+	turn, found := s.turns[turnID]
+	if !found {
+		return 0, nil
+	}
+	now := s.now()
+	var waited time.Duration
+	for _, approval := range turn.approvals {
+		until := now
+		switch {
+		case approval.answered:
+			until = approval.answeredAt
+		case approval.resolved:
+			until = approval.resolvedAt
+		}
+		waited += until.Sub(approval.requestedAt)
+	}
+	return waited, nil
 }
 
 func (s *Store) Answers(ctx context.Context, turnID *uuid.UUID) ([]store.Answer, error) {

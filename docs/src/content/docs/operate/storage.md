@@ -18,7 +18,8 @@ awake, what its snapshot keeps while it sleeps, and when it is deleted.
 2. **Asleep.** `sandboxes.idleSeconds` without a running turn, 300 by
    default, put the session to sleep: a snapshot keeps the sandbox, and it
    leaves its worker. Its next turn wakes it from the snapshot on a worker
-   that has room.
+   that has room. With `memory` snapshots, a turn that has waited as long
+   for a person to answer it sleeps as well, and the answer wakes it.
 3. **Ended.** A session ends when its owner ends it, when its agent is
    deleted, or `sandboxes.retentionSeconds` after its last turn, which by
    default is never. Its sandbox is deleted with its snapshot, and its
