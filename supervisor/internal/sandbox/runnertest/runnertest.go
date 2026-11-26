@@ -123,8 +123,8 @@ type Runner struct {
 	turn *Turn
 }
 
-// Gone simulates the loss of the runner's pod: the event streams of its turn
-// are cut off.
+// Gone cuts off the event streams of the runner's turn, as when its sandbox
+// goes to sleep or is lost.
 func (rn *Runner) Gone() {
 	rn.mu.Lock()
 	turn := rn.turn
@@ -305,7 +305,7 @@ func (rn *Runner) events(w http.ResponseWriter, r *http.Request) {
 		ended, changed, cut := turn.ended, turn.changed, turn.cuts != cuts
 		turn.mu.Unlock()
 		if cut {
-			// Abort the response, as a lost pod would.
+			// Abort the response, as a lost sandbox would.
 			panic(http.ErrAbortHandler)
 		}
 		for _, event := range events {
