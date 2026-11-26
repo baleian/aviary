@@ -364,7 +364,7 @@
     {
       "type": "stat",
       "title": "Sandboxes now",
-      "description": "Sandboxes of the sessions that have not ended, by state, as the state metrics count them in the database. An archived one is a home in the depot, without a sandbox.",
+      "description": "Sandboxes of the sessions that have not ended, by state, as the state metrics count them in the database.",
       "id": 15,
       "gridPos": {"h": 8, "w": 4, "x": 0, "y": 10},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
@@ -385,24 +385,10 @@
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"archived\"})",
-          "instant": true,
-          "legendFormat": "archived",
-          "refId": "C"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"restoring\"})",
-          "instant": true,
-          "legendFormat": "restoring",
-          "refId": "D"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "${datasource}"},
           "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"lost\"})",
           "instant": true,
           "legendFormat": "lost",
-          "refId": "E"
+          "refId": "C"
         }
       ],
       "fieldConfig": {
@@ -438,7 +424,7 @@
     {
       "type": "timeseries",
       "title": "Sandboxes by state",
-      "description": "Sandboxes of the sessions that have not ended. An awake sandbox has a pod, and an asleep one only its volume. An archived one is a home in the depot, without a sandbox, and a restoring one is the new sandbox that a turn unpacks the home in. A lost one is gone although its session has not ended.",
+      "description": "Sandboxes of the sessions that have not ended. An awake sandbox runs on a worker, and an asleep one is kept as a snapshot. A lost one is gone although its session has not ended.",
       "id": 16,
       "gridPos": {"h": 8, "w": 20, "x": 4, "y": 10},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
@@ -457,21 +443,9 @@
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"archived\"})",
-          "legendFormat": "archived",
-          "refId": "C"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"restoring\"})",
-          "legendFormat": "restoring",
-          "refId": "D"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "${datasource}"},
           "expr": "sum(aviary_sandboxes{namespace=\"$namespace\", state=\"lost\"})",
           "legendFormat": "lost",
-          "refId": "E"
+          "refId": "C"
         }
       ],
       "fieldConfig": {
@@ -485,8 +459,6 @@
         "overrides": [
           {"matcher": {"id": "byName", "options": "awake"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
           {"matcher": {"id": "byName", "options": "asleep"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
-          {"matcher": {"id": "byName", "options": "archived"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}]},
-          {"matcher": {"id": "byName", "options": "restoring"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "purple"}}]},
           {"matcher": {"id": "byName", "options": "lost"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
         ]
       },
@@ -1599,7 +1571,7 @@
     {
       "type": "timeseries",
       "title": "Volume used",
-      "description": "Bytes of the volume that are taken, by the objects and by anything else in it. It grows as homes are archived, and falls as they are restored or their sessions end.",
+      "description": "Bytes of the volume that are taken, by the objects and by anything else in it. It grows as messages carry files, and falls as their sessions end.",
       "id": 106,
       "gridPos": {"h": 8, "w": 8, "x": 4, "y": 87},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
@@ -1628,7 +1600,7 @@
     {
       "type": "timeseries",
       "title": "Objects written and read",
-      "description": "Objects that the depots wrote and read per minute: the homes that were archived and restored.",
+      "description": "Objects that the depots wrote and read per minute: the files that messages carry.",
       "id": 107,
       "gridPos": {"h": 8, "w": 8, "x": 12, "y": 87},
       "interval": "1m",
@@ -1667,7 +1639,7 @@
     {
       "type": "stat",
       "title": "Requests in range",
-      "description": "Requests that the depots served in the selected range, those that they refused, as for an object that is not there, and those that they or the volume failed, as when the volume is full. A home whose archive cannot be written stays in its volume, and a turn whose archive cannot be read fails.",
+      "description": "Requests that the depots served in the selected range, those that they refused, as for an object that is not there, and those that they or the volume failed, as when the volume is full. A message whose files cannot be written is refused, and a turn whose files cannot be read fails.",
       "id": 108,
       "gridPos": {"h": 8, "w": 4, "x": 20, "y": 87},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
