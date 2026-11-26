@@ -506,7 +506,7 @@ function Footer({
   turn: Turn;
   stands: Status;
   quiet: boolean;
-  awaits?: "wake" | "restore";
+  awaits?: "wake";
   onStop?: () => void;
   onAgain?: (text: string) => void;
 }) {
@@ -536,13 +536,7 @@ function Footer({
     return (
       <p className="state">
         <span className="ring" />
-        <span>
-          {awaits === "restore"
-            ? "Restoring files…"
-            : awaits === "wake"
-              ? "Waking up…"
-              : "Starting…"}
-        </span>
+        <span>{awaits === "wake" ? "Waking up…" : "Starting…"}</span>
       </p>
     );
   }
@@ -658,10 +652,9 @@ export const TurnView = memo(function TurnView({
   // Whether the API still has the files of the message: it keeps them
   // until the session ends.
   kept?: boolean;
-  // What the turn waits for before it starts, if its session had no
-  // sandbox that was awake: for the sandbox to wake, or for the files of
-  // the session to be restored into a new one.
-  awaits?: "wake" | "restore";
+  // What the turn waits for before it starts: for the sandbox of its
+  // session to wake, if it was asleep.
+  awaits?: "wake";
   // Stops the turn, for a caller who may while it has not ended.
   onStop?: () => void;
   // Takes the message of a turn that did not run to its end, to send it

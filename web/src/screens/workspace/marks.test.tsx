@@ -32,8 +32,6 @@ it("says how the sandbox of a session is, in a word and as a mark", () => {
   for (const [sandbox, word, glyph] of [
     ["awake", "Awake", undefined],
     ["asleep", "Asleep", "#i-moon"],
-    ["archived", "Archived", "#i-box"],
-    ["restoring", "Restoring", "#i-box"],
     ["lost", "Lost", "#i-warn"],
   ] as const) {
     const { badge, mark } = show(session({ sandbox }));

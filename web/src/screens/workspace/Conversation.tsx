@@ -239,9 +239,6 @@ export function Conversation({
       }
     : undefined;
   const why = barred(context, me, session.data);
-  // The files of an archived session are restored before its turn starts.
-  const restoring =
-    session.data.sandbox === "archived" || session.data.sandbox === "restoring";
 
   return (
     <>
@@ -276,13 +273,7 @@ export function Conversation({
                 servers={context.mcpServers}
                 person={who}
                 kept={!session.data.ended_at}
-                awaits={
-                  turn.id === unfinished && restoring
-                    ? "restore"
-                    : turn.id === compose.woken
-                      ? "wake"
-                      : undefined
-                }
+                awaits={turn.id === compose.woken ? "wake" : undefined}
                 onStop={turn.id === unfinished ? stop : undefined}
                 onAnswer={turn.id === unfinished ? answer : undefined}
                 onAgain={why ? undefined : compose.fill}
