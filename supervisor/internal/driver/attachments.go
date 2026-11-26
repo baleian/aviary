@@ -167,6 +167,10 @@ func (d *Driver) deliver(ctx context.Context, turn store.FollowedTurn, runner *s
 	return paths, nil
 }
 
+// leftAtOnce is the number of attachments that a look at the sandboxes
+// deletes at most, of each kind.
+const leftAtOnce = 100
+
 // discardAttachments deletes the attachments that no message has carried
 // for UnsentFor, and those that sessions have left when they ended. The
 // latter are deleted only UnsentFor after the session ended, when no upload

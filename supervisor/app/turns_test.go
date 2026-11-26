@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
 
 	"aviary/supervisor/events"
 	"aviary/supervisor/internal/driver"
+	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/store"
 )
 
@@ -45,8 +47,8 @@ func TestTurn(t *testing.T) {
 		t.Errorf("accepted turn = %+v", accepted)
 	}
 	runner := aviary.given(accepted.ID)
-	if image := aviary.service.Made()[runner.Sandbox].Pod.Harness.Image; image != "registry.example.com/harness-codex:1.0" {
-		t.Errorf("sandbox image = %s, want the codex harness", image)
+	if harness := aviary.made(runner.Sandbox).Harness; harness != "codex" {
+		t.Errorf("sandbox harness = %s, want codex", harness)
 	}
 	if runner.Text != "hello" || runner.Instructions != "Be brief." || runner.Approval != "" {
 		t.Errorf("runner turn = %+v", runner.Turn)
@@ -54,26 +56,16 @@ func TestTurn(t *testing.T) {
 	if state := s.turn(accepted.ID).State; state != "running" {
 		t.Errorf("turn state = %s, want running", state)
 	}
-	// While a turn runs, the session token is accepted for model and forward
-	// proxy requests, which are attributed to the turn.
-	token := aviary.token(runner.Sandbox)
-	for _, forward := range []bool{false, true} {
-		origin := s.origin(token, forward)
-		if origin["turn"] != accepted.ID || origin["session"] != session || origin["agent"] == "" || origin["project"] == "" {
-			t.Errorf("origin of the running turn's token = %v", origin)
-		}
-		// Without an identity provider, the message has no sender.
-		_, user := origin["user"]
-		if _, subject := origin["subject"]; user || subject {
-			t.Errorf("origin has a sender without an identity provider: %v", origin)
-		}
-		// Only model requests name a provider.
-		if _, provider := origin["provider"]; provider == forward {
-			t.Errorf("forward %t: provider = %q", forward, origin["provider"])
-		}
+	// While a turn runs, the gateway gets the secrets of its provider for the
+	// session's sandbox, and for no other.
+	key := aviary.made(runner.Sandbox).Egress.Secrets[0].URI
+	if got, code, why := s.fetch(runner.Sandbox, key); code != codes.OK || got != "sk-a-key" {
+		t.Errorf("the key of the running turn's provider = %q, refused with %v %q", got, code, why)
 	}
-	if origin := s.origin("another-token", false); origin != nil {
-		t.Errorf("origin of an unknown token = %v, want nil", origin)
+	for _, other := range []string{sandbox.Name(uuid.New()), "another-actor"} {
+		if _, code, why := s.fetch(other, key); code != codes.PermissionDenied {
+			t.Errorf("the key for the sandbox %s: refused with %v %q, want PermissionDenied", other, code, why)
+		}
 	}
 
 	runner.report(started("harness-session-1"))
@@ -122,8 +114,8 @@ func TestTurn(t *testing.T) {
 		said[1]["type"] != "tool_call" || said[1]["title"] != "ls" || said[1]["status"] != "completed" || said[1]["output"] != "a.txt" {
 		t.Errorf("turn items = %v", said)
 	}
-	if origin := s.origin(token, true); origin != nil {
-		t.Errorf("origin of an ended turn's token = %v, want nil", origin)
+	if _, code, why := s.fetch(runner.Sandbox, key); code != codes.PermissionDenied || why != "no turn runs in the session" {
+		t.Errorf("the key after the turn: refused with %v %q", code, why)
 	}
 	// The title is the client's to set: the session keeps its own.
 	var kept struct{ Title string }

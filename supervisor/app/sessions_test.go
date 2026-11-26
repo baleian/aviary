@@ -1,9 +1,7 @@
 package app
 
 import (
-	"fmt"
 	"net/http"
-	"slices"
 	"testing"
 	"time"
 
@@ -146,97 +144,6 @@ func TestSessionSandbox(t *testing.T) {
 	if state, has := read()["sandbox"]; has {
 		t.Errorf("sandbox of an ended session = %v, want none", state)
 	}
-}
-
-// A session whose sandbox has slept for long has its home archived in the
-// depot, and says so: it has no sandbox then. Its next turn restores the home
-// into a new sandbox, and the session says so meanwhile. The state metrics
-// count both, and a client that watches the project is sent the session.
-func TestSessionHomeIsArchivedAndRestored(t *testing.T) {
-	t.Parallel()
-	objects := runDepot(t, t.TempDir())
-	aviary := install(t, func(config *driver.Config) {
-		config.Depot = objects.Client
-		config.Idle = 100 * time.Millisecond
-		config.ArchiveAfter = 100 * time.Millisecond
-		config.MaxRestore = time.Minute
-		// Sandboxes are looked at only every few sweeps.
-		config.Sweep = 20 * time.Millisecond
-	})
-	s := aviary.supervisor()
-	s.hears()
-	metrics := stateMetrics(t, aviary.records)
-	counted := func(state string, sandboxes int) bool {
-		t.Helper()
-		status, lines := scrape(t, metrics)
-		if status != http.StatusOK {
-			t.Fatalf("scrape: status %d, want 200", status)
-		}
-		return slices.Contains(lines, fmt.Sprintf(`aviary_sandboxes{state=%q} %d`, state, sandboxes))
-	}
-	project := s.project()
-	stream := s.changes(project)
-	session := s.create("/v1/agents/"+s.agent(project, `{"harness": "opencode"}`)+"/sessions", "")
-	path := "/v1/sessions/" + session
-	state := func() any {
-		t.Helper()
-		var read map[string]any
-		if status, _ := s.request("GET", path, "", &read); status != http.StatusOK {
-			t.Fatalf("GET session: status %d, want 200", status)
-		}
-		return read["sandbox"]
-	}
-	if !counted("archived", 0) || !counted("restoring", 0) {
-		t.Error("state metrics do not report 0 archived and restoring sandboxes from the start")
-	}
-
-	runner := aviary.given(s.send(session, "hello").ID)
-	name := runner.Sandbox
-	aviary.service.Home(name).Write("the files of the agent")
-	slept := aviary.service.UID(name)
-	runner.report(started("harness-session"))
-	runner.report(finished("end_turn", nil))
-	stream.sent("the session whose home is archived", func(sent map[string]any) bool {
-		return sent["id"] == session && sent["sandbox"] == "archived"
-	})
-	if got := state(); got != "archived" {
-		t.Errorf("sandbox of a session whose home is archived = %v, want archived", got)
-	}
-	eventually(t, soon, "the sandbox of the archived home still exists", func() bool {
-		return aviary.service.UID(name) == ""
-	})
-	if !counted("archived", 1) || !counted("asleep", 0) {
-		t.Error("state metrics do not count the archived home, or count its sandbox as asleep")
-	}
-
-	// The new sandbox does not run yet.
-	aviary.service.Slow(true)
-	next := s.send(session, "and then")
-	eventually(t, soon, "the session does not say that its home is being restored", func() bool {
-		return state() == "restoring"
-	})
-	if !counted("restoring", 1) || !counted("archived", 0) {
-		t.Error("state metrics do not count the home that is being restored, or still count it as archived")
-	}
-	aviary.service.Slow(false)
-	runner = aviary.given(next.ID)
-	if content, unpacked := aviary.service.Home(name).Content(); content != "the files of the agent" || unpacked != 1 {
-		t.Errorf("home of the new sandbox = %q, unpacked %d times; want the archived home, unpacked once", content, unpacked)
-	}
-	if restored := aviary.service.UID(name); restored == "" || restored == slept {
-		t.Errorf("sandbox of the restored home = %q, want a new one in place of %s", restored, slept)
-	}
-	stream.sent("the session whose home is restored", func(sent map[string]any) bool {
-		return sent["id"] == session && sent["sandbox"] == "awake"
-	})
-	if got := state(); got != "awake" {
-		t.Errorf("sandbox of a session whose home is restored = %v, want awake", got)
-	}
-	if !counted("awake", 1) || !counted("restoring", 0) {
-		t.Error("state metrics do not count the sandbox of the restored home as awake")
-	}
-	runner.report(started("harness-session"))
-	runner.report(finished("end_turn", nil))
 }
 
 // A session that was not used for longer than its sandbox is kept ends when

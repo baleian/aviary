@@ -178,14 +178,14 @@ func TestStoppingDepotFinishesItsTransfers(t *testing.T) {
 	}
 	put := make(chan result, 1)
 	go func() {
-		size, err := d.Put(context.Background(), "archives/a-session/an-archive", body)
+		size, err := d.Put(context.Background(), "attachments/a-session/a-file", body)
 		put <- result{size, err}
 	}()
 	if _, err := sender.Write(half); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, patience, "the depot has not begun to write the object", func() bool {
-		info, err := os.Stat(filepath.Join(dir, "archives/a-session/an-archive"))
+		info, err := os.Stat(filepath.Join(dir, "attachments/a-session/a-file"))
 		return err == nil && info.Size() > 0
 	})
 
@@ -195,7 +195,7 @@ func TestStoppingDepotFinishesItsTransfers(t *testing.T) {
 		close(stopped)
 	}()
 	eventually(t, patience, "the stopping depot still takes requests", func() bool {
-		_, _, err := d.Get(context.Background(), "archives/a-session/none")
+		_, _, err := d.Get(context.Background(), "attachments/a-session/none")
 		return err != nil && !errors.Is(err, depot.ErrNotFound)
 	})
 	select {
@@ -217,7 +217,7 @@ func TestStoppingDepotFinishesItsTransfers(t *testing.T) {
 	case <-time.After(patience):
 		t.Fatal("the depot did not stop after its transfer")
 	}
-	content, err := os.ReadFile(filepath.Join(dir, "archives/a-session/an-archive"))
+	content, err := os.ReadFile(filepath.Join(dir, "attachments/a-session/a-file"))
 	if err != nil || !slices.Equal(content, append(slices.Clone(half), half...)) {
 		t.Errorf("the object has %d bytes, %v; want the %d that were sent", len(content), err, 2*len(half))
 	}

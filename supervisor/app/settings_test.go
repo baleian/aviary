@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/secret"
 	"aviary/supervisor/store"
 )
@@ -17,21 +20,26 @@ import (
 // settings is a valid environment of a Supervisor, in the form that the chart
 // sets.
 var settings = map[string]string{
-	sandboxNamespace: "aviary-runtime",
-	sandboxVolume:    "10Gi",
-	sandboxIdle:      "300",
-	sandboxArchive:   "604800",
-	sandboxRetention: "0",
-	modelsURL:        "http://aviary-egress-proxy.aviary-system:8080",
-	proxyURL:         "http://aviary-egress-proxy.aviary-system:3128",
-	depotURL:         "http://aviary-depot.aviary-system:8080",
-	harnesses: `{"opencode": {"image": "registry.example/opencode:1",
-		"resources": {"requests": {"cpu": "250m", "memory": "1Gi"}, "limits": {"memory": "4Gi"}}}}`,
+	sandboxAtespace:    "aviary",
+	sandboxPool:        `{"aviary.io/pool": "sandboxes"}`,
+	sandboxSnapshot:    "memory",
+	sandboxHosts:       `["https://*", "http://pypi.example.com"]`,
+	sandboxIdle:        "300",
+	sandboxRetention:   "0",
+	substrateAPI:       "api.ate-system.svc.cluster.local:443",
+	substrateAuthority: "api.ate-system.svc",
+	substrateToken:     "/var/run/secrets/substrate/token",
+	substrateCA:        "/var/run/secrets/substrate/ca.pem",
+	substrateRouter:    "https://atenet-router.ate-system.svc.cluster.local:443",
+	routerName:         "atenet-router.ate-system.svc",
+	substrateIdentity:  "/var/run/secrets/substrate/identity.pem",
+	depotURL:           "http://aviary-depot.aviary-system:8080",
+	harnesses: `{"opencode": {"image": "registry.example/opencode@sha256:0123",
+		"resources": {"limits": {"cpu": "2", "memory": "4Gi"}}}}`,
 	maxConcurrentTurns: "50",
 	maxQueuedTurns:     "500",
 	maxQueueWait:       "120",
 	maxStartup:         "90",
-	maxRestore:         "600",
 	maxToolOutput:      "65536",
 	maxAttachmentBytes: "67108864",
 	maxAttachments:     "10",
@@ -56,19 +64,19 @@ func TestDriverConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 		opencode := config.Harnesses["opencode"]
-		if len(config.Harnesses) != 1 || opencode.Image != "registry.example/opencode:1" ||
-			!opencode.Resources.Requests.Cpu().Equal(resource.MustParse("250m")) || !opencode.Resources.Limits.Memory().Equal(resource.MustParse("4Gi")) {
+		if len(config.Harnesses) != 1 || opencode.Image != "registry.example/opencode@sha256:0123" ||
+			!opencode.Resources.Limits.Cpu().Equal(resource.MustParse("2")) || !opencode.Resources.Limits.Memory().Equal(resource.MustParse("4Gi")) {
 			t.Errorf("unexpected harnesses in config %+v", config)
 		}
 		if config.MaxConcurrentTurns != 50 || config.MaxQueuedTurns != 500 || config.MaxQueueWait != 2*time.Minute ||
 			config.MaxStartup != 90*time.Second || config.MaxTurn != 30*time.Minute || config.Idle != 5*time.Minute || config.Retention != 0 {
 			t.Errorf("unexpected limits in config %+v", config)
 		}
-		if config.Models.String() != settings[modelsURL] {
-			t.Errorf("Models = %s, want the AVIARY_LLM_BASE_URL setting", config.Models)
+		if hosts := []sandbox.Host{{TLS: true, Name: "*", Port: 443}, {Name: "pypi.example.com", Port: 80}}; !slices.Equal(config.Hosts, hosts) {
+			t.Errorf("Hosts = %+v, want %+v", config.Hosts, hosts)
 		}
-		if config.Depot == nil || config.ArchiveAfter != 7*24*time.Hour || config.MaxRestore != 10*time.Minute {
-			t.Errorf("unexpected archiving in config %+v", config)
+		if config.Depot == nil || config.Localhost != "" {
+			t.Errorf("unexpected depot or local host in config %+v", config)
 		}
 		if config.MaxAttachmentBytes != 64<<20 || config.MaxAttachments != 10 {
 			t.Errorf("unexpected limits of attachments in config %+v", config)
@@ -77,40 +85,35 @@ func TestDriverConfig(t *testing.T) {
 
 	t.Run("optional limits disabled", func(t *testing.T) {
 		set(t, map[string]string{
-			maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", maxRestore: "0", maxAttachments: "0",
-			sandboxIdle: "0", sandboxArchive: "0", sandboxRetention: "1",
+			maxQueuedTurns: "0", maxQueueWait: "0", maxStartup: "0", maxAttachments: "0",
+			sandboxIdle: "0", sandboxRetention: "1", sandboxHosts: "[]",
 		})
 		config, err := driverConfig()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.MaxRestore != 0 || config.MaxAttachments != 0 ||
-			config.Idle != 0 || config.ArchiveAfter != 0 || config.Retention != time.Second {
+		if config.MaxQueuedTurns != 0 || config.MaxQueueWait != 0 || config.MaxStartup != 0 || config.MaxAttachments != 0 ||
+			config.Idle != 0 || config.Retention != time.Second || len(config.Hosts) != 0 {
 			t.Errorf("unexpected limits in config %+v", config)
-		}
-		// The homes that were archived before are still restored.
-		if config.Depot == nil {
-			t.Error("config has no depot while archiving is disabled")
 		}
 	})
 
 	for _, wrong := range []struct{ name, value string }{
-		{modelsURL, ""}, {modelsURL, "aviary-egress-proxy:8080"}, {modelsURL, "https://aviary-egress-proxy:8080"},
 		{harnesses, ""}, {harnesses, `{"opencode": `},
-		{harnesses, `{"opencode": {"resources": {"requests": {"cpu": "1"}}}}`},
-		{harnesses, `{"opencode": {"image": "registry.example/opencode:1", "resources": {"requests": {"cpu": "lots"}}}}`},
+		{harnesses, `{"opencode": {"resources": {"limits": {"cpu": "1"}}}}`},
+		{harnesses, `{"opencode": {"image": "registry.example/opencode@sha256:0123", "resources": {"limits": {"cpu": "lots"}}}}`},
+		{sandboxHosts, ""}, {sandboxHosts, `"https://*"`}, {sandboxHosts, `["*"]`}, {sandboxHosts, `["https://10.0.0.1"]`},
 		{sandboxIdle, ""}, {sandboxIdle, "-1"}, {sandboxIdle, "5m"},
-		{sandboxArchive, ""}, {sandboxArchive, "-1"}, {sandboxArchive, "7d"},
 		{depotURL, ""}, {depotURL, "aviary-depot:8080"}, {depotURL, "https://aviary-depot:8080"},
 		{sandboxRetention, ""}, {sandboxRetention, "-1"},
 		{maxConcurrentTurns, ""}, {maxConcurrentTurns, "0"}, {maxConcurrentTurns, "many"},
 		{maxQueuedTurns, ""}, {maxQueuedTurns, "-1"},
 		{maxQueueWait, ""}, {maxQueueWait, "-1"}, {maxQueueWait, "2m"},
 		{maxStartup, ""}, {maxStartup, "-1"},
-		{maxRestore, ""}, {maxRestore, "-1"},
 		{maxAttachmentBytes, ""}, {maxAttachmentBytes, "0"}, {maxAttachmentBytes, "64Mi"},
 		{maxAttachments, ""}, {maxAttachments, "-1"},
 		{maxTurn, ""}, {maxTurn, "0"},
+		{modelsLocalhost, "host.example.com:8000"},
 	} {
 		t.Run(wrong.name+"="+wrong.value, func(t *testing.T) {
 			set(t, map[string]string{wrong.name: wrong.value})
@@ -123,47 +126,51 @@ func TestDriverConfig(t *testing.T) {
 }
 
 func TestSandboxSettings(t *testing.T) {
-	set(t, map[string]string{sandboxClass: "fast"})
-	made, err := sandboxSettings()
+	set(t, nil)
+	harnesses := map[string]sandbox.Harness{"opencode": {Image: "registry.example/opencode@sha256:0123"}}
+	made, err := sandboxSettings(harnesses)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if made.Namespace != "aviary-runtime" || !made.Volume.Equal(resource.MustParse("10Gi")) || made.StorageClass != "fast" || made.MaxToolOutputBytes != 65536 ||
-		made.Proxy.String() != settings[proxyURL] || made.Models.String() != settings[modelsURL] {
-		t.Errorf("unexpected sandbox settings %+v", made)
+	want := sandbox.Settings{
+		API: settings[substrateAPI], Authority: settings[substrateAuthority], TokenFile: settings[substrateToken], CAFile: settings[substrateCA],
+		Router: settings[substrateRouter], RouterName: settings[routerName], IdentityFile: settings[substrateIdentity],
+		Atespace: "aviary", Pool: map[string]string{"aviary.io/pool": "sandboxes"}, Snapshot: "memory", MaxToolOutputBytes: 65536, Harnesses: harnesses,
 	}
-	// The storage class is optional, and 0 is a valid tool output limit.
-	set(t, map[string]string{sandboxClass: "", maxToolOutput: "0"})
-	if made, err := sandboxSettings(); err != nil || made.StorageClass != "" || made.MaxToolOutputBytes != 0 {
-		t.Errorf("sandboxSettings() = %+v, %v; want no storage class and no tool output limit", made, err)
+	if !reflect.DeepEqual(made, want) {
+		t.Errorf("sandboxSettings() = %+v, want %+v", made, want)
 	}
-
+	// 0 is a valid tool output limit.
+	set(t, map[string]string{maxToolOutput: "0"})
+	if made, err := sandboxSettings(harnesses); err != nil || made.MaxToolOutputBytes != 0 {
+		t.Errorf("sandboxSettings() = %+v, %v; want no tool output limit", made, err)
+	}
 	for _, wrong := range []struct{ name, value string }{
-		{sandboxNamespace, ""},
-		{sandboxVolume, ""}, {sandboxVolume, "large"}, {sandboxVolume, "0"},
+		{sandboxAtespace, ""}, {sandboxSnapshot, ""}, {substrateAPI, ""}, {substrateRouter, ""}, {substrateIdentity, ""},
+		{sandboxPool, ""}, {sandboxPool, `["sandboxes"]`},
 		{maxToolOutput, ""}, {maxToolOutput, "-1"},
-		{proxyURL, ""}, {proxyURL, "http://"}, {modelsURL, ""},
 	} {
 		set(t, map[string]string{wrong.name: wrong.value})
-		if made, err := sandboxSettings(); err == nil || !strings.Contains(err.Error(), wrong.name) {
+		if made, err := sandboxSettings(harnesses); err == nil || !strings.Contains(err.Error(), wrong.name) {
 			t.Errorf("%s=%q: sandboxSettings() = %+v, %v; want an error naming the setting", wrong.name, wrong.value, made, err)
 		}
 	}
 }
 
 // The host that stands in for the local host of a provider's URL is a host
-// name or an IP address, and is optional.
+// name, and is optional.
 func TestLocalhostOfProviders(t *testing.T) {
-	for _, host := range []string{"", "host.example.com", "192.0.2.10", "2001:db8::254"} {
+	for _, host := range []string{"", "host.example.com", "aviary-host.aviary-system"} {
 		t.Setenv(modelsLocalhost, host)
 		if got, err := localhostOfProviders(); err != nil || got != host {
 			t.Errorf("%q = %q, %v; want it as it is", host, got, err)
 		}
 	}
 	for _, wrong := range []string{
+		"localhost",
 		"host.example.com:8000",
-		"192.0.2.10:8000",
-		"[2001:db8::254]",
+		"192.0.2.10",
+		"2001:db8::254",
 		"http://host.example.com",
 		"host.example.com/v1",
 		"user@host.example.com",

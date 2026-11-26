@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/grpc/codes"
 )
 
 // mcpEndpoint returns an MCP server that lists the tools, by Streamable HTTP
@@ -78,29 +76,18 @@ func (s *supervisor) toolsListing(method, path, body string) toolsGot {
 }
 
 // The tools of an MCP server are listed before it is registered: the
-// Supervisor asks the server for them through the Egress Proxy, with the
-// server's headers, as a harness reaches the server. The result is the tools,
-// the status of the server's answer that was not a success, or why there was
-// no answer.
-func TestTheToolsOfAnMcpServerAreListedThroughTheProxy(t *testing.T) {
+// Supervisor asks the server for them with the server's headers, as a harness
+// reaches the server. The result is the tools, the status of the server's
+// answer that was not a success, or why there was no answer.
+func TestTheToolsOfAnMcpServerAreListed(t *testing.T) {
 	t.Parallel()
-	aviary, standIn := proxied(t, map[string]http.HandlerFunc{
+	aviary := reaching(t, map[string]http.HandlerFunc{
 		"tracker.example.com": mcpEndpoint(false, "t0ken", "search_issues", "get_issue"),
 		"docs.example.com":    mcpEndpoint(true, "", "search_docs"),
 		"open.example.com":    mcpEndpoint(false, "", "echo"),
 		"page.example.com":    answers("<html>a page</html>"),
-		// A server of SSE that says to send its messages to a URL at its
-		// own host, which a harness that reaches it through the proxy
-		// cannot use.
-		"far.example.com": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			io.WriteString(w, "event: endpoint\ndata: https://far.example.com/messages?session=1\n\n")
-			w.(http.Flusher).Flush()
-			<-r.Context().Done()
-		},
 	})
 	s := aviary.supervisor()
-	standIn.asks = s
 	project := s.project()
 	tools := "/v1/projects/" + project + "/mcp-servers/tools"
 
@@ -109,22 +96,8 @@ func TestTheToolsOfAnMcpServerAreListedThroughTheProxy(t *testing.T) {
 	if got != (toolsGot{reached: true, status: http.StatusOK, tools: "get_issue,search_issues"}) {
 		t.Errorf("a server that takes a token: %+v", got)
 	}
-	asked, token := standIn.last()
-	if asked.host != "tracker.example.com" || asked.secure != "true" || asked.authorization != "Bearer t0ken" || !strings.HasPrefix(asked.path, "/mcp") {
+	if asked := aviary.endpoints.last(); asked.host != "tracker.example.com" || !asked.secure || asked.authorization != "Bearer t0ken" || !strings.HasPrefix(asked.path, "/mcp") {
 		t.Errorf("the server got %+v", asked)
-	}
-	// The requests name their project for the proxy's access log. Their
-	// token is of no use as a proxy password, nor at another path of a
-	// server of Streamable HTTP.
-	if answer := s.check(token, false, "/mcp"); codes.Code(answer.GetStatus().GetCode()) != codes.OK ||
-		answer.GetDynamicMetadata().GetFields()["project"].GetStringValue() != project {
-		t.Errorf("a request of a tool listing: %v", answer)
-	}
-	if from := s.origin(token, true); from != nil {
-		t.Errorf("a tool listing's token as a proxy password: origin %v, want it denied", from)
-	}
-	if status, why := refusal(s.check(token, false, "/other")); status != http.StatusNotFound || why != "requests to the MCP server must be under the path /mcp\n" {
-		t.Errorf("the token of a tool listing at another path: %d %q", status, why)
 	}
 
 	for name, test := range map[string]struct {
@@ -134,12 +107,9 @@ func TestTheToolsOfAnMcpServerAreListedThroughTheProxy(t *testing.T) {
 		"no token for a server that takes one": {`{"url": "https://tracker.example.com/mcp", "transport": "http"}`, toolsGot{reached: true, status: http.StatusUnauthorized}},
 		"a token that the server refuses": {`{"url": "https://tracker.example.com/mcp", "transport": "http", "headers": [{"name": "authorization", "value": "Bearer other"}]}`,
 			toolsGot{reached: true, status: http.StatusUnauthorized}},
-		"a server of SSE":          {`{"url": "https://docs.example.com/sse", "transport": "sse"}`, toolsGot{reached: true, status: http.StatusOK, tools: "search_docs"}},
-		"a server without a token": {`{"url": "https://open.example.com/mcp", "transport": "http"}`, toolsGot{reached: true, status: http.StatusOK, tools: "echo"}},
-		"a server that is not reached": {`{"url": "https://nowhere.example.com/mcp", "transport": "http"}`,
-			toolsGot{reason: "upstream connect error or disconnect/reset before headers. reset reason: connection timeout"}},
-		"a server of SSE that gives a URL for its messages": {`{"url": "https://far.example.com/sse", "transport": "sse"}`,
-			toolsGot{reached: true, status: http.StatusOK, reason: "the server gives a URL rather than a path for its messages, which agents cannot use through the Egress Proxy"}},
+		"a server of SSE":              {`{"url": "https://docs.example.com/sse", "transport": "sse"}`, toolsGot{reached: true, status: http.StatusOK, tools: "search_docs"}},
+		"a server without a token":     {`{"url": "https://open.example.com/mcp", "transport": "http"}`, toolsGot{reached: true, status: http.StatusOK, tools: "echo"}},
+		"a server that is not reached": {`{"url": "https://nowhere.example.com/mcp", "transport": "http"}`, toolsGot{reason: "the server cannot be reached"}},
 	} {
 		if got := s.toolsListing("POST", tools, test.body); got != test.want {
 			t.Errorf("%s: %+v, want %+v", name, got, test.want)
@@ -173,7 +143,7 @@ func TestTheToolsOfAnMcpServerAreKept(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
 	serving := mcpEndpoint(false, "t0ken", "search_issues", "get_issue")
-	aviary, standIn := proxied(t, map[string]http.HandlerFunc{
+	aviary := reaching(t, map[string]http.HandlerFunc{
 		"tracker.example.com": func(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			now := serving
@@ -187,7 +157,6 @@ func TestTheToolsOfAnMcpServerAreKept(t *testing.T) {
 		serving = handler
 	}
 	s := aviary.supervisor()
-	standIn.asks = s
 	project := s.project()
 	servers := "/v1/projects/" + project + "/mcp-servers"
 	// read returns the names of the tools of the server, and when they were

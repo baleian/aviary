@@ -1,14 +1,10 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -16,7 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"aviary/supervisor/internal/authz"
+	"aviary/supervisor/internal/credentials"
+	"aviary/supervisor/internal/outbound"
 	"aviary/supervisor/store"
 )
 
@@ -41,82 +38,60 @@ type toolsListed struct {
 	DurationMS int64         `json:"duration_ms"`
 }
 
-// relay carries the requests of an MCP client to the Egress Proxy with the
-// token of a tool listing, and keeps what the first answer that was not a
-// success said. As for a harness, a request elsewhere goes nowhere: a server
-// of SSE may say to send its messages to a URL at its own host.
-type relay struct {
-	proxy *url.URL
-	token string
+// headed sends the requests of an MCP client to the server with the
+// server's headers, and keeps the status of the first answer that was not a
+// success.
+type headed struct {
+	headers http.Header
+	next    http.RoundTripper
 
 	mu sync.Mutex
-	// answered reports whether the proxy answered. reason is what the proxy
-	// said if it answered in place of the server, and status is the status
-	// of the server's answer. elsewhere is set if the client was sent to
-	// another host.
-	answered  bool
-	reason    string
-	status    int
-	elsewhere bool
+	// answered reports whether the server answered, and status is the
+	// status of its first answer that was not a success.
+	answered bool
+	status   int
 }
 
-func (r *relay) RoundTrip(request *http.Request) (*http.Response, error) {
-	if request.URL.Host != r.proxy.Host {
-		r.mu.Lock()
-		r.elsewhere = true
-		r.mu.Unlock()
-		return nil, errors.New("a request to another host than the Egress Proxy")
-	}
+func (h *headed) RoundTrip(request *http.Request) (*http.Response, error) {
 	onward := request.Clone(request.Context())
-	onward.Header.Set("Authorization", "Bearer "+r.token)
-	answer, err := http.DefaultTransport.RoundTrip(onward)
+	for name, values := range h.headers {
+		onward.Header[name] = values
+	}
+	answer, err := h.next.RoundTrip(onward)
 	if err != nil {
 		return nil, err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.answered = true
-	if answer.StatusCode >= 200 && answer.StatusCode < 300 || r.reason != "" || r.status != 0 {
-		return answer, nil
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.answered = true
+	if (answer.StatusCode < 200 || answer.StatusCode > 299) && h.status == 0 {
+		h.status = answer.StatusCode
 	}
-	if answer.Header.Get(proxyReply) == "" {
-		r.status = answer.StatusCode
-		return answer, nil
-	}
-	why, err := io.ReadAll(io.LimitReader(answer.Body, 1024))
-	answer.Body.Close()
-	if err != nil {
-		return nil, err
-	}
-	r.reason = strings.TrimSpace(string(why))
-	answer.Body = io.NopCloser(bytes.NewReader(why))
 	return answer, nil
 }
 
-// listTools asks the MCP server for its tools, through the Egress Proxy and
-// with the server's headers, as a harness reaches the server: the answer
-// also tells whether turns will reach it. It returns the tools only if the
-// server listed them.
-func (a *api) listTools(ctx context.Context, server store.McpServer, who caller) (toolsListed, error) {
-	token, err := authz.ToolListingToken(a.keys, authz.ToolListing{
-		Server: server, UserID: who.id, Subject: who.Subject, Until: time.Now().Add(listTimeout),
-	})
-	if err != nil {
-		return toolsListed{}, err
+// listTools asks the MCP server for its tools, with the server's headers, as
+// a harness reaches the server. It returns the tools only if the server
+// listed them.
+func (a *api) listTools(ctx context.Context, server store.McpServer) (toolsListed, error) {
+	headers := http.Header{}
+	for _, header := range server.Headers {
+		value, err := a.resolver.Header(ctx, server.ProjectID, header, store.McpServerHeaderPlace(server.ID, header.Name), "the MCP server's header "+header.Name)
+		if errors.Is(err, credentials.ErrUnreadable) {
+			return toolsListed{Reason: err.Error()}, nil
+		}
+		if err != nil {
+			return toolsListed{}, err
+		}
+		headers.Set(header.Name, value)
 	}
 	asked, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
-	// The server is reached where a harness reaches it: at the proxy, under
-	// the path of the server's URL, which the API validated.
-	at := *a.models
-	if address, err := url.Parse(server.URL); err == nil {
-		at.Path, at.RawPath = address.Path, address.RawPath
-	}
-	through := &relay{proxy: a.models, token: token}
-	client := &http.Client{Transport: through, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	var transport mcp.Transport = &mcp.StreamableClientTransport{Endpoint: at.String(), HTTPClient: client, MaxRetries: -1, DisableStandaloneSSE: true}
+	through := &headed{headers: headers, next: a.outbound.Transport}
+	client := &http.Client{Transport: through, CheckRedirect: a.outbound.CheckRedirect}
+	var transport mcp.Transport = &mcp.StreamableClientTransport{Endpoint: server.URL, HTTPClient: client, MaxRetries: -1, DisableStandaloneSSE: true}
 	if server.Transport == store.TransportSSE {
-		transport = &mcp.SSEClientTransport{Endpoint: at.String(), HTTPClient: client}
+		transport = &mcp.SSEClientTransport{Endpoint: server.URL, HTTPClient: client}
 	}
 	began := time.Now()
 	tools, err := toolsAt(asked, transport)
@@ -132,17 +107,13 @@ func (a *api) listTools(ctx context.Context, server store.McpServer, who caller)
 		return toolsListed{Reached: true, Status: http.StatusOK, Tools: &tools, DurationMS: took}, nil
 	case errors.Is(asked.Err(), context.DeadlineExceeded):
 		return toolsListed{Reason: "the server did not answer in " + listTimeout.String(), DurationMS: took}, nil
-	case through.reason != "":
-		return toolsListed{Reason: through.reason, DurationMS: took}, nil
-	case through.elsewhere:
-		reason := "the server gives a URL rather than a path for its messages, which agents cannot use through the Egress Proxy"
-		return toolsListed{Reached: true, Status: http.StatusOK, Reason: reason, DurationMS: took}, nil
+	case outbound.Refused(err):
+		return toolsListed{Reason: "the server's address is not reached", DurationMS: took}, nil
 	case through.status != 0:
 		return toolsListed{Reached: true, Status: through.status, DurationMS: took}, nil
 	case !through.answered:
-		// A turn would not reach the server either.
-		slog.ErrorContext(ctx, "ask the Egress Proxy for the tools of an MCP server", "error", err)
-		return toolsListed{Reason: "the Egress Proxy did not answer", DurationMS: took}, nil
+		slog.InfoContext(ctx, "ask an MCP server for its tools", "url", server.URL, "error", err)
+		return toolsListed{Reason: "the server cannot be reached", DurationMS: took}, nil
 	}
 	slog.InfoContext(ctx, "an MCP server did not list its tools", "url", server.URL, "error", err)
 	return toolsListed{Reached: true, Status: http.StatusOK, Reason: "the server does not answer as an MCP server does", DurationMS: took}, nil
@@ -226,7 +197,7 @@ func (a *api) serverTools(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	server.ProjectID = projectID
-	listed, err := a.listTools(r.Context(), server, callerOf(r))
+	listed, err := a.listTools(r.Context(), server)
 	if err != nil {
 		return err
 	}
@@ -245,7 +216,7 @@ func (a *api) refreshTools(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	listed, err := a.listTools(r.Context(), server, callerOf(r))
+	listed, err := a.listTools(r.Context(), server)
 	if err != nil {
 		return err
 	}
@@ -261,7 +232,7 @@ func (a *api) refreshTools(w http.ResponseWriter, r *http.Request) error {
 // withTools returns the server with the tools that it lists now, if it lists
 // them, and otherwise as it is.
 func (a *api) withTools(r *http.Request, server store.McpServer) (store.McpServer, error) {
-	listed, err := a.listTools(r.Context(), server, callerOf(r))
+	listed, err := a.listTools(r.Context(), server)
 	if err != nil || listed.Tools == nil {
 		return server, err
 	}

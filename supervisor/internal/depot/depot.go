@@ -1,5 +1,5 @@
-// Package depot keeps the files that outlive a sandbox, such as the archive
-// of a session's home, as objects under keys. The depots of an installation
+// Package depot keeps the files that messages carry, as objects under keys,
+// so that a turn can give them to its sandbox. The depots of an installation
 // are processes of their own behind one address. Each serves the objects of
 // a directory, and all of them serve the same one: a volume that they mount
 // together.

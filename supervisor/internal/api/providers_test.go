@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -92,22 +91,18 @@ func TestTheHeadersOfAnEndpointAreChecked(t *testing.T) {
 	}
 }
 
-// The models of an endpoint that the proxy reaches and that does not answer
-// are not waited for longer than a listing may take.
+// The models of an endpoint that does not answer are not waited for longer
+// than a listing may take.
 func TestTheListingOfAnEndpointThatDoesNotAnswerEnds(t *testing.T) {
 	timeout := listTimeout
 	listTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { listTimeout = timeout })
-	// The proxy holds the request for as long as its client waits.
-	proxy := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
-	t.Cleanup(proxy.Close)
-	models, err := url.Parse(proxy.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The endpoint holds the request for as long as its client waits.
+	endpoint := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	t.Cleanup(endpoint.Close)
 	ctx, stop := context.WithCancel(context.Background())
 	t.Cleanup(stop)
-	server := httptest.NewServer(New(ctx, memorystore.New(), events.New(memorylog.New()), nil, testenv.Keys(t), nil, Callers{}, models))
+	server := httptest.NewServer(New(ctx, memorystore.New(), events.New(memorylog.New()), nil, testenv.Keys(t), nil, Callers{}, http.DefaultClient))
 	t.Cleanup(server.Close)
 	post := func(path, body string, into any) int {
 		t.Helper()
@@ -128,15 +123,15 @@ func TestTheListingOfAnEndpointThatDoesNotAnswerEnds(t *testing.T) {
 
 	began := time.Now()
 	var got listed
-	status := post("/v1/projects/"+project.ID+"/providers/models", `{"url": "https://api.example.com/v1"}`, &got)
+	status := post("/v1/projects/"+project.ID+"/providers/models", `{"url": "`+endpoint.URL+`/v1"}`, &got)
 	if took := time.Since(began); status != http.StatusOK || got.Reached || got.Reason != "the endpoint did not answer in 200ms" || took > 20*listTimeout {
 		t.Errorf("the models of an endpoint that does not answer: status %d, %+v after %s", status, got, took)
 	}
 
-	// Nor is an endpoint reached if the proxy is not.
-	proxy.Close()
+	// Nor is an endpoint reached that is gone.
+	endpoint.Close()
 	got = listed{}
-	if status := post("/v1/projects/"+project.ID+"/providers/models", `{"url": "https://api.example.com/v1"}`, &got); status != http.StatusOK || got.Reached || got.Reason != "the Egress Proxy did not answer" {
-		t.Errorf("the models of an endpoint without the proxy: status %d, %+v", status, got)
+	if status := post("/v1/projects/"+project.ID+"/providers/models", `{"url": "`+endpoint.URL+`/v1"}`, &got); status != http.StatusOK || got.Reached || got.Reason != "the endpoint cannot be reached" {
+		t.Errorf("the models of an endpoint that is gone: status %d, %+v", status, got)
 	}
 }

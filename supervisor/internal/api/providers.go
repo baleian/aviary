@@ -16,7 +16,8 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/net/http/httpguts"
 
-	"aviary/supervisor/internal/authz"
+	"aviary/supervisor/internal/credentials"
+	"aviary/supervisor/internal/outbound"
 	"aviary/supervisor/store"
 )
 
@@ -218,8 +219,7 @@ func (a *api) inStore(r *http.Request, projectID uuid.UUID, where string, secret
 }
 
 // The headers of an endpoint are few and small: every request to it carries
-// them, and so does the token of a listing. A secret whose length is not
-// known counts as secretBytes.
+// them. A secret whose length is not known counts as secretBytes.
 const (
 	maxHeaders     = 20
 	maxHeaderBytes = 8192
@@ -227,8 +227,8 @@ const (
 )
 
 // reservedHeaders are the headers that an endpoint cannot have, besides
-// those of the Egress Proxy and of MCP: they say where a request goes or how
-// it is carried.
+// those of Aviary, of the egress gateway and of MCP: they say where a request
+// goes or how it is carried.
 var reservedHeaders = []string{
 	"connection", "content-length", "expect", "host", "keep-alive", "proxy-authenticate", "proxy-authorization",
 	"proxy-connection", "te", "trailer", "transfer-encoding", "upgrade",
@@ -324,10 +324,6 @@ func (a *api) createProvider(w http.ResponseWriter, r *http.Request) error {
 // variable for tests.
 var listTimeout = 15 * time.Second
 
-// proxyReply is the header of the responses that the Egress Proxy makes
-// itself: every other response is the answer of the model endpoint.
-const proxyReply = "x-aviary-proxy"
-
 // maxListBytes limits how much of an endpoint's list of models is read.
 const maxListBytes = 1 << 20
 
@@ -406,18 +402,9 @@ func (a *api) providerModels(w http.ResponseWriter, r *http.Request) error {
 }
 
 // listModels asks the endpoint of the provider for its models, with the
-// provider's headers and key and through the Egress Proxy, as the model
-// requests of a turn go: the answer also tells whether turns will reach the
-// endpoint.
+// provider's headers and key, as the model requests of a turn have them.
 func (a *api) listModels(w http.ResponseWriter, r *http.Request, provider store.Provider) error {
-	who := callerOf(r)
-	token, err := authz.ListingToken(a.keys, authz.Listing{
-		Provider: provider, UserID: who.id, Subject: who.Subject, Until: time.Now().Add(listTimeout),
-	})
-	if err != nil {
-		return err
-	}
-	result, err := a.ask(r.Context(), provider.URL, token)
+	result, err := a.ask(r.Context(), provider)
 	if err != nil {
 		return err
 	}
@@ -425,43 +412,65 @@ func (a *api) listModels(w http.ResponseWriter, r *http.Request, provider store.
 	return nil
 }
 
-// ask sends the model request of a listing, GET models under the URL of the
-// provider, to the Egress Proxy with the listing's token, and returns what
-// came of it.
-func (a *api) ask(ctx context.Context, address, token string) (listed, error) {
-	at, err := url.Parse(address)
+// ask sends the provider's endpoint the model request of a listing, GET
+// models under its URL, and returns what came of it.
+func (a *api) ask(ctx context.Context, provider store.Provider) (listed, error) {
+	at, err := url.Parse(provider.URL)
 	if err != nil {
 		return listed{}, err
 	}
-	target := url.URL{Scheme: a.models.Scheme, Host: a.models.Host}
 	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+strings.TrimSuffix(at.EscapedPath(), "/")+"/models", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(at.String(), "/")+"/models", nil)
 	if err != nil {
 		return listed{}, err
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
+	var in *store.SecretStore
+	if keyAt := provider.APIKeyAt; keyAt != nil {
+		found, err := a.store.SecretStore(ctx, keyAt.Store)
+		switch {
+		case errors.Is(err, store.ErrNotFound) || (err == nil && found.ProjectID != provider.ProjectID):
+		case err != nil:
+			return listed{}, err
+		default:
+			in = &found
+		}
+	}
+	key, err := a.resolver.ProviderKey(ctx, provider, in)
+	if errors.Is(err, credentials.ErrUnreadable) {
+		return listed{Reason: err.Error()}, nil
+	}
+	if err != nil {
+		return listed{}, err
+	}
+	if key != "" {
+		request.Header.Set("Authorization", "Bearer "+key)
+	}
+	for _, header := range provider.Headers {
+		value, err := a.resolver.Header(ctx, provider.ProjectID, header, store.ProviderHeaderPlace(provider.ID, header.Name), "the model provider's header "+header.Name)
+		if errors.Is(err, credentials.ErrUnreadable) {
+			return listed{Reason: err.Error()}, nil
+		}
+		if err != nil {
+			return listed{}, err
+		}
+		request.Header.Set(header.Name, value)
+	}
 	began := time.Now()
-	answer, err := a.proxy.Do(request)
+	answer, err := a.outbound.Do(request)
 	took := time.Since(began).Milliseconds()
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return listed{Reason: "the endpoint did not answer in " + listTimeout.String(), DurationMS: took}, nil
 	case errors.Is(err, context.Canceled):
 		return listed{}, err
+	case outbound.Refused(err):
+		return listed{Reason: "the endpoint's address is not reached", DurationMS: took}, nil
 	case err != nil:
-		// A turn would not reach the endpoint either.
-		slog.ErrorContext(ctx, "ask the Egress Proxy for the models of a provider", "error", err)
-		return listed{Reason: "the Egress Proxy did not answer", DurationMS: took}, nil
+		slog.InfoContext(ctx, "ask a model provider for its models", "provider", provider.ID, "error", err)
+		return listed{Reason: "the endpoint cannot be reached", DurationMS: took}, nil
 	}
 	defer answer.Body.Close()
-	if answer.Header.Get(proxyReply) != "" {
-		why, err := io.ReadAll(io.LimitReader(answer.Body, 1024))
-		if err != nil {
-			return listed{}, err
-		}
-		return listed{Reason: strings.TrimSpace(string(why)), DurationMS: took}, nil
-	}
 	result := listed{Reached: true, Status: answer.StatusCode, DurationMS: took}
 	if answer.StatusCode == http.StatusOK {
 		result.Models = modelsIn(answer.Body)

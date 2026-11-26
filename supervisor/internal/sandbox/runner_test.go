@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +15,8 @@ import (
 
 	"aviary/supervisor/internal/sandbox/runnertest"
 )
+
+var ctx = context.Background()
 
 // running starts a fake runner and returns its controls and a client of it.
 func running(t *testing.T) (*runnertest.Runners, *Runner) {
@@ -280,66 +281,6 @@ func TestARunnerThatSaysNothingIsGivenUp(t *testing.T) {
 	err := silent.Events(ctx, uuid.New(), 0, func(Event) error { return nil })
 	if !errors.Is(err, context.Canceled) || errors.Is(err, errSilent) {
 		t.Errorf("Events after cancel = %v, want context.Canceled", err)
-	}
-}
-
-// The home of a sandbox is read from its runner as an archive, and an archive
-// is given to a runner for the home, with what the runner says if it takes
-// neither.
-func TestARunnerPacksTheHomeAndUnpacksAnArchiveOfIt(t *testing.T) {
-	runners := runnertest.New(t)
-	home := &runnertest.Home{}
-	server := httptest.NewServer(runners.Runner("a-sandbox", home))
-	t.Cleanup(server.Close)
-	runner := &Runner{address: server.URL, http: server.Client(), quiet: time.Minute}
-	packed := func() (string, error) {
-		t.Helper()
-		archive, err := runner.Home(ctx)
-		if err != nil {
-			return "", err
-		}
-		defer archive.Close()
-		content, err := io.ReadAll(archive)
-		return string(content), err
-	}
-
-	home.Write("the files of the agent")
-	if archive, err := packed(); err != nil || archive != "the files of the agent" {
-		t.Errorf("Home = %q, %v", archive, err)
-	}
-	// An archive that the runner does not send whole fails its reader.
-	home.Cut()
-	if archive, err := packed(); err == nil {
-		t.Errorf("Home that was cut short = %q, want an error", archive)
-	}
-
-	if err := runner.Unpack(ctx, strings.NewReader("the files of another home"), 25); err != nil {
-		t.Fatal(err)
-	}
-	if content, unpacked := home.Content(); content != "the files of another home" || unpacked != 1 {
-		t.Errorf("the home has %q, unpacked %d times", content, unpacked)
-	}
-	home.Refuse()
-	var refusal *Refusal
-	if err := runner.Unpack(ctx, strings.NewReader("more"), 4); !errors.As(err, &refusal) || refusal.Status != http.StatusInternalServerError {
-		t.Errorf("Unpack that the runner fails = %v, want its refusal", err)
-	}
-
-	// A runner with a turn neither packs the home while the turn runs, nor
-	// unpacks an archive after it.
-	turn := uuid.New()
-	if err := runner.Start(ctx, turn, Turn{Text: "hello"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runner.Home(ctx); !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
-		t.Errorf("Home while a turn runs = %v, want a refusal with 409", err)
-	}
-	runners.Turn(t).Tell("finished", map[string]string{"stop_reason": "end_turn"})
-	if _, err := packed(); err != nil {
-		t.Errorf("Home after the turn = %v", err)
-	}
-	if err := runner.Unpack(ctx, strings.NewReader("late"), 4); !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
-		t.Errorf("Unpack after a turn = %v, want a refusal with 409", err)
 	}
 }
 

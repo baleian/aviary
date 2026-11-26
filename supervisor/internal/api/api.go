@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"aviary/supervisor/events"
+	"aviary/supervisor/internal/credentials"
 	"aviary/supervisor/internal/depot"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/secret"
@@ -42,14 +42,14 @@ type api struct {
 	// that providers reference in them.
 	stores  *secret.Stores
 	callers Callers
-	// models is the Egress Proxy's endpoint for model requests, where the
-	// API asks the model providers for their models. proxy sends those
-	// requests, and follows no redirect: the answer of the endpoint is the
-	// result.
-	models  *url.URL
-	proxy   *http.Client
-	changes *changes
-	closing <-chan struct{}
+	// resolver reads the secrets of providers and MCP servers, which the API
+	// sends them with when it asks them for their models and tools.
+	// outbound sends those requests, and follows no redirect: the answer of
+	// the endpoint is the result.
+	resolver *credentials.Resolver
+	outbound *http.Client
+	changes  *changes
+	closing  <-chan struct{}
 }
 
 type apiError struct {
@@ -80,10 +80,14 @@ var (
 var slugForm = regexp.MustCompile(`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
 // New returns the API handler. Event streams stay open until their clients
-// disconnect or ctx is done.
-func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers Callers, models *url.URL) http.Handler {
-	a := &api{store: st, events: ev, driver: dr, keys: keys, stores: stores, callers: callers, models: models, changes: newChanges(), closing: ctx.Done()}
-	a.proxy = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+// disconnect or ctx is done. reach asks model providers and MCP servers for
+// their models and tools, and follows no redirect.
+func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Driver, keys *secret.Keys, stores *secret.Stores, callers Callers, reach *http.Client) http.Handler {
+	a := &api{
+		store: st, events: ev, driver: dr, keys: keys, stores: stores, callers: callers,
+		resolver: &credentials.Resolver{Store: st, Keys: keys, Stores: stores}, outbound: reach,
+		changes: newChanges(), closing: ctx.Done(),
+	}
 	go a.sendChanges(ctx)
 	mux := http.NewServeMux()
 	// Admins may do everything. Other callers have, in a project, the

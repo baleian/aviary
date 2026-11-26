@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"maps"
 	"math"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/google/uuid"
 
 	"aviary/supervisor/events"
+	"aviary/supervisor/internal/credentials"
 	"aviary/supervisor/internal/metrics"
 	"aviary/supervisor/internal/sandbox"
 	"aviary/supervisor/store"
@@ -33,39 +35,30 @@ const (
 	// Sweep is the default interval between sweeps.
 	Sweep = 10 * time.Second
 	// CancelGrace is the default time that a cancelled turn has to stop by
-	// itself before its sandbox is put to sleep.
+	// itself before its sandbox is stopped.
 	CancelGrace = 30 * time.Second
-	// ArchiveTime is the default time that archiving a home may take. A
-	// Supervisor that has claimed a session for longer is taken for gone.
-	ArchiveTime = time.Hour
-	// ArchiveAgain is the default time after which a home is archived again
-	// if archiving it failed.
-	ArchiveAgain = 6 * time.Hour
 	// UnsentFor is the default time for which an attachment is kept while no
 	// message carries it.
 	UnsentFor = time.Hour
-)
-
-// Labels that identify the agent and project of a sandbox, besides its
-// session label.
-const (
-	labelAgent   = "aviary.io/agent"
-	labelProject = "aviary.io/project"
 )
 
 // Sandboxes manages the sandbox of each session. It is implemented by
 // *sandbox.Client.
 type Sandboxes interface {
 	Create(ctx context.Context, request sandbox.Request) error
+	SetEgress(ctx context.Context, name string, egress sandbox.Egress) error
 	Sandbox(ctx context.Context, name string) (sandbox.Sandbox, error)
 	Sandboxes(ctx context.Context) ([]sandbox.Sandbox, error)
-	Suspend(ctx context.Context, name, version string) error
-	Resume(ctx context.Context, name string, pod sandbox.Pod) error
-	Keep(ctx context.Context, name string, turn uuid.UUID, until time.Time) (sandbox.Sandbox, error)
+	Resume(ctx context.Context, name string) error
+	Suspend(ctx context.Context, name string, durable bool) error
+	Revert(ctx context.Context, name string) error
 	Delete(ctx context.Context, name, uid string) error
+	Draining(ctx context.Context) ([]string, error)
+	Runner(name string) *sandbox.Runner
 }
 
-// Depot keeps the archives of the homes. It is implemented by *depot.Client.
+// Depot keeps the files that messages carry. It is implemented by
+// *depot.Client.
 type Depot interface {
 	Put(ctx context.Context, key string, body io.Reader) (int64, error)
 	Get(ctx context.Context, key string) (io.ReadCloser, int64, error)
@@ -75,21 +68,26 @@ type Depot interface {
 type Config struct {
 	// Harnesses are the harnesses that agents can use, by name.
 	Harnesses map[string]sandbox.Harness
-	// Models is the Egress Proxy's endpoint for model requests. Its path is
-	// ignored: each turn uses the path of its provider's URL.
-	Models *url.URL
-	// Token returns the token that identifies a session to the Egress Proxy.
-	Token func(session uuid.UUID) (string, error)
+	// Hosts are the hosts that every sandbox may reach, besides the model
+	// provider and the MCP servers of its turn.
+	Hosts []sandbox.Host
+	// Localhost, if not empty, is the host that sandboxes reach in place of
+	// the local host of the URL of a model provider or an MCP server.
+	Localhost string
+	// Halt stops what runs in a sandbox by reverting it to its last
+	// snapshot, rather than by putting it to sleep. A sandbox whose snapshot
+	// keeps its processes has to be stopped that way.
+	Halt bool
 	// Idle is how long a session may go without a running turn before its
 	// sandbox is put to sleep. Zero disables sleeping.
 	Idle time.Duration
-	// Retention is how long a sandbox is kept after a turn was last given to
-	// it. After that it is deleted with its volume, and the session ends.
-	// Zero keeps it until the session is ended.
+	// Retention is how long a session is kept after its last message. After
+	// that its sandbox is deleted, and the session ends. Zero keeps it until
+	// the session is ended.
 	Retention time.Duration
 	// MaxStartup limits the time from dispatch until the harness has the
-	// message, which includes creating or waking the sandbox. Zero means no
-	// limit.
+	// message, which includes creating or waking the sandbox, and waiting for
+	// a worker with room for it. Zero means no limit.
 	MaxStartup time.Duration
 	// MaxTurn limits the time a turn runs after it is dispatched.
 	MaxTurn time.Duration
@@ -102,29 +100,19 @@ type Config struct {
 	// MaxConcurrentTurns limits the number of running turns. Further turns
 	// are queued in the order in which they are accepted.
 	MaxConcurrentTurns int
-	// Depot keeps the archives of the homes. Without it, no home is archived
-	// or restored.
+	// Depot keeps the files that messages carry. Without it, messages carry
+	// none.
 	Depot Depot
-	// ArchiveAfter is how long a sandbox may sleep before the home of its
-	// session is archived in the depot, and the sandbox deleted with its
-	// volume. The session's next turn restores the home into a new sandbox.
-	// Zero disables archiving.
-	ArchiveAfter time.Duration
-	// MaxRestore is added to MaxStartup for a turn that restores the home
-	// of its session.
-	MaxRestore time.Duration
 	// MaxAttachmentBytes limits the size of a file that a message carries.
 	MaxAttachmentBytes int64
 	// MaxAttachments limits the number of files that a message carries.
 	// Zero means that the installation takes none.
 	MaxAttachments int
-	// Sweep, CancelGrace, ArchiveTime, ArchiveAgain and UnsentFor default
-	// to the constants of the same name.
-	Sweep        time.Duration
-	CancelGrace  time.Duration
-	ArchiveTime  time.Duration
-	ArchiveAgain time.Duration
-	UnsentFor    time.Duration
+	// Sweep, CancelGrace and UnsentFor default to the constants of the same
+	// name.
+	Sweep       time.Duration
+	CancelGrace time.Duration
+	UnsentFor   time.Duration
 }
 
 type Driver struct {
@@ -139,8 +127,6 @@ type Driver struct {
 	// moved is set when a turn leaves the queue without being dispatched.
 	moved  atomic.Bool
 	sweeps int
-	// archiving is set while this Supervisor archives homes.
-	archiving atomic.Bool
 
 	mu        sync.Mutex
 	following map[uuid.UUID]*orders
@@ -162,12 +148,6 @@ func New(config Config, sandboxes Sandboxes, st store.Store, ev *events.Streams,
 	}
 	if config.CancelGrace == 0 {
 		config.CancelGrace = CancelGrace
-	}
-	if config.ArchiveTime == 0 {
-		config.ArchiveTime = ArchiveTime
-	}
-	if config.ArchiveAgain == 0 {
-		config.ArchiveAgain = ArchiveAgain
 	}
 	if config.UnsentFor == 0 {
 		config.UnsentFor = UnsentFor
@@ -222,11 +202,10 @@ func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text strin
 	return turn, err
 }
 
-// EndSession ends the session and deletes its sandbox with its volume, or
-// the archive of its home. It returns the errors of store.EndSession. If the
-// sandbox or the archive cannot be deleted, the session still ends and the
-// error is returned. The deletion is retried when the session is ended
-// again, and at every look at the sandboxes.
+// EndSession ends the session and deletes its sandbox with its snapshot. It
+// returns the errors of store.EndSession. If the sandbox cannot be deleted,
+// the session still ends and the error is returned. The deletion is retried
+// when the session is ended again, and at every look at the sandboxes.
 func (d *Driver) EndSession(ctx context.Context, id uuid.UUID) (store.Session, error) {
 	return d.endSession(ctx, id, "")
 }
@@ -242,19 +221,13 @@ func (d *Driver) endSession(ctx context.Context, id uuid.UUID, reason string) (s
 			return session, err
 		}
 	}
-	if session.Archive != nil {
-		if err := d.erase(ctx, session); err != nil {
-			return session, err
-		}
-	}
-	session.Sandbox, session.SandboxState, session.Archive = "", "", nil
+	session.Sandbox, session.SandboxState = "", ""
 	return session, nil
 }
 
 // DeleteAgent deletes the agent, which ends its sessions, and deletes their
-// sandboxes with their volumes, and the archives of their homes. It returns
-// the errors of store.DeleteAgent. What cannot be deleted is deleted at a
-// later look at the sandboxes.
+// sandboxes. It returns the errors of store.DeleteAgent. What cannot be
+// deleted is deleted at a later look at the sandboxes.
 func (d *Driver) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, error) {
 	agent, ended, err := d.store.DeleteAgent(ctx, id)
 	if err != nil {
@@ -266,17 +239,12 @@ func (d *Driver) DeleteAgent(ctx context.Context, id uuid.UUID) (store.Agent, er
 				slog.ErrorContext(ctx, "delete sandbox of ended session", "session", session.ID, "sandbox", session.Sandbox, "error", err)
 			}
 		}
-		if session.Archive != nil {
-			if err := d.erase(ctx, session); err != nil {
-				slog.ErrorContext(ctx, "delete archive of ended session", "session", session.ID, "error", err)
-			}
-		}
 	}
 	return agent, nil
 }
 
-// discard deletes the sandbox of a session that has ended, with its volume,
-// and removes it from the session.
+// discard deletes the sandbox of a session that has ended, with its
+// snapshot, and removes it from the session.
 func (d *Driver) discard(ctx context.Context, session store.Session) error {
 	if err := d.sandboxes.Delete(ctx, session.Sandbox, ""); err != nil {
 		return fmt.Errorf("delete sandbox of session %s: %w", session.ID, err)
@@ -379,10 +347,13 @@ func (d *Driver) orphaned() time.Duration {
 
 // look compares the sandboxes with what the sessions record. It deletes the
 // sandboxes that their sessions do not reference and those of sessions that
-// have ended, and puts idle sessions to sleep. It also corrects the recorded
-// state of a sandbox that something else has put to sleep, woken or deleted.
-// Sandboxes of sessions that the store does not know are left alone.
+// have ended or expired, puts idle sessions to sleep, and reverts crashed
+// sandboxes. It also corrects the recorded state of a sandbox that something
+// else has put to sleep, woken or deleted, and puts to sleep the sandboxes
+// whose workers go away. Sandboxes of sessions that the store does not know
+// are left alone.
 func (d *Driver) look(ctx context.Context) {
+	d.evacuate(ctx)
 	// The sessions are read first, so that a sandbox that is not listed is
 	// gone, not new.
 	sessions, err := d.store.SessionsWithSandbox(ctx)
@@ -399,7 +370,6 @@ func (d *Driver) look(ctx context.Context) {
 	for _, session := range sessions {
 		recorded[session.Sandbox] = session
 	}
-	var due []home
 	for _, made := range sandboxes {
 		session, found := recorded[made.Name]
 		delete(recorded, made.Name)
@@ -423,16 +393,29 @@ func (d *Driver) look(ctx context.Context) {
 			}
 		}
 		d.tend(ctx, session, made)
-		if d.due(session, made) {
-			due = append(due, home{session, made})
-		}
 	}
 	for _, session := range recorded {
 		d.tend(ctx, session, sandbox.Sandbox{Name: session.Sandbox, State: sandbox.Lost})
 	}
-	d.shelve(ctx, due)
-	d.clear(ctx)
 	d.discardAttachments(ctx)
+}
+
+// evacuate puts to sleep, durably, the sandboxes whose workers are going
+// away, so that they move on with their sessions. A sandbox whose snapshot
+// keeps its processes continues its turn on its next worker.
+func (d *Driver) evacuate(ctx context.Context) {
+	names, err := d.sandboxes.Draining(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "list sandboxes of workers that go away", "error", err)
+		return
+	}
+	for _, name := range names {
+		if err := d.sandboxes.Suspend(ctx, name, true); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
+			slog.ErrorContext(ctx, "put to sleep a sandbox whose worker goes away", "sandbox", name, "error", err)
+			continue
+		}
+		slog.InfoContext(ctx, "sandbox put to sleep, since its worker goes away", "sandbox", name)
+	}
 }
 
 // tend brings the session's sandbox and its recorded state in line. made is
@@ -445,12 +428,11 @@ func (d *Driver) tend(ctx context.Context, session store.Session, made sandbox.S
 			return
 		}
 		slog.InfoContext(ctx, "sandbox of ended session deleted", "session", session.ID, "sandbox", made.Name)
-	case session.Archive != nil:
-		// The home is not in this sandbox yet: the session's turn restores
-		// it there.
-		d.abandon(ctx, session, made)
+	case d.outlived(ctx, session):
 	case made.State == sandbox.Lost:
 		d.lose(ctx, session)
+	case made.State == sandbox.Crashed:
+		d.recover(ctx, session, made)
 	default:
 		d.correct(ctx, session, made)
 		if d.config.Idle > 0 && (made.State == sandbox.Running || made.State == sandbox.Starting) {
@@ -459,15 +441,34 @@ func (d *Driver) tend(ctx context.Context, session store.Session, made sandbox.S
 	}
 }
 
-// lose handles a sandbox that is gone. If the sandbox has expired, its
-// session ends; otherwise the session records that the sandbox is lost. A
-// session with a turn that has not ended is left to that turn, which finds
-// the sandbox gone.
-func (d *Driver) lose(ctx context.Context, session store.Session) {
-	lost := session.SandboxState == store.SandboxLost
-	if lost && d.config.Retention == 0 {
-		return
+// outlived ends the session if its last message is older than Retention
+// and it has no turn that has not ended. It reports whether it did.
+func (d *Driver) outlived(ctx context.Context, session store.Session) bool {
+	if d.config.Retention == 0 {
+		return false
 	}
+	last, err := d.store.Turns(ctx, session.ID, math.MaxInt32, 1)
+	if err != nil {
+		slog.ErrorContext(ctx, "read last turn of session", "session", session.ID, "error", err)
+		return false
+	}
+	if len(last) == 0 || last[0].EndedAt == nil || !d.stale(last[0]) {
+		return false
+	}
+	// A session that got a turn meanwhile is left to that turn.
+	switch _, err := d.endSession(ctx, session.ID, store.EndExpired); {
+	case err == nil:
+		slog.InfoContext(ctx, "session expired", "session", session.ID, "sandbox", session.Sandbox)
+	case !errors.Is(err, store.ErrSessionBusy):
+		slog.ErrorContext(ctx, "end expired session", "session", session.ID, "error", err)
+	}
+	return true
+}
+
+// recover reverts a sandbox that crashed while no turn ran in it, so that it
+// sleeps as its last snapshot has it and the session's next turn wakes it. A
+// session with a turn that has not ended is left to that turn.
+func (d *Driver) recover(ctx context.Context, session store.Session, made sandbox.Sandbox) {
 	last, err := d.store.Turns(ctx, session.ID, math.MaxInt32, 1)
 	if err != nil {
 		slog.ErrorContext(ctx, "read last turn of session", "session", session.ID, "error", err)
@@ -476,8 +477,29 @@ func (d *Driver) lose(ctx context.Context, session store.Session) {
 	if len(last) > 0 && last[0].EndedAt == nil {
 		return
 	}
-	expired := len(last) > 0 && d.stale(last[0])
-	if lost && !expired {
+	if err := d.sandboxes.Revert(ctx, made.Name); err != nil {
+		slog.ErrorContext(ctx, "revert crashed sandbox", "session", session.ID, "sandbox", made.Name, "error", err)
+		return
+	}
+	if err := d.store.SetSandboxState(ctx, session.ID, made.Name, store.SandboxAsleep); err != nil {
+		slog.ErrorContext(ctx, "record sandbox state", "session", session.ID, "sandbox", made.Name, "error", err)
+		return
+	}
+	slog.WarnContext(ctx, "crashed sandbox reverted to its last snapshot", "session", session.ID, "sandbox", made.Name, "crash", made.Message)
+}
+
+// lose records that the session's sandbox is lost. A session with a turn
+// that has not ended is left to that turn, which finds the sandbox gone.
+func (d *Driver) lose(ctx context.Context, session store.Session) {
+	if session.SandboxState == store.SandboxLost {
+		return
+	}
+	last, err := d.store.Turns(ctx, session.ID, math.MaxInt32, 1)
+	if err != nil {
+		slog.ErrorContext(ctx, "read last turn of session", "session", session.ID, "error", err)
+		return
+	}
+	if len(last) > 0 && last[0].EndedAt == nil {
 		return
 	}
 	// A turn may have created the sandbox again since the sandboxes were
@@ -489,16 +511,6 @@ func (d *Driver) lose(ctx context.Context, session store.Session) {
 		slog.ErrorContext(ctx, "read sandbox", "session", session.ID, "sandbox", session.Sandbox, "error", err)
 		return
 	case seen.State != sandbox.Lost:
-		return
-	}
-	if expired {
-		// A session that got a turn meanwhile is left to that turn.
-		switch _, err := d.endSession(ctx, session.ID, store.EndExpired); {
-		case err == nil:
-			slog.InfoContext(ctx, "session expired", "session", session.ID, "sandbox", session.Sandbox)
-		case !errors.Is(err, store.ErrSessionBusy):
-			slog.ErrorContext(ctx, "end expired session", "session", session.ID, "error", err)
-		}
 		return
 	}
 	if err := d.store.SetSandboxState(ctx, session.ID, session.Sandbox, store.SandboxLost); err != nil {
@@ -523,9 +535,10 @@ func (d *Driver) reap(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 }
 
 // lull puts the session's sandbox to sleep if the session's last turn ended
-// more than Idle ago. Only the version that was read is suspended: a turn
-// changes the version with Keep before it is given to the sandbox, so it
-// either prevents the suspension or finds the sandbox asleep and wakes it.
+// more than Idle ago. A turn that is given to the sandbox right between the
+// check and the suspension is stopped with it, unless the snapshot keeps the
+// processes: the follower of the turn then wakes the sandbox again, and the
+// turn goes on.
 func (d *Driver) lull(ctx context.Context, sessionID uuid.UUID, made sandbox.Sandbox) {
 	last, err := d.store.Turns(ctx, sessionID, math.MaxInt32, 1)
 	if err != nil {
@@ -535,21 +548,32 @@ func (d *Driver) lull(ctx context.Context, sessionID uuid.UUID, made sandbox.San
 	if len(last) > 0 && (last[0].EndedAt == nil || time.Since(*last[0].EndedAt) < d.config.Idle) {
 		return
 	}
-	if d.moving(ctx, sessionID) {
-		return
-	}
-	switch err := d.suspend(ctx, sessionID, made.Name, made.Version); {
+	switch err := d.suspend(ctx, sessionID, made.Name); {
 	case err == nil:
 		slog.InfoContext(ctx, "idle sandbox put to sleep", "session", sessionID, "sandbox", made.Name)
-	case !errors.Is(err, sandbox.ErrChanged) && !errors.Is(err, sandbox.ErrNotFound):
+	case !errors.Is(err, sandbox.ErrNotFound):
 		slog.ErrorContext(ctx, "put idle sandbox to sleep", "session", sessionID, "sandbox", made.Name, "error", err)
 	}
 }
 
-// suspend puts the session's sandbox to sleep, if version is empty or still
-// current, and records that it is asleep.
-func (d *Driver) suspend(ctx context.Context, sessionID uuid.UUID, name, version string) error {
-	if err := d.sandboxes.Suspend(ctx, name, version); err != nil {
+// suspend puts the session's sandbox to sleep, and records that it is
+// asleep.
+func (d *Driver) suspend(ctx context.Context, sessionID uuid.UUID, name string) error {
+	if err := d.sandboxes.Suspend(ctx, name, false); err != nil {
+		return err
+	}
+	return d.store.SetSandboxState(ctx, sessionID, name, store.SandboxAsleep)
+}
+
+// halt stops what runs in the session's sandbox, and records that it is
+// asleep. A sandbox whose snapshot keeps its processes is reverted to its
+// last snapshot: what it did since is lost. Any other is put to sleep, which
+// ends its processes and keeps its files.
+func (d *Driver) halt(ctx context.Context, sessionID uuid.UUID, name string) error {
+	if !d.config.Halt {
+		return d.suspend(ctx, sessionID, name)
+	}
+	if err := d.sandboxes.Revert(ctx, name); err != nil {
 		return err
 	}
 	return d.store.SetSandboxState(ctx, sessionID, name, store.SandboxAsleep)
@@ -582,7 +606,7 @@ func (d *Driver) correct(ctx context.Context, session store.Session, made sandbo
 		return
 	}
 	state := stateOf(seen)
-	if state == "" || state == session.SandboxState || d.moving(ctx, session.ID) {
+	if state == "" || state == session.SandboxState {
 		return
 	}
 	if err := d.store.SetSandboxState(ctx, session.ID, made.Name, state); err != nil {
@@ -733,49 +757,133 @@ func (d *Driver) Ended(ctx context.Context, turn store.Turn) {
 	d.metrics.Ended(harness, turn)
 }
 
-// environment returns the environment variables of the turn's harness.
-func (d *Driver) environment(turn store.FollowedTurn) map[string]string {
-	// The Egress Proxy serves the provider's endpoint under the path of the
-	// provider's URL, which the API validated.
-	models := *d.config.Models
-	if endpoint, err := url.Parse(turn.ProviderURL); err == nil {
-		models.Path = strings.TrimSuffix(endpoint.Path, "/")
-	}
-	told := map[string]string{
-		"AVIARY_LLM_BASE_URL": models.String(),
-		"AVIARY_LLM_MODEL":    turn.Model,
-	}
-	if turn.Approval != "" {
-		told["AVIARY_APPROVAL"] = turn.Approval
-	}
-	return told
+// setup is what the turn's harness is given, and what its sandbox may
+// reach.
+type setup struct {
+	environment map[string]string
+	servers     []sandbox.McpServer
+	egress      sandbox.Egress
 }
 
-// mcpServers returns the MCP servers that the turn's session has on. The
-// harness reaches each of them at the model listener of the Egress Proxy,
-// under the path of the server's URL.
-func (d *Driver) mcpServers(ctx context.Context, turn store.FollowedTurn) ([]sandbox.McpServer, error) {
+// setUp returns what the turn's harness is given: the model of the turn's
+// agent at its provider's URL, with placeholders in place of the provider's
+// secrets, and the MCP servers that the session has on, with placeholders
+// in place of theirs. The sandbox may reach the installation's hosts, the
+// provider and the servers, and the egress gateway puts the secrets into
+// their requests.
+func (d *Driver) setUp(ctx context.Context, turn store.FollowedTurn) (setup, error) {
+	agent, err := d.store.Agent(ctx, turn.AgentID)
+	if err != nil {
+		return setup{}, fmt.Errorf("get the turn's agent: %w", err)
+	}
+	provider, err := d.store.Provider(ctx, agent.Model.Provider)
+	if err != nil {
+		return setup{}, fmt.Errorf("get the model provider of the turn's agent: %w", err)
+	}
+	address, err := d.reached(provider.URL)
+	if err != nil {
+		return setup{}, fmt.Errorf("the model provider's URL: %w", err)
+	}
+	host, err := sandbox.HostOf(address)
+	if err != nil {
+		return setup{}, err
+	}
+	set := setup{egress: sandbox.Egress{Hosts: slices.Clone(d.config.Hosts)}}
+	headers := map[string]string{}
+	var secrets []sandbox.Secret
+	if provider.APIKey != nil || provider.APIKeyAt != nil {
+		secrets = append(secrets, sandbox.Secret{Host: host, Header: "authorization", Prefix: "Bearer ", URI: credentials.ProviderKey(provider.ID)})
+	}
+	for _, header := range provider.Headers {
+		if !credentials.Secret(header) {
+			headers[header.Name] = header.Value
+			continue
+		}
+		headers[header.Name] = credentials.Placeholder
+		secrets = append(secrets, sandbox.Secret{Host: host, Header: header.Name, URI: credentials.ProviderHeader(provider.ID, header.Name)})
+	}
+	if len(secrets) == 0 {
+		set.egress.Hosts = append(set.egress.Hosts, host)
+	}
+	set.egress.Secrets = secrets
+	encoded, err := json.Marshal(headers)
+	if err != nil {
+		return setup{}, err
+	}
+	set.environment = map[string]string{
+		"AVIARY_LLM_BASE_URL": strings.TrimSuffix(address, "/"),
+		"AVIARY_LLM_MODEL":    turn.Model,
+		// The egress gateway puts the provider's key in its place.
+		"AVIARY_LLM_API_KEY": credentials.Placeholder,
+		"AVIARY_LLM_HEADERS": string(encoded),
+	}
+	if turn.Approval != "" {
+		set.environment["AVIARY_APPROVAL"] = turn.Approval
+	}
 	on, err := d.store.SessionMcpServers(ctx, []uuid.UUID{turn.SessionID})
 	if err != nil {
-		return nil, fmt.Errorf("get the MCP servers of the session: %w", err)
+		return setup{}, fmt.Errorf("get the MCP servers of the session: %w", err)
 	}
-	var servers []sandbox.McpServer
 	for _, id := range on[turn.SessionID] {
 		server, err := d.store.McpServer(ctx, id)
 		if errors.Is(err, store.ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("get MCP server: %w", err)
+			return setup{}, fmt.Errorf("get MCP server: %w", err)
 		}
-		// The API validated the URL.
-		address, err := url.Parse(server.URL)
+		address, err := d.reached(server.URL)
 		if err != nil {
 			continue
 		}
-		at := *d.config.Models
-		at.Path, at.RawPath = address.Path, address.RawPath
-		servers = append(servers, sandbox.McpServer{ID: server.ID, Name: server.Slug, Transport: server.Transport, URL: at.String()})
+		host, err := sandbox.HostOf(address)
+		if err != nil {
+			slog.WarnContext(ctx, "MCP server left out of a turn", "server", server.ID, "error", err)
+			continue
+		}
+		given := sandbox.McpServer{ID: server.ID, Name: server.Slug, Transport: server.Transport, URL: address}
+		secret := false
+		for _, header := range server.Headers {
+			if !credentials.Secret(header) {
+				given.Headers = append(given.Headers, sandbox.McpHeader{Name: header.Name, Value: header.Value})
+				continue
+			}
+			secret = true
+			given.Headers = append(given.Headers, sandbox.McpHeader{Name: header.Name, Value: credentials.Placeholder})
+			set.egress.Secrets = append(set.egress.Secrets, sandbox.Secret{Host: host, Header: header.Name, URI: credentials.McpServerHeader(server.ID, header.Name)})
+		}
+		if !secret {
+			set.egress.Hosts = append(set.egress.Hosts, host)
+		}
+		set.servers = append(set.servers, given)
 	}
-	return servers, nil
+	return set, nil
+}
+
+// reached returns the URL as a sandbox reaches it: with the host that stands
+// in for the local host, if the URL names the local host.
+func (d *Driver) reached(address string) (string, error) {
+	at, err := url.Parse(address)
+	if err != nil {
+		return "", err
+	}
+	if d.config.Localhost == "" || !local(at.Hostname()) {
+		return address, nil
+	}
+	host := d.config.Localhost
+	if port := at.Port(); port != "" {
+		host += ":" + port
+	}
+	at.Host = host
+	return at.String(), nil
+}
+
+// local reports whether the host is the local host: by that name, or as a
+// loopback address.
+func local(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	return err == nil && address.IsLoopback()
 }

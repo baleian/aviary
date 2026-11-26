@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
 
+	"aviary/supervisor/internal/credentials"
 	"aviary/supervisor/internal/testenv"
 	"aviary/supervisor/store"
 )
@@ -118,8 +120,8 @@ func TestProviderWithItsKeyInASecretStore(t *testing.T) {
 	}
 }
 
-// A key in a secret store is read when a model request needs it, and each
-// Supervisor caches it. If the key cannot be read, the request is denied with
+// A key in a secret store is read when the gateway asks for it, and each
+// Supervisor caches it. If the key cannot be read, the gateway is refused with
 // the reason.
 func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	t.Parallel()
@@ -131,62 +133,49 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	aviary.secrets.put(address, "llm/model", "api_key", "sk-the-first")
 	provider := s.create("/v1/projects/"+project+"/providers", keyed(in(kept, "llm/model", "api_key")))
 	agent := s.agent(project, `{"harness": "opencode", "model": {"provider": "`+provider+`", "name": "a-model"}}`)
-	token := aviary.token(aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID).Sandbox)
-	// told returns the Authorization header that a Supervisor sets on a
-	// model request of the turn.
+	sandbox := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID).Sandbox
+	key := credentials.ProviderKey(uuid.MustParse(provider))
+	// told returns the key that a Supervisor gives the gateway.
 	told := func(s *supervisor) string {
 		t.Helper()
-		got := named(t, s.check(token, false, "/v1/chat/completions"))
-		if got == nil || got.host != "api.example.com" || got.secure != "true" || got.keyless {
-			t.Fatalf("model request endpoint = %+v", got)
+		got, code, why := s.fetch(sandbox, key)
+		if code != codes.OK {
+			t.Fatalf("the key is refused with %v %q", code, why)
 		}
-		return got.authorization
+		return got
 	}
-	// refused returns the status and the reason with which a Supervisor
-	// denies a model request of the turn.
-	refused := func(s *supervisor) (int, string) {
+	// refused returns the code and the reason with which a Supervisor refuses
+	// the gateway the key.
+	refused := func(s *supervisor) (codes.Code, string) {
 		t.Helper()
-		return refusal(s.check(token, false, "/v1/chat/completions"))
-	}
-	// elsewhere reports whether a forward proxy request of the turn passes
-	// unchanged, without a key.
-	elsewhere := func(s *supervisor) bool {
-		t.Helper()
-		return named(t, s.check(token, true, "/")) == nil
+		_, code, why := s.fetch(sandbox, key)
+		return code, why
 	}
 	const reads = `aviary_secret_read_seconds_count{kind="scripted",outcome="read"}`
 
-	if key := told(s); key != "Bearer sk-the-first" {
-		t.Errorf("Authorization = %q, want the key from the store", key)
-	}
-	// The key is added to model requests only.
-	if !elsewhere(s) {
-		t.Error("forward proxy request was modified")
+	if key := told(s); key != "sk-the-first" {
+		t.Errorf("key = %q, want the key from the store", key)
 	}
 	// The key was read once, when the provider was created, and stays cached
 	// after the store changes.
 	aviary.secrets.put(address, "llm/model", "api_key", "sk-the-second")
-	if key := told(s); key != "Bearer sk-the-first" || s.metric(reads) != 1 {
-		t.Errorf("Authorization = %q after %v store reads, want the cached key after 1", key, s.metric(reads))
+	if key := told(s); key != "sk-the-first" || s.metric(reads) != 1 {
+		t.Errorf("key = %q after %v store reads, want the cached key after 1", key, s.metric(reads))
 	}
 	// A Supervisor without the cached key reads the current one.
-	if another := aviary.supervisor(); told(another) != "Bearer sk-the-second" || another.metric(reads) != 1 {
+	if another := aviary.supervisor(); told(another) != "sk-the-second" || another.metric(reads) != 1 {
 		t.Errorf("another Supervisor: %v store reads, want 1 with the current key", another.metric(reads))
 	}
 
-	// If the store has no value, model requests are denied with the reason,
-	// and the other requests of the turn pass.
+	// If the store has no value, the gateway is refused with the reason.
 	aviary.secrets.put(address, "llm/model", "api_key", "")
 	third := aviary.supervisor()
-	if status, why := refused(third); status != http.StatusServiceUnavailable ||
-		why != "cannot read the model provider's API key from its secret store: the store has no value at the path and under the key\n" {
-		t.Errorf("request with a missing key: denied with %d %q", status, why)
+	if code, why := refused(third); code != codes.Unavailable ||
+		why != "the secret cannot be read: cannot read the model provider's API key from its secret store: the store has no value at the path and under the key" {
+		t.Errorf("a missing key: refused with %v %q", code, why)
 	}
 	if failed := third.metric(`aviary_secret_read_seconds_count{kind="scripted",outcome="failed"}`); failed != 1 {
 		t.Errorf("failed reads = %v, want 1", failed)
-	}
-	if !elsewhere(third) {
-		t.Error("forward proxy request was modified while the key cannot be read")
 	}
 
 	// Replacing the store invalidates the cache.
@@ -194,8 +183,8 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	if status, _ := s.request("PUT", "/v1/secret-stores/"+kept, scriptedStore("a store", address, "another-credential", "another-credential"), nil); status != http.StatusOK {
 		t.Fatalf("PUT secret store: status %d, want 200", status)
 	}
-	if key := told(s); key != "Bearer sk-the-third" {
-		t.Errorf("Authorization after replacing the store = %q", key)
+	if key := told(s); key != "sk-the-third" {
+		t.Errorf("key after replacing the store = %q", key)
 	}
 
 	// A store at a host that is not allowed is not read. Nor is a store whose
@@ -203,9 +192,8 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	// credential does not open.
 	closed := *aviary
 	closed.storeHosts = nil
-	if status, why := refused(closed.supervisor()); status != http.StatusServiceUnavailable ||
-		!strings.Contains(why, "supervisor.secretStores.allowedHosts") {
-		t.Errorf("request with a key in a disallowed store: denied with %d %q", status, why)
+	if code, why := refused(closed.supervisor()); code != codes.Unavailable || !strings.Contains(why, "supervisor.secretStores.allowedHosts") {
+		t.Errorf("a key in a disallowed store: refused with %v %q", code, why)
 	}
 	held, err := aviary.records.SecretStore(context.Background(), uuid.MustParse(kept))
 	if err != nil {
@@ -217,8 +205,8 @@ func TestModelRequestWithAKeyFromASecretStore(t *testing.T) {
 	if _, err := aviary.records.ReplaceSecretStore(context.Background(), held); err != nil {
 		t.Fatal(err)
 	}
-	if status, why := refused(s); status != http.StatusServiceUnavailable ||
-		why != "cannot read the credential of the secret store of the model provider's API key\n" {
-		t.Errorf("request with a store credential that does not open: denied with %d %q", status, why)
+	if code, why := refused(s); code != codes.Unavailable ||
+		why != "the secret cannot be read: cannot decrypt the credential of the secret store of the model provider's API key" {
+		t.Errorf("a store credential that does not open: refused with %v %q", code, why)
 	}
 }

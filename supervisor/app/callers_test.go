@@ -331,39 +331,3 @@ func TestASessionIsOfItsCreator(t *testing.T) {
 		t.Errorf("turn without a sender has created_by %v", by)
 	}
 }
-
-// For its access log, the Egress Proxy gets the user ID and the subject of
-// whoever sent the message of the turn that a request comes from.
-func TestProxyIsToldWhoSentTheMessageOfATurn(t *testing.T) {
-	aviary := install(t)
-	aviary.callers = api.Callers{
-		Provider: tokens{
-			"an-administrator": {Subject: "1", Groups: []string{"platform"}},
-			"token-of-alice":   {Subject: "2", Username: "alice@example.com"},
-		},
-		Admins: []string{"platform"},
-	}
-	s := aviary.supervisor()
-	s.token = "an-administrator"
-	project := s.project()
-	agent := s.agent(project, `{"harness": "opencode"}`)
-	s.create("/v1/projects/"+project+"/members", `{"user": "alice@example.com", "role": "user"}`)
-
-	senders := map[string]bool{}
-	for _, sender := range []string{"token-of-alice", "an-administrator"} {
-		s.token = sender
-		var who me
-		s.request(http.MethodGet, "/v1/me", "", &who)
-		runner := aviary.given(s.send(s.create("/v1/agents/"+agent+"/sessions", ""), "hello").ID)
-		for _, forward := range []bool{false, true} {
-			if origin := s.origin(aviary.token(runner.Sandbox), forward); who.ID == "" || origin["user"] != who.ID || who.Subject == "" || origin["subject"] != who.Subject {
-				t.Errorf("user %q, subject %q, forward %t: origin = %v",
-					who.ID, who.Subject, forward, origin)
-			}
-		}
-		senders[who.ID] = true
-	}
-	if len(senders) != 2 {
-		t.Errorf("senders = %v, want two users", senders)
-	}
-}
