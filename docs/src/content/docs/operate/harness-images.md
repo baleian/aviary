@@ -249,7 +249,7 @@ images in this repository handle these cases:
    nothing but the mock server, which is also their proxy in the standard
    variables, so the tests see what a harness fetches. git, npm, pip and curl
    use those variables, and Node's `fetch` does with `NODE_USE_ENV_PROXY=1`,
-   which `images/harness-base` sets.
+   which the tests set.
 3. Push the image to a registry that Agent Substrate pulls from: Substrate
    pulls it by its digest.
 4. Add the harness to the chart values under a name of your choice:

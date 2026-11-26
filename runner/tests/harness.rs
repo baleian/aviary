@@ -340,6 +340,7 @@ impl Sitting {
             // The test sees what else the harness fetches.
             "HTTP_PROXY": PROXY, "HTTPS_PROXY": PROXY, "NO_PROXY": "localhost,127.0.0.1,::1,model",
             "http_proxy": PROXY, "https_proxy": PROXY, "no_proxy": "localhost,127.0.0.1,::1,model",
+            "NODE_USE_ENV_PROXY": "1",
         });
         // Set only for an agent that asks, as the Supervisor does.
         if !message.approval.is_empty() {
