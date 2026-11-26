@@ -21,22 +21,30 @@ In a network that does not reach the public registries, see
 
 ```sh
 make cluster-up        # create a kind cluster
+make substrate         # install Agent Substrate, which runs the sandboxes
 make postgres valkey   # install a database and an event log in it
-make images            # build the images and load them into the cluster
+make images            # build the images and put them in the cluster
 make deploy            # install Aviary with its Helm chart
 ```
 
 `make deploy` serves the API at http://localhost:8080. `make mysql` installs
 MySQL instead of PostgreSQL, and `make redis` Redis instead of Valkey.
 `make deploy` fails unless the cluster has one database and one event log.
-`make cluster-down` deletes the cluster, including the session volumes,
-which are directories on its nodes, unless the cluster
+`make cluster-down` deletes the cluster, including the sandboxes and their
+snapshots, unless the cluster
 [keeps its data](#keep-the-data-of-the-cluster). The cluster runs
 Kubernetes 1.37.
 
+`make substrate` installs [Agent Substrate](../operate/installation.md#agent-substrate)
+with its installer, `ate-setup`, which it builds for your machine from the
+source of the release and runs there, with the settings that Aviary needs.
+It also installs a registry in the cluster: `make images` puts the harness
+images there, and names them by their digests for `make deploy` in
+`.out/<cluster>-harnesses.yaml`.
+
 After a change, `make images deploy` builds the images again and installs
 them. The pods of the Supervisor's image start again if the image changed,
-and a session runs a changed harness image the next time it wakes.
+and a new session runs a changed harness image.
 `make deploy VALUES=<file>` installs the chart with a values file of your
 own, or with several, separated by spaces.
 
@@ -62,16 +70,16 @@ DATA=/home/me/aviary-data
 ```
 
 `make cluster-up` then makes a cluster whose nodes keep their volumes in the
-directory, under `volumes`: the database, the homes of the sessions and the
-objects of the depot, each in a directory named after its claim.
+directory, under `volumes`: the database, the objects of the depot, and those
+of Substrate, with the snapshots of the sandboxes, each in a directory named
+after its claim.
 `make postgres`, `make mysql` and `make deploy` keep the passwords of the
 database and the encryption key, which that data depends on, under
 `secrets`. A cluster that is made with the directory again has the projects,
-the sessions and the turns of the last one, and its sessions still know
-their conversations and have their files.
+the sessions and the turns of the last one. Whether a new installation of
+Substrate continues the sandboxes of the last one has not been tried.
 
-Such a cluster keeps the directory of a volume that is deleted, so the home
-of a session that has ended stays in `volumes/aviary-runtime` until you
+Such a cluster keeps the directory of a volume that is deleted until you
 delete it. The files belong to the users of the containers, so deleting them
 may take root. The event log is kept in memory only: a turn that runs when
 the cluster stops does not continue. A cluster that was made without `DATA`

@@ -38,32 +38,33 @@ use it: see [the harness images](../operate/harness-images.md#the-images-in-this
 - **A secret can stay in a secret store of the project.** Aviary then
   stores where the secret is, not the secret, and reads it from the store
   when a model request needs it. See [Secret stores](./secret-stores.md).
-- **A key goes only to its endpoint.** The Egress Proxy adds it to the model
-  requests of the turns that use the provider, and forwards them to the
-  host of the provider's URL, under the URL's path. Nothing else that a
-  sandbox sends carries a key, and a sandbox cannot choose where its model
-  requests go.
+- **A key goes only to its host.** The harness of a turn that uses the
+  provider sends its model requests to the provider's URL with a
+  placeholder, and the egress gateway puts the key in its place on their
+  way out, in every request to the host of the URL. A request to another
+  host carries no key. See [Network and egress](../operate/egress.md#secrets).
 - **An endpoint can need headers besides its key**, as a gateway does that
   routes its requests by a header. A provider has up to 20 of them, as
   `"headers": [{"name": "x-gateway-route", "value": "team-a"}]`, and the
-  Egress Proxy sets them on the model requests of the turns that use the
-  provider, in place of what a sandbox sends by those names. A header that
-  says where a request goes or how it is carried, such as `host`, cannot be
-  one of them, nor can `authorization`, which carries the key. A value that
-  is a secret is given as a key is, as
-  `{"name": "x-team-token", "secret": {"value": "..."}}` or by its location
-  in a secret store. Other values are not secrets: a provider is returned
-  with them.
+  harness sends them with its model requests. A header that says where a
+  request goes or how it is carried, such as `host`, cannot be one of them,
+  nor can `authorization`, which carries the key. A value that is a secret is
+  given as a key is, as `{"name": "x-team-token", "secret": {"value": "..."}}`
+  or by its location in a secret store, and the egress gateway puts it in.
+  Other values are not secrets: a provider is returned with them.
 - **A provider can be replaced while turns use it.** Their next model
-  request uses the new endpoint, headers and key.
+  request gets the new key and secrets, and the next turn the new URL and
+  headers.
 - **The models of a provider can be listed**, before it is registered and
-  after. The request goes to its endpoint the way a model request of a turn
-  does, so an endpoint that the Egress Proxy does not reach, or a key that
-  the endpoint refuses, shows at once and not as a failed turn. An endpoint
-  that has no list of models answers 404, and was reached all the same.
-- **The host of a provider is subject to `egressProxy.allowedHosts`** like
-  any other host: if the list names hosts, it must allow the provider's.
-- **A provider at `localhost` reaches nothing**, since to the Egress Proxy
-  that is the proxy itself, unless `egressProxy.localhost` names the host
-  that stands in for it. The proxy then connects to that host, on the port
-  of the provider's URL.
+  after. The Supervisor asks its endpoint itself, with its key and headers,
+  so an endpoint that it does not reach, or a key that the endpoint refuses,
+  shows at once and not as a failed turn. An endpoint that has no list of
+  models answers 404, and was reached all the same. The Supervisor does not
+  connect to the addresses of its own host or of its link.
+- **The host of a provider is a name**, which the sandboxes of its turns may
+  reach whatever `sandboxes.allowedHosts` says. A provider at an IP address
+  is not reached, and a Service of the cluster needs its full name, such as
+  `models.llm.svc.cluster.local`.
+- **A provider at `localhost` is not reached** unless `sandboxes.localhost`
+  names the host that stands in for it. The sandboxes and the Supervisor
+  then reach that host, on the port of the provider's URL.

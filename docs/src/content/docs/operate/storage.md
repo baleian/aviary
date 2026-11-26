@@ -1,69 +1,64 @@
 ---
 title: Sessions and storage
-description: When a session sleeps, when its home is archived, and where its files are kept.
+description: When a session sleeps, what its snapshot keeps, and where its files are kept.
 ---
 
 A session keeps its conversation and its files in the home of its sandbox,
-`/home`, which is a volume. The installation decides how long the pod and
-the volume of a session stay.
+`/home`. The installation decides how long the sandbox of a session stays
+awake, what its snapshot keeps while it sleeps, and when it is deleted.
 
 ## The life of a sandbox
 
-![What a session has while it is awake, asleep and archived, with the default settings](../../../assets/diagrams/sandbox-life.svg)
+![What a session has while it is awake, asleep and ended, with the default settings](../../../assets/diagrams/sandbox-life.svg)
 
-1. **Awake.** The first turn of a session creates its sandbox: a pod that
-   runs the image of the agent's harness, with the session volume.
+1. **Awake.** The first turn of a session creates its sandbox: an actor of
+   [Agent Substrate](https://github.com/agent-substrate/substrate) that runs
+   the image of the agent's harness in gVisor, on a worker that has room for
+   it.
 2. **Asleep.** `sandboxes.idleSeconds` without a running turn, 300 by
-   default, put the session to sleep: its pod is deleted and its volume is
-   kept, and its next turn wakes it in a new pod.
-3. **Archived.** `sandboxes.archiveAfterSeconds` of sleep, a week by
-   default, archive the home of the session in the [depot](#the-depot): its
-   sandbox is deleted with its volume, and its next turn restores the home
-   into a new sandbox.
-4. **Ended.** A session ends when its owner ends it, when its agent is
+   default, put the session to sleep: a snapshot keeps the sandbox, and it
+   leaves its worker. Its next turn wakes it from the snapshot on a worker
+   that has room.
+3. **Ended.** A session ends when its owner ends it, when its agent is
    deleted, or `sandboxes.retentionSeconds` after its last turn, which by
-   default is never. Its sandbox is deleted with its volume, or the archive
-   of its home, and its conversation stays readable.
+   default is never. Its sandbox is deleted with its snapshot, and its
+   conversation stays readable.
 
-Sleeping, archiving and the end after a time can each be turned off: see
+Sleeping and the end after a time can each be turned off: see
 [Configuration](../reference/configuration.md#sandboxes).
-[Capacity and availability](./capacity.md#sandboxes) says which
-pods and volumes exist at a time.
+[Capacity and availability](./capacity.md#sandboxes) says which sandboxes
+take the room of workers.
 
-## The session volume
+## The snapshot
 
-`runtime.volume` describes the session volume, which is mounted at `/home`:
-the state of the harness, the files of the agent and what the agent installs
-with npm or pip. It is 10Gi by default, in the default storage class of the
-cluster.
+`sandboxes.snapshot` says what the snapshot of a sleeping sandbox keeps:
 
-The volume is deleted with its sandbox when its session is ended or expires,
-or when its home is archived. Whether its data is deleted too depends on the
-storage class: the default class of the local cluster deletes it, a class
-with `reclaimPolicy: Retain` keeps it, and some file storage drivers keep it
-unless they are configured not to.
+| Value | What a sandbox wakes with |
+| --- | --- |
+| `memory`, the default | Its processes and their memory, its files and its home. A harness goes on where it was, and so does a turn that was running when the sandbox moved. |
+| `rootfs` | Its files and its home. The harness starts again, and resumes its session from the home. |
+| `volumes` | Its home. The harness starts again, and resumes its session from the home. |
+
+The home is the durable directory of the actor: the state of the harness,
+the files of the agent and what the agent installs with npm or pip. Substrate
+keeps the snapshots in its object storage. A sandbox that sleeps uploads its
+snapshot after a while, and one whose worker goes away, as when its node is
+drained, is put to sleep by a Supervisor first and uploads it at once. A
+sandbox that crashes is reverted to its last snapshot, and the turn that it
+ran fails.
+
+A sandbox keeps the template that it was made with: a harness whose image or
+resources the installation changes applies to new sessions.
 
 ## The depot
 
-The depot is where the files that outlive a sandbox are kept, as objects in
-a volume. Its pods run the image of the Supervisor with the command `depot`,
-behind one Service. They keep nothing but the volume, which all of them
-mount: any of them serves any request, and a new one starts before the one
-that it replaces stops. A network policy lets only the Supervisors connect
-to them.
-
-The objects are the files that messages carry, each kept from its upload
-until its session ends, and the homes of the sessions whose sandboxes have
-slept for `sandboxes.archiveAfterSeconds`. A Supervisor wakes such a sandbox, has its
-runner pack the home, writes the archive to the depot, and deletes the
-sandbox with its volume. A message that arrives meanwhile is not held up:
-its turn takes the sandbox, and the home is archived later. The next turn of
-a session whose home is archived gets a new sandbox, in which the runner
-unpacks the archive before the harness starts. The archive is then deleted.
-An archive has the directories, files and links of the home, with their
-modes and times. A home that cannot be archived stays in its volume and is
-tried again later, and an archive that cannot be unpacked stays in the depot
-while the turn fails.
+The depot is where the files that messages carry are kept, as objects in a
+volume, until their sessions end. Its pods run the image of the Supervisor
+with the command `depot`, behind one Service. They keep nothing but the
+volume, which all of them mount: any of them serves any request, and a new
+one starts before the one that it replaces stops. A network policy lets only
+the Supervisors connect to them. A Supervisor gives the files of a message
+to the runner of its sandbox before the turn of the message starts.
 
 An object is a file at the path of its key. It is written once, under its
 own name, and is never changed. So the depots need not coordinate, and the

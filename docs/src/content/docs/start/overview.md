@@ -5,10 +5,10 @@ description: What Aviary does, who it is for and where it stands.
 
 Aviary runs AI agent harnesses, such as OpenCode, Codex and Claude Code, on
 Kubernetes. Each message that a user sends is a turn, and each session runs
-its turns in a sandbox of its own: a pod that runs the agent's harness, with
-a volume that keeps the conversation and the files of the session between
-turns. The sandboxes are managed by
-[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox).
+its turns in a sandbox of its own, which keeps the conversation and the
+files of the session between turns: an actor of
+[Agent Substrate](https://github.com/agent-substrate/substrate) that runs
+the agent's harness in gVisor.
 
 ## What it does
 
@@ -16,15 +16,17 @@ Aviary is built for running agents for many users on infrastructure of your
 own:
 
 - **Controlled egress.** An agent reaches only the hosts that the
-  installation allows, and every request that leaves a sandbox is logged
-  with the turn and the user that it came from.
+  installation allows and those of its turn, and every secret that goes
+  into a request is logged with the turn and the user that it came from.
 - **No keys in sandboxes.** Each agent names its model at a model provider
   that its project registers, and no sandbox holds the provider's API key.
 - **Persistent sessions.** Sessions continue across turns, and their
   conversations can be read back through the API.
-- **Sleeping sessions.** A session that is not in use is put to sleep: its
-  pod is deleted, so it uses no CPU or memory, and its volume is kept. Its
-  next turn continues in a new pod.
+- **Sleeping sessions.** A session that is not in use is put to sleep: a
+  snapshot keeps it, so it uses no CPU or memory. Its next turn wakes it on
+  any worker that has room.
+- **A bounded pool.** The workers that hold the awake sandboxes are of the
+  number and the size that the installation gives them.
 - **A queue.** The number of turns that run at once is a setting. Further
   turns wait in order.
 - **Approval.** An agent can be made to ask a person before it acts.
@@ -55,13 +57,16 @@ Aviary is at an early stage and has only run on a local cluster.
 
 ## Limitations
 
-- **No inspection of what an agent sends.** The Egress Proxy logs which
-  host a turn connects to, but does not read what is sent over HTTPS.
+- **No inspection of what an agent sends.** Aviary does not read what a
+  sandbox sends over HTTPS, and the egress gateway reads only the requests
+  into which it puts secrets.
 - **No measured token usage.** The usage of a turn is what its harness
-  reports. The Egress Proxy does not count tokens.
-- **No copy of the files of an ended session.** Its volume is deleted with
-  its sandbox, and so is the archive of its home. Aviary keeps no copy, and
-  only a storage class that keeps the data of deleted volumes does.
+  reports.
+- **No copy of the files of an ended session.** Its sandbox is deleted with
+  its snapshot, and Aviary keeps no copy.
+- **Secrets by host.** The egress gateway puts a secret into a header of
+  every request to its host, whatever the path: see
+  [Network and egress](../operate/egress.md#secrets).
 - **Tested only on a local cluster.** Aviary has not run on a cloud
   provider's Kubernetes or under load, and its depot has not run on a
   network file system or a mounted bucket.

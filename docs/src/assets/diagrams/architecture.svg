@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 572" role="img" aria-labelledby="title desc">
   <title id="title">The parts of Aviary</title>
-  <desc id="desc">Clients call the Supervisor. The Supervisor has agent-sandbox make a sandbox for each session, gives the turns to the runner in it, and keeps files in the depot. A sandbox reaches the outside only through the Egress Proxy, which asks the Supervisor about each request.</desc>
+  <desc id="desc">Clients call the Supervisor. The Supervisor has the API of Agent Substrate create, wake and put to sleep a sandbox for each session on its workers, gives the turns to the runner in the sandbox through the router of Substrate, and keeps files in the depot. A sandbox reaches the outside only through the egress gateway of Substrate, which asks the Supervisor for the secrets of the turn.</desc>
   <style>
     svg {
       --bg: #ffffff; --frame: #d9e0ea;
@@ -100,53 +100,64 @@
   <text class="t" x="266" y="90">Supervisor</text>
   <text class="d" x="266" y="113">serves the API</text>
   <text class="d" x="266" y="131">queues and runs the turns</text>
-  <text class="d" x="266" y="149">answers the Egress Proxy</text>
-  <rect class="box" x="498" y="60" width="124" height="40" rx="8"/>
-  <text class="n c" x="560" y="85">agent-sandbox</text>
-  <path class="e" d="M468 80H496" marker-end="url(#a)"/>
-  <path class="e" d="M622 80H648" marker-end="url(#a)"/>
-  <text class="l c" x="560" y="117">creates, wakes,</text>
-  <text class="l c" x="560" y="132">puts to sleep</text>
+  <text class="d" x="266" y="149">gives the secrets of a turn</text>
+
+  <!-- Agent Substrate: its API and router -->
+  <rect class="box" x="492" y="60" width="136" height="40" rx="8"/>
+  <text class="n c" x="560" y="78">Substrate API</text>
+  <text class="d c" x="560" y="93">actors, policies</text>
+  <path class="e" d="M470 80H490" marker-end="url(#a)"/>
+  <path class="e" d="M628 80H648" marker-end="url(#a)"/>
+  <text class="l c" x="560" y="118">creates, wakes,</text>
+  <text class="l c" x="560" y="133">puts to sleep</text>
+  <rect class="box" x="492" y="148" width="136" height="36" rx="8"/>
+  <text class="n c" x="560" y="171">Substrate router</text>
+  <path class="e" d="M470 166H490" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l c" x="560" y="202">turns down · events up</text>
+
+  <!-- The workers and the sandboxes on them -->
   <rect class="closed" x="650" y="52" width="230" height="200" rx="12"/>
-  <text class="z" x="664" y="72">SANDBOXES</text>
+  <text class="z" x="664" y="72">WORKERS</text>
   <text class="m r" x="866" y="72">aviary-runtime</text>
-  <rect class="box back" x="672" y="88" width="188" height="140" rx="10"/>
-  <rect class="box back" x="668" y="92" width="188" height="140" rx="10"/>
-  <rect class="box" x="664" y="96" width="188" height="140" rx="10"/>
+  <rect class="box back" x="672" y="88" width="188" height="148" rx="10"/>
+  <rect class="box back" x="668" y="92" width="188" height="148" rx="10"/>
+  <rect class="box" x="664" y="96" width="188" height="148" rx="10"/>
   <text class="n" x="676" y="117">Session sandbox</text>
-  <text class="d" x="676" y="133">no API keys · no DNS</text>
-  <rect class="box" x="676" y="142" width="62" height="34" rx="6"/>
-  <text class="n c" x="707" y="164">runner</text>
-  <rect class="box" x="770" y="142" width="70" height="34" rx="6"/>
-  <text class="n c" x="805" y="164">harness</text>
-  <path class="e" d="M740 159H768" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l c" x="754" y="190">ACP</text>
-  <rect class="box" x="676" y="198" width="164" height="28" rx="14"/>
-  <text class="n c" x="758" y="217">/home volume</text>
-  <path class="e" d="M470 159H674" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l c" x="560" y="152">turns down · events up</text>
+  <text class="d" x="676" y="133">gVisor · no API keys</text>
+  <rect class="box" x="676" y="149" width="64" height="34" rx="6"/>
+  <text class="n c" x="708" y="171">runner</text>
+  <rect class="box" x="768" y="149" width="72" height="34" rx="6"/>
+  <text class="n c" x="804" y="171">harness</text>
+  <path class="e" d="M742 166H766" marker-start="url(#a)" marker-end="url(#a)"/>
+  <path class="e" d="M630 166H674" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text class="l c" x="754" y="197">ACP</text>
+  <rect class="box" x="676" y="206" width="164" height="28" rx="14"/>
+  <text class="n c" x="758" y="225">/home</text>
+
+  <!-- The depot -->
   <rect class="box back" x="266" y="292" width="144" height="64" rx="10"/>
   <rect class="box back" x="262" y="296" width="144" height="64" rx="10"/>
   <rect class="box" x="258" y="300" width="144" height="64" rx="10"/>
   <text class="n c" x="330" y="326">Depot</text>
   <text class="d c" x="330" y="344">objects in a volume</text>
   <path class="e" d="M306 184V290" marker-start="url(#a)" marker-end="url(#a)"/>
-  <text class="l" x="314" y="238">attachments,</text>
-  <text class="l" x="314" y="253">archived homes</text>
+  <text class="l" x="314" y="245">attachments</text>
+
+  <!-- The egress gateway of Agent Substrate -->
   <rect class="out back" x="438" y="292" width="220" height="64" rx="10"/>
   <rect class="out back" x="434" y="296" width="220" height="64" rx="10"/>
   <rect class="out" x="430" y="300" width="220" height="64" rx="10"/>
-  <text class="n c" x="540" y="326">Egress Proxy</text>
-  <text class="d c" x="540" y="344">Envoy: the only way out</text>
+  <text class="n c" x="540" y="326">Egress gateway</text>
+  <text class="d c" x="540" y="344">of Substrate: the only way out</text>
   <path class="e" d="M444 300V184" marker-end="url(#a)"/>
-  <text class="l" x="452" y="231">asks about each request:</text>
-  <text class="l" x="452" y="246">its turn, and the key</text>
-  <text class="l" x="452" y="261">of the model provider</text>
+  <text class="l" x="452" y="234">asks for the secrets</text>
+  <text class="l" x="452" y="249">of the turn's provider</text>
+  <text class="l" x="452" y="264">and MCP servers</text>
   <path class="e way" d="M766 252V332H660" marker-end="url(#w)"/>
   <text class="l way" x="774" y="288">all outbound</text>
   <text class="l way" x="774" y="303">traffic</text>
 
-  <!-- Where the Egress Proxy sends on -->
+  <!-- Where the egress gateway sends on -->
   <rect class="zone" x="430" y="432" width="458" height="124" rx="12"/>
   <text class="z" x="444" y="452">WHAT A SANDBOX REACHES</text>
   <rect class="box" x="444" y="462" width="150" height="80" rx="8"/>
@@ -163,15 +174,15 @@
   <text class="d c" x="806" y="501">that the</text>
   <text class="d c" x="806" y="516">installation allows</text>
   <path class="e way" d="M540 364V430" marker-end="url(#w)"/>
-  <text class="l way" x="548" y="414">with the provider's key, to allowed hosts only</text>
+  <text class="l way" x="548" y="414">with the secrets put in, to the hosts of the turn only</text>
 
   <!-- Legend -->
-  <rect class="box back" x="250" y="470" width="26" height="16" rx="4"/>
-  <rect class="box back" x="246" y="474" width="26" height="16" rx="4"/>
-  <rect class="box" x="242" y="478" width="26" height="16" rx="4"/>
-  <text class="d" x="286" y="485">replicas, or</text>
-  <text class="d" x="286" y="500">one per session</text>
-  <rect class="closed" x="242" y="518" width="34" height="18" rx="5"/>
-  <text class="d" x="286" y="525">closed by a</text>
-  <text class="d" x="286" y="540">network policy</text>
+  <rect class="box back" x="28" y="474" width="26" height="16" rx="4"/>
+  <rect class="box back" x="24" y="478" width="26" height="16" rx="4"/>
+  <rect class="box" x="20" y="482" width="26" height="16" rx="4"/>
+  <text class="d" x="64" y="489">replicas, or</text>
+  <text class="d" x="64" y="504">one per session</text>
+  <rect class="closed" x="20" y="522" width="34" height="18" rx="5"/>
+  <text class="d" x="64" y="529">reached only through</text>
+  <text class="d" x="64" y="544">the router and the gateway</text>
 </svg>

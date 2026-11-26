@@ -76,10 +76,11 @@ from outside, or never reached its harness.
 | `expired` | none | The turn was queued for longer than allowed. |
 
 The items are what the user saw. The harness may remember less of a turn
-that did not complete: if the sandbox is put to sleep before the turn ends,
-as when the turn runs for too long, the harness stops with its pod before it
-can save what it was saying. The next turn wakes the sandbox with the volume
-as it was.
+that did not complete: if what runs in the sandbox is stopped before the
+turn ends, as when the turn runs for too long, the harness stops before it
+can save what it was saying. With `memory` snapshots the sandbox goes back to
+its last snapshot, and what the agent did since is lost. With `rootfs` and
+`volumes` the home keeps what the agent did.
 
 `usage` has `total_tokens`, `input_tokens` and `output_tokens`, and
 `thought_tokens`, `cached_read_tokens` and `cached_write_tokens` if the
@@ -87,4 +88,5 @@ harness reports them. An ended turn has it too. It is what the harness
 reports, not a measurement, and harnesses count differently: Codex and
 Claude Code report the sum over the model requests of a turn, OpenCode only
 the last request.
-The Egress Proxy log is reliable: it has every model request, with its turn.
+The log of the egress gateway has every request of a sandbox, and the log of
+the Supervisors every secret that went into one, with its turn.

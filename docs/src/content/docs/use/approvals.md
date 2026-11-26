@@ -40,8 +40,7 @@ project says that an agent is waiting for you.
 - **Approval is not a security boundary.** The harness that asks runs in
   the sandbox, next to the agent's tools and as the same user. Approval
   keeps a well-meaning agent from acting on a mistake. What a sandbox can
-  reach is limited by the network policy and the Egress Proxy, whatever was
-  approved.
+  reach is limited by its egress policy, whatever was approved.
 
 An agent without `approval` asks nobody. If its harness asks for permission
 anyway, the runner allows the action once.

@@ -17,9 +17,9 @@ make e2e           # all components together, in a kind cluster of its own
 | Level | Command | What runs | What it checks |
 | --- | --- | --- | --- |
 | Lint | `make lint` | gofmt, go vet, rustfmt, clippy, the Go code generator, for `web/` Prettier, oxlint and the TypeScript compiler, and Prettier for the code in `docs/`. | The code is formatted, the linters pass, and the generated code is up to date. |
-| Unit and component | `make test` | Each part on its own, with the test playing what it talks to. | What each part does: the Supervisor, the runner, the chart, the Egress Proxy, the mock model server, the code in `web/`, the server of the web UI's image, and the documentation: its links, and the requests and metrics of its reference. |
+| Unit and component | `make test` | Each part on its own, with the test playing what it talks to. | What each part does: the Supervisor, the runner, the chart, the mock model server, the code in `web/`, the server of the web UI's image, and the documentation: its links, and the requests and metrics of its reference. |
 | Harness | `make test-harness` | The harness images in containers, each with the runner, against the mock model server. The tests are in `runner/tests/harness.rs`. | A harness and the runner work together: sessions, tools, the tools of MCP servers, cancellation, failures, what the agent installs, and what the harness requests from outside. |
-| e2e | `make e2e` | Aviary as the chart installs it, in a kind cluster that the run creates and deletes. The tests are in `test/e2e/`. | The parts work together: a turn from the API to its session's sandbox and back, sessions that sleep and wake, what a sandbox can reach through the Egress Proxy, the tools of MCP servers, ending a session, losing a sandbox, and turns while the Supervisors are replaced. |
+| e2e | `make e2e` | Aviary as the chart installs it, on Agent Substrate, in a kind cluster that the run creates and deletes. The tests are in `test/e2e/`. | The parts work together: a turn from the API to its session's sandbox and back, sessions that sleep and wake, what a sandbox can reach and the secrets that the egress gateway puts into its requests, the tools of MCP servers, ending a session, losing a sandbox, and turns while the Supervisors are replaced. |
 
 No test needs a model. The mock model server in `test/mock-llm` follows a
 script: each message to a session is an instruction, such as `say done` or
@@ -38,11 +38,10 @@ does not touch the cluster of `make cluster-up`.
 
 | Target | Directory | What the tests run against |
 | --- | --- | --- |
-| `test-supervisor` | `supervisor/` | Session sandboxes from `internal/sandbox/sandboxtest`, kept in memory as the cluster keeps them, each with a runner that the test plays. The agent-sandbox client is tested against its fake clientset. The test plays the API client and the Egress Proxy. The tests in `supervisor/app` run the whole Supervisor, several replicas where it matters, with the store and the event log in memory; the other directories test single packages. Plugins are tested against the real products, in containers that the run starts and removes: PostgreSQL and MySQL, Valkey and Redis, and OpenBao as a secret store. `supervisor/store/storetest` and `supervisor/events/eventstest` are the suites that every store and every event log passes, the in-memory ones included. |
+| `test-supervisor` | `supervisor/` | Session sandboxes from `internal/sandbox/sandboxtest`, kept in memory as Substrate keeps them, each with a runner that the test plays. The client of Substrate is tested against an API of Substrate in memory. The test plays the API client and the egress gateway, and serves the endpoints of providers and MCP servers. The tests in `supervisor/app` run the whole Supervisor, several replicas where it matters, with the store and the event log in memory; the other directories test single packages. Plugins are tested against the real products, in containers that the run starts and removes: PostgreSQL and MySQL, Valkey and Redis, and OpenBao as a secret store. `supervisor/store/storetest` and `supervisor/events/eventstest` are the suites that every store and every event log passes, the in-memory ones included. |
 | `test-plugin` | `test/plugin/` | A build of the Supervisor outside its module, with in-memory plugins of its own. It passes the store and event log suites, and has exactly the plugins that it lists. |
 | `test-runner` | `runner/` | `tests/turn.rs` runs the runner with `fake-harness`, a harness that does what its message says, and sends it the turns of a session as the Supervisor does. The tests in `src/main.rs` test its functions. |
 | `test-chart` | `test/chart/` | The chart rendered with its default values and with the values files in the directory. |
-| `test-proxy` | `test/proxy/` | Envoy with the configuration that the chart renders. The test plays the sandbox, the Supervisor, the model endpoint and the outside hosts. |
 | `test-mock-llm` | `test/mock-llm/` | The mock model server. |
 | `test-web` | `web/` | Node.js, with the API answered in memory, and the screens in a DOM without a browser. The tests are next to the code, in `*.test.ts` and `*.test.tsx`. |
 | `test-docs` | `docs/`, `test/docs/` | The pages, built into the site: the build fails if a link between them leads to a page or a heading that is not there. The tests compare the requests and the metrics that the reference names with those of the Supervisor. |
@@ -65,8 +64,9 @@ repository are tested the same way; see [Harness images](../operate/harness-imag
 ## e2e
 
 `make e2e` runs `make e2e-up`, `make e2e-run` and `make e2e-down`. The cluster
-is set up like the local cluster, plus the mock model server and an OpenBao
-secret store, in which a test keeps a provider key.
+is set up like the local cluster, with Agent Substrate, plus the mock model
+server and an OpenBao secret store, in which a test keeps a provider key. The
+tests read the sandboxes from the API of Substrate.
 
 - `E2E_CLUSTER` names the cluster for all three targets. Defaults to
   `aviary-e2e`.
@@ -87,8 +87,8 @@ make e2e & make cluster-up mysql valkey keycloak e2e E2E_CLUSTER=aviary-e2e-mysq
 ```
 
 If a test fails, the cluster is kept, and the logs of the Supervisors, the
-state metrics, the Egress Proxies and agent-sandbox, the pods, sandboxes and
-volumes, and the cluster events are written to `.out/e2e/<cluster>`. The
+state metrics, the depots and of Substrate, the pods, and the cluster events
+are written to `.out/e2e/<cluster>`. The
 cluster's kubeconfig is there too, until `make e2e-down` deletes the cluster:
 
 ```sh
@@ -110,12 +110,13 @@ Tests that depend on the harness run for each harness in `E2E_HARNESSES`; the
 others run with the first.
 
 A test must end the sessions it creates, which `session` in
-`test/e2e/e2e_test.go` does: a session's sandbox and volume stay until the
-session is ended, and the cluster has room for a limited number.
+`test/e2e/e2e_test.go` does: a session's sandbox and its snapshot stay
+until the session is ended, and the workers have room for a limited number.
 
 `test/e2e/values.yaml` shortens the idle time after which a session sleeps,
 so that the tests see sessions sleep and wake without a long wait. A turn
-that wakes its session waits for a new pod to start.
+that wakes its session waits for its sandbox to be restored from its
+snapshot.
 
 ## Writing a test
 

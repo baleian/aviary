@@ -6,7 +6,7 @@ description: How many turns run at once, what waits, and what happens when a par
 ## Turns
 
 `runtime.maxConcurrentTurns` is the number of turns that run at once, 50 by
-default. Each of them has a sandbox pod with the resources of its harness,
+default. Each of them has an awake sandbox, of the size of its harness,
 which `runtime.harnesses` sets.
 
 Further turns wait in a queue, in the order in which they were sent. Beyond
@@ -21,15 +21,21 @@ they are.
 
 ## Sandboxes
 
-Sandbox pods exist for the running turns and for the sessions that were in
-use within the last `sandboxes.idleSeconds`. Volumes exist for the sessions
-that have not ended and whose homes are not archived. Aviary sets no other
-limit on them; to set one, use a ResourceQuota on `aviary-runtime`.
+The workers of Agent Substrate hold the sandboxes while they are awake: the
+running turns, and the sessions that were in use within the last
+`sandboxes.idleSeconds`. A worker has the room of its `workers.resources`,
+and holds the sandboxes whose limits fit in it, so `workers.replicas` and
+`workers.resources` bound the sessions that are awake at once, and the
+resources that they take. A sleeping sandbox takes no room: its snapshot
+is in the object storage of Substrate, and a session that exists costs only
+that. A turn whose sandbox finds no worker with room waits for one, and fails if
+none has room within `runtime.maxStartupSeconds`. To have more room, add
+workers, by hand or with an autoscaler of the WorkerPool.
 
 ## Replicas
 
-The Supervisors, the Egress Proxies and the depots each run as many
-replicas as their `replicas` say, and any replica can serve any request.
+The Supervisors and the depots each run as many replicas as their
+`replicas` say, and any replica can serve any request.
 Turns do not belong to a Supervisor: if the one that follows a turn goes
 away, another one continues the turn from what was recorded.
 
@@ -40,8 +46,9 @@ again and records them, so the turn goes on with all that the agent said and
 did. A turn whose sandbox is gone as well fails with what the log has left
 of it.
 
-Supervisors and Egress Proxies do not wait for turns when they stop, as when
-their deployment is scaled in or rolled out. Another Supervisor continues
-the turns from what was recorded, and the requests that a stopping proxy was
-forwarding fail. A depot that stops finishes the transfers that are under
-way, for as long as `runtime.maxRestoreSeconds`.
+Supervisors do not wait for turns when they stop, as when their deployment
+is scaled in or rolled out. Another Supervisor continues the turns from what
+was recorded. A depot that stops finishes the transfers that are under way,
+for as long as `runtime.maxStartupSeconds`. A worker that goes away has its
+sandboxes put to sleep before it goes: with `memory` snapshots their turns go
+on on another worker.

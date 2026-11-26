@@ -11,8 +11,10 @@
 Aviary runs AI agent harnesses, such as OpenCode, Codex and Claude Code, on
 Kubernetes. You connect your model providers, describe your agents, and give
 them work in a web UI or through an API. Each conversation is a session with
-a sandbox of its own: a pod that runs the agent's harness, with a volume
-that keeps the conversation and the files of the session between turns.
+a sandbox of its own, which
+[Agent Substrate](https://github.com/agent-substrate/substrate) runs: the
+agent's harness in gVisor, with a home that keeps the conversation and the
+files of the session between turns.
 
 > **Status:** Aviary is at an early stage and has only run on a local
 > cluster. See its
@@ -24,24 +26,25 @@ that keeps the conversation and the files of the session between turns.
   <img src="docs/src/assets/diagrams/architecture.svg" width="900" alt="The parts of Aviary, and what each of them talks to">
 </p>
 
-Clients call the API of the **Supervisor**, which gives the turns of each
-session to the **runner** in the sandbox of the session. A network policy
-closes the sandboxes: a sandbox connects only to the **Egress Proxy**, which
-asks the Supervisor about each request before it lets the request through.
+Clients call the API of the **Supervisor**, which has Agent Substrate run
+the sandbox of each session and gives its turns to the **runner** in the
+sandbox. A sandbox reaches the outside only through the **egress gateway**
+of Substrate, which asks the Supervisor for the secrets of the turn and puts
+them into its requests.
 [How it works](docs/src/content/docs/start/how-it-works.md) follows a
 message from the API to the sandbox and back.
 
 ## Why Aviary
 
 - **Sessions that last.** A session keeps its conversation and its files
-  across turns. One that is not in use is put to sleep: its pod is deleted,
-  so it uses no CPU or memory, and its next turn continues in a new pod.
+  across turns. One that is not in use is put to sleep: a snapshot keeps
+  it, so it uses no CPU or memory, and its next turn wakes it where it was.
 - **No keys in sandboxes.** A project registers its model providers, and no
   sandbox holds a provider's API key: the key is put into a model request on
   its way out.
 - **Controlled egress.** An agent reaches only the hosts that the
-  installation allows, and every request that leaves a sandbox is logged
-  with the turn and the user that it came from.
+  installation and its turn allow, and every secret that is put into a
+  request is logged with the turn and the user that it came from.
 - **A person in the loop.** An agent can be made to ask before it acts, and
   its turn waits for the answer.
 - **Made for many users.** With an identity provider, callers are
@@ -69,8 +72,9 @@ message from the API to the sandbox and back.
 
 ```sh
 make cluster-up        # create a kind cluster
+make substrate         # install Agent Substrate, which runs the sandboxes
 make postgres valkey   # install a database and an event log in it
-make images            # build the images and load them into the cluster
+make images            # build the images and put them in the cluster
 make deploy            # install Aviary with its Helm chart
 make web               # build the web UI and install it
 ```

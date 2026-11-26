@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 420" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 330" role="img" aria-labelledby="title desc">
   <title id="title">The life of a sandbox</title>
-  <desc id="desc">An awake session has a pod and a volume. Without a turn it is put to sleep: the pod is deleted and the volume kept. After a long sleep its home is archived in the depot and the volume is deleted too. The next message wakes a sleeping session in a new pod, and restores an archived home into a new sandbox.</desc>
+  <desc id="desc">An awake session has a sandbox that takes room on a worker. Without a turn for a while, or when its worker goes away, it is put to sleep: a snapshot that Agent Substrate keeps holds it, and it leaves the worker. The next turn wakes it on a worker that has room. When the session ends, the sandbox is deleted with its snapshot, and the conversation stays.</desc>
   <style>
     svg {
       --bg: #ffffff; --frame: #d9e0ea;
@@ -56,61 +56,40 @@
     <marker id="w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head way" d="M0 0 10 5 0 10z"/></marker>
   </defs>
 
-  <rect class="bg" x="0.5" y="0.5" width="899" height="419" rx="14"/>
+  <rect class="bg" x="0.5" y="0.5" width="899" height="329" rx="14"/>
 
 
   <!-- The states, and what a session has in each -->
-  <rect class="box" x="40" y="70" width="210" height="126" rx="10"/>
-  <text class="t" x="56" y="96">Awake</text>
-  <rect class="has" x="56" y="111" width="14" height="14" rx="3"/>
-  <text class="n" x="80" y="122">pod</text>
-  <rect class="has" x="56" y="135" width="14" height="14" rx="3"/>
-  <text class="n" x="80" y="146">volume</text>
-  <rect class="gone" x="56" y="159" width="14" height="14" rx="3"/>
-  <text class="d" x="80" y="170">archive in the depot</text>
-  <rect class="box" x="345" y="70" width="210" height="126" rx="10"/>
-  <text class="t" x="361" y="96">Asleep</text>
-  <rect class="gone" x="361" y="111" width="14" height="14" rx="3"/>
-  <text class="d" x="385" y="122">pod</text>
-  <rect class="has" x="361" y="135" width="14" height="14" rx="3"/>
-  <text class="n" x="385" y="146">volume</text>
-  <rect class="gone" x="361" y="159" width="14" height="14" rx="3"/>
-  <text class="d" x="385" y="170">archive in the depot</text>
-  <rect class="box" x="650" y="70" width="210" height="126" rx="10"/>
-  <text class="t" x="666" y="96">Archived</text>
-  <rect class="gone" x="666" y="111" width="14" height="14" rx="3"/>
-  <text class="d" x="690" y="122">pod</text>
-  <rect class="gone" x="666" y="135" width="14" height="14" rx="3"/>
-  <text class="d" x="690" y="146">volume</text>
-  <rect class="has" x="666" y="159" width="14" height="14" rx="3"/>
-  <text class="n" x="690" y="170">archive in the depot</text>
+  <rect class="box" x="40" y="40" width="290" height="126" rx="10"/>
+  <text class="t" x="56" y="66">Awake</text>
+  <rect class="has" x="56" y="81" width="14" height="14" rx="3"/>
+  <text class="n" x="80" y="92">room on a worker</text>
+  <rect class="has" x="56" y="105" width="14" height="14" rx="3"/>
+  <text class="n" x="80" y="116">the harness, running</text>
+  <rect class="has" x="56" y="129" width="14" height="14" rx="3"/>
+  <text class="n" x="80" y="140">its home, /home</text>
+  <rect class="box" x="570" y="40" width="290" height="126" rx="10"/>
+  <text class="t" x="586" y="66">Asleep</text>
+  <rect class="gone" x="586" y="81" width="14" height="14" rx="3"/>
+  <text class="d" x="610" y="92">room on a worker</text>
+  <rect class="has" x="586" y="105" width="14" height="14" rx="3"/>
+  <text class="n" x="610" y="116">a snapshot, kept by Substrate</text>
+  <rect class="has" x="586" y="129" width="14" height="14" rx="3"/>
+  <text class="n" x="610" y="140">its home, in the snapshot</text>
 
   <!-- Without a turn -->
-  <path class="e" d="M250 110H343" marker-end="url(#a)"/>
-  <text class="l c" x="297" y="48">5 minutes</text>
-  <text class="l c" x="297" y="62">without a turn</text>
-  <text class="m c" x="297" y="128">idleSeconds</text>
-  <path class="e" d="M555 110H648" marker-end="url(#a)"/>
-  <text class="l c" x="602" y="48">a week</text>
-  <text class="l c" x="602" y="62">asleep</text>
-  <text class="m c" x="602" y="128">archiveAfter</text>
-  <text class="m c" x="602" y="141">Seconds</text>
+  <path class="e" d="M330 100H568" marker-end="url(#a)"/>
+  <text class="l c" x="450" y="78">5 minutes without a turn,</text>
+  <text class="l c" x="450" y="92">or its worker goes away</text>
+  <text class="m c" x="450" y="118">idleSeconds</text>
 
-  <!-- The next message -->
-  <path class="e way" d="M510 196V240H180V198" marker-end="url(#w)"/>
-  <text class="l way c" x="345" y="233">the next message: a new pod, the same volume</text>
-  <path class="e way" d="M755 196V300H557" marker-end="url(#w)"/>
-  <text class="l way" x="763" y="256">the next</text>
-  <text class="l way" x="763" y="270">message</text>
-  <rect class="out" x="345" y="272" width="210" height="56" rx="10"/>
-  <text class="n c" x="450" y="296">Restoring</text>
-  <text class="d c" x="450" y="314">the home, into a new sandbox</text>
-  <path class="e way" d="M345 300H110V198" marker-end="url(#w)"/>
-  <text class="l way c" x="228" y="293">then its turn runs</text>
+  <!-- The next turn -->
+  <path class="e way" d="M715 166V206H185V168" marker-end="url(#w)"/>
+  <text class="l way c" x="450" y="199">the next turn wakes it on a worker that has room</text>
 
   <!-- The end -->
-  <rect class="zone" x="40" y="350" width="820" height="52" rx="10"/>
-  <text class="n" x="56" y="372">Ended</text>
-  <text class="d" x="108" y="372">by its owner, with its agent or after a time: the sandbox is deleted, with its volume or</text>
-  <text class="d" x="108" y="388">its archive. The conversation stays.</text>
+  <rect class="zone" x="40" y="236" width="820" height="56" rx="10"/>
+  <text class="n" x="56" y="259">Ended</text>
+  <text class="d" x="108" y="259">by its owner, with its agent or after a time: the sandbox is deleted with its snapshot.</text>
+  <text class="d" x="108" y="275">The conversation stays.</text>
 </svg>

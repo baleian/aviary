@@ -43,7 +43,7 @@ Changes the title of a session, also of one that has ended. Body: `{"title": "..
 DELETE /v1/sessions/{id}
 ```
 
-Ends a session. Returns 200 with the session, which then has `ended_at`. The session's sandbox is deleted with its volume and everything that the agent had in it, unless the storage class keeps the data of deleted volumes (see `runtime.volume` in [Configuration](../configuration.md)). The conversation stays readable, and the session accepts no more messages. Returns 409 if a turn of the session has not ended.
+Ends a session. Returns 200 with the session, which then has `ended_at`. The session's sandbox is deleted with its snapshot and everything that the agent had in it. The conversation stays readable, and the session accepts no more messages. Returns 409 if a turn of the session has not ended.
 
 ## The session
 
@@ -54,11 +54,9 @@ A session, as these requests return it, has:
 - **`created_by`.** With an identity provider, its `created_by` is the
   caller's user ID.
 - **`sandbox`.** A session's `sandbox` is `awake`, or `asleep` while the
-  session sleeps. It is `archived` while the session has no sandbox because
-  its home is an archive in the [depot](../../operate/storage.md#the-depot),
-  and `restoring` while a turn unpacks the archive in a new sandbox. It is
+  session sleeps and a snapshot keeps its sandbox. It is
   `lost` if the sandbox is gone although the session has not ended, as after
-  it was deleted in the cluster: everything that the agent had in it is
+  it was deleted in Agent Substrate: everything that the agent had in it is
   gone, and the next turn gets a new sandbox. What happens to a sandbox
   outside Aviary shows after a short delay. A session has no `sandbox`
   before its first turn and after it has ended.

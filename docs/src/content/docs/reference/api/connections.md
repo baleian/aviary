@@ -46,7 +46,7 @@ Replaces the name, the URL, the headers and the key of a provider together: a pr
 POST /v1/projects/{id}/providers/models
 ```
 
-Lists the models of a model endpoint that need not be registered. Body: the `url`, the `headers` and the `api_key` of a provider, which is not stored, and the `provider` that it would replace, if there is one: `{"stored": true}` then keeps a secret of that provider as `PUT` would. Aviary asks the endpoint for its models, `GET models` under the URL, with the headers and the key and through the Egress Proxy, as the model requests of a turn go. Returns `{"reached": true, "status": 200, "models": ["..."], "duration_ms": 12}`: the status of the endpoint's answer, and the IDs of its models if the answer is a list of models as the OpenAI API gives it. An endpoint that did not answer returns `{"reached": false, "reason": "...", "duration_ms": 5003}`.
+Lists the models of a model endpoint that need not be registered. Body: the `url`, the `headers` and the `api_key` of a provider, which is not stored, and the `provider` that it would replace, if there is one: `{"stored": true}` then keeps a secret of that provider as `PUT` would. Aviary asks the endpoint for its models, `GET models` under the URL, with the headers and the key, as the model requests of a turn carry them. Returns `{"reached": true, "status": 200, "models": ["..."], "duration_ms": 12}`: the status of the endpoint's answer, and the IDs of its models if the answer is a list of models as the OpenAI API gives it. An endpoint that did not answer returns `{"reached": false, "reason": "...", "duration_ms": 5003}`.
 
 ### List the models of a provider
 

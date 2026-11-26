@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 704" role="img" aria-labelledby="title desc">
   <title id="title">The path of a turn</title>
-  <desc id="desc">A client sends a message. The Supervisor records it as a turn, has the session's sandbox created or woken, and gives the turn to the runner, which prompts the harness. The model requests of the harness go through the Egress Proxy, which asks the Supervisor whose they are and puts in the provider's key. What the agent does comes back as events until the turn ends.</desc>
+  <desc id="desc">A client sends a message. The Supervisor records it as a turn, has Agent Substrate create or wake the session's sandbox, and gives the turn to the runner, which prompts the harness. The model requests of the harness carry a placeholder key and go through the egress gateway of Agent Substrate, which asks the Supervisor for the provider's key and puts it in while the turn runs. What the agent does comes back as events until the turn ends.</desc>
   <style>
     svg {
       --bg: #ffffff; --frame: #d9e0ea;
@@ -76,8 +76,9 @@
   <text class="n c" x="440" y="65">runner</text>
   <rect class="box" x="520" y="40" width="80" height="40" rx="8"/>
   <text class="n c" x="560" y="65">harness</text>
-  <rect class="out" x="689" y="40" width="112" height="40" rx="8"/>
-  <text class="n c" x="745" y="65">Egress Proxy</text>
+  <rect class="out" x="685" y="40" width="120" height="40" rx="8"/>
+  <text class="n c" x="745" y="57">Egress</text>
+  <text class="n c" x="745" y="72">gateway</text>
   <rect class="box" x="810" y="40" width="80" height="40" rx="8"/>
   <text class="n c" x="850" y="57">Model</text>
   <text class="n c" x="850" y="72">endpoint</text>
@@ -99,7 +100,7 @@
   <circle class="badge" cx="24" cy="212" r="9"/>
   <text class="b" x="24" y="216">3</text>
   <path class="e" d="M210 212H380" marker-end="url(#a)"/>
-  <text class="l c" x="296" y="191">has agent-sandbox</text>
+  <text class="l c" x="296" y="191">has Substrate</text>
   <text class="l c" x="296" y="205">create or wake it</text>
   <path class="e" d="M210 244H438" marker-end="url(#a)"/>
   <text class="l c" x="296" y="237">the turn</text>
@@ -115,12 +116,12 @@
   <circle class="badge" cx="24" cy="338" r="9"/>
   <text class="b" x="24" y="342">4</text>
   <path class="e way" d="M560 338H743" marker-end="url(#w)"/>
-  <text class="l way c" x="686" y="317">model request with</text>
-  <text class="l way c" x="686" y="331">the session token</text>
+  <text class="l way c" x="692" y="317">model request with</text>
+  <text class="l way c" x="692" y="331">a placeholder key</text>
   <path class="e" d="M745 364H212" marker-end="url(#a)"/>
-  <text class="l c" x="296" y="357">whose request is this?</text>
+  <text class="l c" x="296" y="357">the key, for this sandbox?</text>
   <path class="e ret" d="M210 390H743" marker-end="url(#a)"/>
-  <text class="l c" x="296" y="383">its endpoint and its key</text>
+  <text class="l c" x="296" y="383">the key, while its turn runs</text>
   <rect class="box" x="120" y="408" width="180" height="46" rx="6"/>
   <text class="d c" x="210.0" y="426">if it goes away, another</text>
   <text class="d c" x="210.0" y="441">Supervisor continues</text>

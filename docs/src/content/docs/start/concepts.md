@@ -14,8 +14,8 @@ member may do in the project. Administrators create projects.
 
 A model provider is the base URL of a model endpoint and its API key, so it
 can be a provider's API, an AI gateway or your own model server. A project
-registers its providers. No sandbox holds a provider's key: the Egress Proxy
-puts it into the model requests of a turn on their way out. See
+registers its providers. No sandbox holds a provider's key: the egress
+gateway puts it into the model requests of a turn on their way out. See
 [Model providers](../use/model-providers.md).
 
 ## Agent
@@ -47,11 +47,10 @@ has ended, it is kept as part of the conversation.
 
 ## Sandbox
 
-The sandbox of a session is a pod that runs the agent's harness, with a
-volume that is the agent's home. A session that is not in use is put to
-sleep: its pod is deleted and its volume is kept, and its next turn
-continues in a new pod. After a long sleep the home is archived, and the
-volume is given up as well. See
+The sandbox of a session is an actor of Agent Substrate that runs the
+agent's harness, with a home of its own. A session that is not in use is put
+to sleep: a snapshot keeps its sandbox, which leaves its worker, and its
+next turn wakes it on a worker that has room. See
 [Sessions and storage](../operate/storage.md).
 
 ## Approval
@@ -77,7 +76,8 @@ See [Secret stores](../use/secret-stores.md).
   has the sandboxes created, woken and put to sleep.
 - The **runner** runs in each sandbox. It starts the harness and reports
   what the agent does.
-- The **Egress Proxy** is the only way out of a sandbox.
-- The **depot** keeps the files that outlive a sandbox.
+- The **workers** of Agent Substrate hold the sandboxes while they are
+  awake, and its **egress gateway** is the only way out of a sandbox.
+- The **depot** keeps the files that messages carry.
 
 [How it works](./how-it-works.md) shows them together.

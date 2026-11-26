@@ -6,16 +6,18 @@ description: The parts of Aviary, and the path of a message from the API to the 
 ![The parts of Aviary, and what each of them talks to](../../../assets/diagrams/architecture.svg)
 
 Clients call the API of the **Supervisor**. The Supervisor has
-[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) create a
-**sandbox** for each session, a pod that runs the agent's harness with a
-volume as its home, and gives the turns of the session to the **runner** in
-that pod. It keeps the files that outlive a sandbox in the **depot**.
+[Agent Substrate](https://github.com/agent-substrate/substrate) run a
+**sandbox** for each session, an actor that runs the agent's harness in
+gVisor with a home of its own, on one of the **workers** of the
+installation, and gives the turns of the session to the **runner** in the
+sandbox through the router of Substrate. It keeps the files that messages
+carry in the **depot**.
 
-A network policy closes the sandboxes: only the Supervisor connects to a
-sandbox, and a sandbox connects only to the **Egress Proxy**, which asks the
-Supervisor about each request before it lets the request through. The
-Supervisors, the Egress Proxies and the depots each run as many replicas as
-the installation gives them, and any replica serves any request.
+A sandbox reaches the outside only through the **egress gateway** of
+Substrate, and only the hosts of its turn: the gateway asks a Supervisor for
+the secrets of the turn's provider and servers, and puts them into the
+requests. The Supervisors and the depots each run as many replicas as the
+installation gives them, and any replica serves any request.
 
 ## The path of a turn
 
@@ -28,28 +30,25 @@ the installation gives them, and any replica serves any request.
    running than the limit allows, a Supervisor takes the turn and follows it
    until it ends. Otherwise the turn is queued, and queued turns run in the
    order in which they were sent.
-3. The Supervisor has agent-sandbox create the session's **sandbox**, a pod
-   that runs the agent's harness with the session volume, or wake it if it
-   sleeps. It then gives the turn to the **runner** in the sandbox. The
-   runner starts the **harness** on the first turn and talks to it over the
-   [Agent Client Protocol](https://agentclientprotocol.com), so it does not
-   depend on which harness it runs.
-4. The harness works on the message with the volume as its home, `/home`.
-   Everything that the sandbox sends out goes through the
-   [Egress Proxy](../operate/egress.md). The proxy asks the Supervisor whose
-   request it is, and puts the key of the agent's provider into a request to
-   the model, in place of the token of the session.
+3. The Supervisor has Substrate create the session's **sandbox** from the
+   template of the agent's harness, or wake it if it sleeps, on a worker
+   that has room for it. It then gives the turn to the **runner** in the
+   sandbox. The runner starts the **harness** on the first turn and talks
+   to it over the [Agent Client Protocol](https://agentclientprotocol.com),
+   so it does not depend on which harness it runs.
+4. The harness works on the message in its home, `/home`. It reaches the
+   agent's provider and the session's MCP servers at their URLs, through
+   the [egress gateway](../operate/egress.md), which puts their secrets in
+   place of the placeholders that the harness sends.
 5. The runner reports what the agent does, the Supervisor records it, and
    the client reads it as a stream of events. If the Supervisor goes away,
    another one continues the turn from what was recorded.
 6. When the runner reports that the turn has ended, the Supervisor ends the
    turn and stores what the agent said and did. The harness and the files
    stay in the sandbox for the next turn. A session with no running turn is
-   put to sleep after a while: its pod is deleted, and its volume is kept
-   with the harness's memory of the conversation. The next message wakes the
-   session in a new pod, and the harness continues from there. A session
-   that sleeps for long gives up the volume too: its home is archived in the
-   [depot](../operate/storage.md#the-depot), and the next message restores it into a new sandbox.
+   put to sleep after a while: a [snapshot](../operate/storage.md#the-snapshot)
+   keeps its sandbox, which leaves its worker. The next message wakes the
+   session on a worker that has room, and the harness continues from there.
 
 ## What the Supervisor is connected to
 
@@ -64,9 +63,10 @@ model server.
 ## Read on
 
 - [Network and egress](../operate/egress.md): what a sandbox reaches, and
-  how the Egress Proxy puts a provider's key in place of the session's token.
-- [Sessions and storage](../operate/storage.md): how sessions sleep, and
-  where their files are kept.
+  how the egress gateway puts the secrets of providers and servers into its
+  requests.
+- [Sessions and storage](../operate/storage.md): how sessions sleep, what
+  their snapshots keep, and where their files are kept.
 - [Harness images](../operate/harness-images.md): how the runner talks to
   a harness, and what an image must provide.
 - [Plugins](../operate/plugins.md): how the Supervisor reaches its

@@ -5,8 +5,9 @@ description: Where the metrics, the logs and the records of an installation are.
 
 ## Metrics
 
-The Supervisors, the state of the installation, the depots and the Egress
-Proxies serve Prometheus metrics, each pod on port 9092 at `/metrics`.
+The Supervisors, the state of the installation and the depots serve
+Prometheus metrics, each pod on port 9092 at `/metrics`. Agent Substrate
+serves metrics of its own.
 [Metrics](../reference/metrics.md) lists them.
 
 The Grafana dashboard in `deploy/grafana/aviary.json` charts them, and can
@@ -17,10 +18,10 @@ dashboard, at http://localhost:3000.
 
 ## Requests that leave the sandboxes
 
-The Egress Proxy logs every request that a sandbox sends out, as a line of
-JSON with the turn, the session, the agent, the project and the user that
-it came from: see
-[The request log](./egress.md#the-request-log).
+The egress gateway of Substrate logs every request that a sandbox sends out.
+A Supervisor logs every secret that it gives the gateway, as a line of JSON
+with the turn, the session, the agent, the project and the user that it came
+from: see [The log](./egress.md#the-log).
 
 ## Turns
 
