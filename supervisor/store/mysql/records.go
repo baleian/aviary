@@ -740,132 +740,13 @@ func (s *records) SandboxCounts(ctx context.Context) (map[string]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	counts := make(map[string]int, len(rows)+1)
+	counts := make(map[string]int, len(rows))
 	for _, row := range rows {
 		if row.State != nil {
 			counts[*row.State] = int(row.Sandboxes)
 		}
 	}
-	archived, err := s.queries.CountArchivedSessions(ctx)
-	if err != nil {
-		return nil, err
-	}
-	counts[store.SandboxArchived] = int(archived)
 	return counts, nil
-}
-
-func (s *records) ClaimArchive(ctx context.Context, sessionID uuid.UUID, sandbox string, turns int, claim uuid.UUID, since time.Time) (bool, error) {
-	claimed := false
-	err := s.within(ctx, func(queries *db.Queries) error {
-		// Set by every attempt, since an attempt that deadlocked was rolled
-		// back.
-		claimed = false
-		// Lock the session before counting its turns, so that a concurrent
-		// message either has added its turn or comes after the claim.
-		row, err := queries.LockSession(ctx, key.ID(sessionID))
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		session := sessionFrom(row)
-		if session.EndedAt != nil || sandbox == "" || session.Sandbox != sandbox || session.SandboxState != store.SandboxAsleep ||
-			session.Archive != nil || session.ClaimedAt != nil && session.ClaimedAt.After(since) {
-			return nil
-		}
-		if unused, err := unused(ctx, queries, sessionID, turns); err != nil || !unused {
-			return err
-		}
-		claimed = true
-		return queries.ClaimSession(ctx, db.ClaimSessionParams{ID: key.ID(sessionID), Claim: (*key.ID)(&claim)})
-	})
-	return claimed && err == nil, err
-}
-
-// unused reports whether the session has turns turns, all of which have
-// ended.
-func unused(ctx context.Context, queries *db.Queries, sessionID uuid.UUID, turns int) (bool, error) {
-	has, err := queries.CountSessionTurns(ctx, key.ID(sessionID))
-	return err == nil && has.Turns == int64(turns) && has.Unfinished == 0, err
-}
-
-func (s *records) ArchiveSession(ctx context.Context, sessionID, claim uuid.UUID, turns int, archive store.Archive) (bool, error) {
-	archived := false
-	err := s.within(ctx, func(queries *db.Queries) error {
-		archived = false
-		// Lock the session before counting its turns, so that a concurrent
-		// message either has added its turn or finds the home archived.
-		row, err := queries.LockSession(ctx, key.ID(sessionID))
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if row.EndedAt != nil || row.Claim == nil || uuid.UUID(*row.Claim) != claim || claim == uuid.Nil {
-			return nil
-		}
-		if unused, err := unused(ctx, queries, sessionID, turns); err != nil || !unused {
-			return err
-		}
-		archived = true
-		return queries.ArchiveSession(ctx, db.ArchiveSessionParams{
-			ID: key.ID(sessionID), Archive: (*key.ID)(&archive.ID), Bytes: &archive.Bytes,
-		})
-	})
-	return archived && err == nil, err
-}
-
-func (s *records) ClaimRestore(ctx context.Context, sessionID, claim uuid.UUID) (store.Archive, bool, error) {
-	var archive *store.Archive
-	err := s.within(ctx, func(queries *db.Queries) error {
-		archive = nil
-		row, err := queries.LockSession(ctx, key.ID(sessionID))
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		session := sessionFrom(row)
-		if session.EndedAt != nil || session.Archive == nil {
-			return nil
-		}
-		archive = session.Archive
-		return queries.ClaimRestore(ctx, db.ClaimRestoreParams{ID: key.ID(sessionID), Claim: (*key.ID)(&claim)})
-	})
-	if err != nil || archive == nil {
-		return store.Archive{}, false, err
-	}
-	return *archive, true, nil
-}
-
-func (s *records) RestoreSession(ctx context.Context, sessionID, claim uuid.UUID, sandbox string) (bool, error) {
-	restored, err := s.queries.RestoreSession(ctx, db.RestoreSessionParams{
-		ID: key.ID(sessionID), Claim: (*key.ID)(&claim), Sandbox: &sandbox,
-	})
-	return restored == 1, err
-}
-
-func (s *records) LeftArchives(ctx context.Context, before time.Time, limit int) ([]store.Session, error) {
-	rows, err := s.queries.ListLeftArchives(ctx, int32(limit))
-	if err != nil {
-		return nil, err
-	}
-	old, err := s.queries.ListOldArchives(ctx, db.ListOldArchivesParams{Before: &before, Limit: int32(limit)})
-	if err != nil {
-		return nil, err
-	}
-	sessions := make([]store.Session, 0, len(rows)+len(old))
-	for _, row := range append(rows, old...) {
-		sessions = append(sessions, sessionFrom(row))
-	}
-	return sessions, nil
-}
-
-func (s *records) ForgetArchive(ctx context.Context, sessionID, archive uuid.UUID) error {
-	return s.queries.ForgetArchive(ctx, db.ForgetArchiveParams{ID: key.ID(sessionID), Archive: (*key.ID)(&archive)})
 }
 
 func (s *records) ExpectAttachments(ctx context.Context, sessionID uuid.UUID) error {
@@ -1047,10 +928,6 @@ func sessionFrom(row db.Session) store.Session {
 	}
 	if row.EndReason != nil {
 		session.EndReason = *row.EndReason
-	}
-	session.AsleepSince, session.Claimed, session.ClaimedAt = row.AsleepSince, row.Claim != nil, row.ClaimedAt
-	if row.Archive != nil && row.ArchiveBytes != nil && row.ArchivedAt != nil {
-		session.Archive = &store.Archive{ID: uuid.UUID(*row.Archive), Bytes: *row.ArchiveBytes, At: *row.ArchivedAt}
 	}
 	return session
 }

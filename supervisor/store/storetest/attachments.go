@@ -302,3 +302,8 @@ func (suite suite) testLeftAttachments(t *testing.T) {
 		t.Errorf("ForgetAttachments of an unknown session: %v", err)
 	}
 }
+
+// recent reports whether at is a time of this test.
+func recent(at *time.Time) bool {
+	return at != nil && time.Since(*at) < time.Minute && time.Until(*at) < time.Minute
+}

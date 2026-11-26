@@ -51,9 +51,6 @@ type Store struct {
 
 type session struct {
 	store.Session
-	// claim is the claim of the Supervisor that archives or restores the
-	// home, or uuid.Nil.
-	claim uuid.UUID
 	// turns are in sequence order.
 	turns []*turn
 	// mcp are the MCP servers that the session turned on or off where it
@@ -217,8 +214,7 @@ func usageOf(usage *store.Usage) *store.Usage {
 
 func (s *session) record() store.Session {
 	session := s.Session
-	session.EndedAt, session.AsleepSince, session.Archive = clone(s.EndedAt), clone(s.AsleepSince), clone(s.Archive)
-	session.Claimed, session.ClaimedAt = s.claim != uuid.Nil, clone(s.ClaimedAt)
+	session.EndedAt = clone(s.EndedAt)
 	return session
 }
 
@@ -796,14 +792,9 @@ func (s *Store) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to st
 	if session.Sandbox != from {
 		return false, nil
 	}
-	session.Sandbox, session.SandboxState, session.AsleepSince = to, "", nil
-	switch {
-	case to != "" && session.Archive != nil:
-		session.SandboxState = store.SandboxRestoring
-	case to != "":
+	session.Sandbox, session.SandboxState = to, ""
+	if to != "" {
 		session.SandboxState = store.SandboxAwake
-	case session.Archive != nil:
-		session.SandboxState = store.SandboxArchived
 	}
 	return true, nil
 }
@@ -814,15 +805,8 @@ func (s *Store) SetSandboxState(ctx context.Context, sessionID uuid.UUID, sandbo
 	}
 	defer s.mu.Unlock()
 	session, found := s.sessions[sessionID]
-	if !found || sandbox == "" || session.Sandbox != sandbox || session.Archive != nil {
+	if !found || sandbox == "" || session.Sandbox != sandbox {
 		return nil
-	}
-	switch {
-	case state != store.SandboxAsleep:
-		session.AsleepSince = nil
-	case session.SandboxState != store.SandboxAsleep:
-		since := s.now()
-		session.AsleepSince = &since
 	}
 	session.SandboxState = state
 	return nil
@@ -849,95 +833,11 @@ func (s *Store) SandboxCounts(ctx context.Context) (map[string]int, error) {
 	defer s.mu.Unlock()
 	counts := map[string]int{}
 	for _, session := range s.sessions {
-		if (session.Sandbox != "" || session.Archive != nil) && session.EndedAt == nil {
+		if session.Sandbox != "" && session.EndedAt == nil {
 			counts[session.SandboxState]++
 		}
 	}
 	return counts, nil
-}
-
-func (s *Store) ClaimArchive(ctx context.Context, sessionID uuid.UUID, sandbox string, turns int, claim uuid.UUID, since time.Time) (bool, error) {
-	if err := s.begin(ctx); err != nil {
-		return false, err
-	}
-	defer s.mu.Unlock()
-	session, found := s.sessions[sessionID]
-	if !found || session.EndedAt != nil || sandbox == "" || session.Sandbox != sandbox ||
-		session.SandboxState != store.SandboxAsleep || session.Archive != nil ||
-		len(session.turns) != turns || session.busy() ||
-		session.ClaimedAt != nil && session.ClaimedAt.After(since) {
-		return false, nil
-	}
-	now := s.now()
-	session.claim, session.ClaimedAt = claim, &now
-	return true, nil
-}
-
-func (s *Store) ArchiveSession(ctx context.Context, sessionID, claim uuid.UUID, turns int, archive store.Archive) (bool, error) {
-	if err := s.begin(ctx); err != nil {
-		return false, err
-	}
-	defer s.mu.Unlock()
-	session, found := s.sessions[sessionID]
-	if !found || session.EndedAt != nil || claim == uuid.Nil || session.claim != claim ||
-		len(session.turns) != turns || session.busy() {
-		return false, nil
-	}
-	archive.At = s.now()
-	session.Archive, session.claim = &archive, uuid.Nil
-	session.Sandbox, session.SandboxState, session.AsleepSince = "", store.SandboxArchived, nil
-	return true, nil
-}
-
-func (s *Store) ClaimRestore(ctx context.Context, sessionID, claim uuid.UUID) (store.Archive, bool, error) {
-	if err := s.begin(ctx); err != nil {
-		return store.Archive{}, false, err
-	}
-	defer s.mu.Unlock()
-	session, found := s.sessions[sessionID]
-	if !found || session.EndedAt != nil || session.Archive == nil {
-		return store.Archive{}, false, nil
-	}
-	now := s.now()
-	session.claim, session.ClaimedAt = claim, &now
-	session.Sandbox, session.SandboxState = "", store.SandboxArchived
-	return *session.Archive, true, nil
-}
-
-func (s *Store) RestoreSession(ctx context.Context, sessionID, claim uuid.UUID, sandbox string) (bool, error) {
-	if err := s.begin(ctx); err != nil {
-		return false, err
-	}
-	defer s.mu.Unlock()
-	session, found := s.sessions[sessionID]
-	if !found || claim == uuid.Nil || session.claim != claim || sandbox == "" || session.Sandbox != sandbox || session.Archive == nil {
-		return false, nil
-	}
-	session.Archive, session.claim, session.SandboxState = nil, uuid.Nil, store.SandboxAwake
-	return true, nil
-}
-
-func (s *Store) LeftArchives(ctx context.Context, before time.Time, limit int) ([]store.Session, error) {
-	if err := s.begin(ctx); err != nil {
-		return nil, err
-	}
-	defer s.mu.Unlock()
-	var ended, old []store.Session
-	for _, session := range s.sessions {
-		switch {
-		case session.Archive == nil:
-		case session.EndedAt != nil:
-			ended = append(ended, session.record())
-		case session.Archive.At.Before(before):
-			old = append(old, session.record())
-		}
-	}
-	left := []store.Session{}
-	for _, sessions := range [][]store.Session{ended, old} {
-		slices.SortFunc(sessions, func(a, b store.Session) int { return a.Archive.At.Compare(b.Archive.At) })
-		left = append(left, sessions[:min(limit, len(sessions))]...)
-	}
-	return left, nil
 }
 
 // open returns the session if it has not ended.
@@ -1062,22 +962,6 @@ func (s *Store) ForgetAttachments(ctx context.Context, sessionID uuid.UUID) erro
 	defer s.mu.Unlock()
 	if session, found := s.sessions[sessionID]; found && session.EndedAt != nil {
 		session.attachments = false
-	}
-	return nil
-}
-
-func (s *Store) ForgetArchive(ctx context.Context, sessionID, archive uuid.UUID) error {
-	if err := s.begin(ctx); err != nil {
-		return err
-	}
-	defer s.mu.Unlock()
-	session, found := s.sessions[sessionID]
-	if !found || session.EndedAt == nil || session.Archive == nil || session.Archive.ID != archive {
-		return nil
-	}
-	session.Archive = nil
-	if session.Sandbox == "" {
-		session.SandboxState = ""
 	}
 	return nil
 }

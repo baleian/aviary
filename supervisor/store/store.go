@@ -148,44 +148,22 @@ type Session struct {
 	// has not ended.
 	EndReason string `json:"end_reason,omitempty"`
 	// Sandbox is the name of the session's sandbox. It is empty if the
-	// session has none: it has run no turn yet, its sandbox was deleted, or
-	// its home is archived.
+	// session has none: it has run no turn yet, or its sandbox was deleted.
 	Sandbox string `json:"-"`
 	// SandboxState is one of the sandbox states. It is empty if the session
-	// has neither a sandbox nor an archive.
+	// has no sandbox.
 	SandboxState string `json:"sandbox,omitempty"`
-	// AsleepSince is when the sandbox was put to sleep, if it is asleep.
-	AsleepSince *time.Time `json:"-"`
-	// Archive is the archive of the session's home, if the home is archived
-	// or is being restored from it.
-	Archive *Archive `json:"-"`
-	// ClaimedAt is when a Supervisor last claimed the session to archive or
-	// restore its home, and Claimed whether that claim still stands.
-	Claimed   bool       `json:"-"`
-	ClaimedAt *time.Time `json:"-"`
 }
 
-// Sandbox states. An awake sandbox has a pod, or is getting one. The pod of
-// an asleep sandbox was deleted, and its volume is kept. A lost sandbox is
-// gone with its volume, although its session has not ended: the session's
-// next turn gets a new one. An archived session has no sandbox: its home is
-// an archive in the depot. Its next turn gets a new sandbox, which is
-// restoring until the home is unpacked in it.
+// Sandbox states. An awake sandbox runs on a worker, or is being woken up.
+// An asleep sandbox takes no worker: its snapshot holds the session. A lost
+// sandbox is gone, although its session has not ended: the session's next
+// turn gets a new one.
 const (
-	SandboxAwake     = "awake"
-	SandboxAsleep    = "asleep"
-	SandboxLost      = "lost"
-	SandboxArchived  = "archived"
-	SandboxRestoring = "restoring"
+	SandboxAwake  = "awake"
+	SandboxAsleep = "asleep"
+	SandboxLost   = "lost"
 )
-
-// Archive is the home of a session as an object of the depot.
-type Archive struct {
-	ID uuid.UUID
-	// Bytes is the size of the object.
-	Bytes int64
-	At    time.Time
-}
 
 // End reasons of the sessions that no caller ended.
 const (
@@ -461,8 +439,7 @@ type FollowedTurn struct {
 	Approval     string
 	ProviderURL  string
 	Model        string
-	// Sandbox is empty if the session has no sandbox, and SandboxState if it
-	// has neither a sandbox nor an archive.
+	// Sandbox and SandboxState are empty if the session has no sandbox.
 	Sandbox      string
 	SandboxState string
 	// Dispatched is how long ago the turn was dispatched.
@@ -655,17 +632,14 @@ type Store interface {
 	SetSessionTitle(ctx context.Context, id uuid.UUID, title string) (Session, error)
 
 	// SetSandbox changes the session's sandbox from from to to, where ""
-	// means none. A sandbox that is set is awake, or restoring if the
-	// session's home is archived; without one, such a session is archived.
-	// It is a compare-and-swap: it reports false and changes nothing if the
+	// means none. A sandbox that is set is awake. It is a compare-and-swap: it reports false and changes nothing if the
 	// session's sandbox is not from, as when another Supervisor has changed
 	// it meanwhile. It returns ErrNotFound if there is no such session.
 	SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error)
 
 	// SetSandboxState records that the session's sandbox is awake, asleep or
 	// lost. It changes nothing if the session's sandbox is not the named one,
-	// as when the sandbox was deleted meanwhile, or if the session's home is
-	// archived.
+	// as when the sandbox was deleted meanwhile.
 	SetSandboxState(ctx context.Context, sessionID uuid.UUID, sandbox, state string) error
 
 	// SessionsWithSandbox returns the sessions that have a sandbox, in no
@@ -673,48 +647,9 @@ type Store interface {
 	SessionsWithSandbox(ctx context.Context) ([]Session, error)
 
 	// SandboxCounts returns the number of sandboxes in each state, keyed by
-	// state. It counts the sandboxes of the sessions that have not ended,
-	// and their archives as sandboxes that are archived. A state without
-	// sandboxes may be absent from the map.
+	// state. It counts the sandboxes of the sessions that have not ended. A
+	// state without sandboxes may be absent from the map.
 	SandboxCounts(ctx context.Context) (map[string]int, error)
-
-	// ClaimArchive claims the session for the Supervisor that archives its
-	// home, under a claim of that Supervisor's choice. turns is the number of
-	// the session's turns as the Supervisor read it. It reports false and
-	// changes nothing unless the session's sandbox is the named one and
-	// asleep, the session has not ended and has that many turns, and no
-	// Supervisor has claimed it since since.
-	ClaimArchive(ctx context.Context, sessionID uuid.UUID, sandbox string, turns int, claim uuid.UUID, since time.Time) (bool, error)
-
-	// ArchiveSession records that the session's home is the archive, as of
-	// now, and that the session has no sandbox. It reports false and changes
-	// nothing if the claim is no longer the session's, or the session has
-	// ended or no longer has turns turns: a turn that came meanwhile has
-	// used the home.
-	ArchiveSession(ctx context.Context, sessionID, claim uuid.UUID, turns int, archive Archive) (bool, error)
-
-	// ClaimRestore claims the session for the Supervisor that restores its
-	// home from its archive, and returns the archive. The session then has
-	// no sandbox: one from an earlier attempt is to be deleted. It reports
-	// false and changes nothing if the session's home is not archived, or
-	// the session has ended.
-	ClaimRestore(ctx context.Context, sessionID, claim uuid.UUID) (Archive, bool, error)
-
-	// RestoreSession records that the session's home is in its sandbox, the
-	// named one, which is awake. The session then has no archive. It reports
-	// false and changes nothing if the claim is no longer the session's or
-	// the session's sandbox is another.
-	RestoreSession(ctx context.Context, sessionID, claim uuid.UUID, sandbox string) (bool, error)
-
-	// LeftArchives returns the sessions whose archive is to be deleted: up
-	// to limit of those that have ended and still have one, and of those
-	// that have not ended and were archived before before, oldest first.
-	LeftArchives(ctx context.Context, before time.Time, limit int) ([]Session, error)
-
-	// ForgetArchive removes the archive from the session, which has ended,
-	// once the archive is deleted. It changes nothing if the session's
-	// archive is another.
-	ForgetArchive(ctx context.Context, sessionID, archive uuid.UUID) error
 
 	// ExpectAttachments records that the depot may have attachments of the
 	// session. It is called before the first is written there, so that none

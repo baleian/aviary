@@ -65,25 +65,16 @@ update sessions set title = @title where id = @id returning *;
 
 -- name: SetSandbox :execrows
 -- Changes the session's sandbox only if it is still @was. An empty string
--- means none. A sandbox that is set is awake, or restoring if the session's
--- home is archived. Without a sandbox, such a session is archived.
+-- means none. A sandbox that is set is awake.
 update sessions
 set sandbox = nullif(sqlc.arg(sandbox)::text, ''),
-    sandbox_state = case when archive is not null and sqlc.arg(sandbox)::text <> '' then 'restoring'
-                         when archive is not null then 'archived'
-                         when sqlc.arg(sandbox)::text <> '' then 'awake' end,
-    asleep_since = null
+    sandbox_state = case when sqlc.arg(sandbox)::text <> '' then 'awake' end
 where id = @id and coalesce(sandbox, '') = sqlc.arg(was)::text;
 
 -- name: SetSandboxState :exec
--- Changes the state only while the session has the sandbox, with its home.
--- A sandbox that is asleep keeps the time since which it is.
-update sessions
-set sandbox_state = sqlc.arg(state)::text,
-    asleep_since = case when sqlc.arg(state)::text <> 'asleep' then null
-                        when sandbox_state = 'asleep' then asleep_since
-                        else now() end
-where id = @id and sandbox = sqlc.arg(sandbox)::text and archive is null;
+-- Changes the state only while the session has the sandbox.
+update sessions set sandbox_state = sqlc.arg(state)::text
+where id = @id and sandbox = sqlc.arg(sandbox)::text;
 
 -- name: ListSessionsWithSandbox :many
 select * from sessions where sandbox is not null;
@@ -93,53 +84,6 @@ select * from sessions where sandbox is not null;
 select sandbox_state as state, count(*) as sandboxes from sessions
 where sandbox is not null and ended_at is null
 group by sandbox_state;
-
--- name: CountArchivedSessions :one
--- Counts the sessions that have not ended and have an archive for a home,
--- and no sandbox.
-select count(*) from sessions where archive is not null and sandbox is null and ended_at is null;
-
--- name: CountSessionTurns :one
--- Returns the number of the session's turns, and how many have not ended.
-select count(*) as turns, count(*) filter (where ended_at is null) as unfinished from turns where session_id = @session_id;
-
--- name: ClaimSession :exec
-update sessions set claim = @claim, claimed_at = now() where id = @id;
-
--- name: ArchiveSession :exec
-update sessions
-set archive = @archive, archive_bytes = @bytes, archived_at = now(), claim = null,
-    sandbox = null, sandbox_state = 'archived', asleep_since = null
-where id = @id;
-
--- name: ClaimRestore :one
--- Claims the session if its home is archived. A sandbox that it has from an
--- earlier restoring is no longer its own.
-update sessions
-set claim = @claim, claimed_at = now(), sandbox = null, sandbox_state = 'archived'
-where id = @id and archive is not null and ended_at is null
-returning *;
-
--- name: RestoreSession :execrows
-update sessions
-set archive = null, archive_bytes = null, archived_at = null, claim = null, sandbox_state = 'awake'
-where id = @id and claim = @claim and sandbox = sqlc.arg(sandbox)::text and archive is not null;
-
--- name: ListLeftArchives :many
--- Lists the sessions that have ended and still have an archive.
-select * from sessions where archive is not null and ended_at is not null order by archived_at limit @count;
-
--- name: ListOldArchives :many
--- Lists the sessions that have not ended and were archived before @before.
-select * from sessions
-where archive is not null and sandbox is null and ended_at is null and archived_at < @before
-order by archived_at limit @count;
-
--- name: ForgetArchive :exec
-update sessions
-set archive = null, archive_bytes = null, archived_at = null,
-    sandbox_state = case when sandbox is not null then sandbox_state end
-where id = @id and archive = @archive and ended_at is not null;
 
 -- name: HoldSession :one
 -- Keeps the session from being ended until the transaction ends. It takes

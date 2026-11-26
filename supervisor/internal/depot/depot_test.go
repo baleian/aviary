@@ -101,17 +101,17 @@ func TestDepotsOfADirectoryServeTheSameObjects(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	one, other := serve(t, dir, nil), serve(t, dir, nil)
-	size, err := one.Put(context.Background(), "archives/a-session/an-archive", strings.NewReader("the home of a session"))
+	size, err := one.Put(context.Background(), "attachments/a-session/a-file", strings.NewReader("the file of a message"))
 	if err != nil || size != 21 {
 		t.Fatalf("Put = %d, %v; want the 21 bytes of the object", size, err)
 	}
-	if content, err := read(t, other, "archives/a-session/an-archive"); err != nil || content != "the home of a session" {
+	if content, err := read(t, other, "attachments/a-session/a-file"); err != nil || content != "the file of a message" {
 		t.Errorf("the other depot read %q, %v", content, err)
 	}
-	if err := other.Delete(context.Background(), "archives/a-session/an-archive"); err != nil {
+	if err := other.Delete(context.Background(), "attachments/a-session/a-file"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := read(t, one, "archives/a-session/an-archive"); !errors.Is(err, ErrNotFound) {
+	if _, err := read(t, one, "attachments/a-session/a-file"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get of a deleted object = %v, want ErrNotFound", err)
 	}
 }
@@ -141,21 +141,21 @@ func TestAnObjectThatWasNotSentWholeIsNotKept(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	depot := serve(t, dir, nil)
-	if _, err := depot.Put(context.Background(), "archives/a-session/an-archive", cut()); err == nil || !strings.Contains(err.Error(), "the sender is gone") {
+	if _, err := depot.Put(context.Background(), "attachments/a-session/a-file", cut()); err == nil || !strings.Contains(err.Error(), "the sender is gone") {
 		t.Fatalf("Put of an object whose sender fails = %v", err)
 	}
 	// The depot learns that the sender is gone after the sender does.
 	deadline := time.Now().Add(10 * time.Second)
-	for !slices.Equal(files(t, dir), []string{"archives", "archives/a-session"}) {
+	for !slices.Equal(files(t, dir), []string{"attachments", "attachments/a-session"}) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the directory still has %q", files(t, dir))
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if _, err := read(t, depot, "archives/a-session/an-archive"); !errors.Is(err, ErrNotFound) {
+	if _, err := read(t, depot, "attachments/a-session/a-file"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get = %v, want ErrNotFound", err)
 	}
-	write(t, depot, "archives/a-session/an-archive")
+	write(t, depot, "attachments/a-session/a-file")
 }
 
 // Deleting a key deletes its object and the objects under it, with their
@@ -166,14 +166,14 @@ func TestDeleteRemovesTheObjectsUnderAKey(t *testing.T) {
 	depot := serve(t, dir, nil)
 	write(t, depot,
 		"attachments/session-1/a", "attachments/session-1/b", "attachments/session-1/of/a-turn",
-		"attachments/session-10/a", "attachments/session-2/a", "archives/session-1/a",
+		"attachments/session-10/a", "attachments/session-2/a", "other/session-1/a",
 	)
 	if err := depot.Delete(context.Background(), "attachments/session-1"); err != nil {
 		t.Fatal(err)
 	}
 	left := []string{
-		"archives", "archives/session-1", "archives/session-1/a",
 		"attachments", "attachments/session-10", "attachments/session-10/a", "attachments/session-2", "attachments/session-2/a",
+		"other", "other/session-1", "other/session-1/a",
 	}
 	if now := files(t, dir); !slices.Equal(now, left) {
 		t.Errorf("the directory has %q, want %q", now, left)
@@ -361,10 +361,10 @@ func TestAnObjectThatEndsEarlyFailsItsReader(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Length", "21")
-		w.Write([]byte("the home of"))
+		w.Write([]byte("the file of"))
 	}))
 	defer server.Close()
-	object, size, err := At(server.URL).Get(context.Background(), "archives/a-session/an-archive")
+	object, size, err := At(server.URL).Get(context.Background(), "attachments/a-session/a-file")
 	if err != nil || size != 21 {
 		t.Fatalf("Get = %d, %v", size, err)
 	}
