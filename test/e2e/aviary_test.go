@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
+	ateapi "go.ate.dev/substrate/api/ateapi/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -46,10 +46,6 @@ func TestAviary(t *testing.T) {
 				t.Parallel()
 				sleeps(t, harness)
 			})
-			t.Run(harness+" session that sleeps for long has its home archived", func(t *testing.T) {
-				t.Parallel()
-				archives(t, harness)
-			})
 			t.Run(harness+" turn awaiting approval keeps its session awake", func(t *testing.T) {
 				t.Parallel()
 				keepsAwake(t, harness)
@@ -60,20 +56,19 @@ func TestAviary(t *testing.T) {
 			})
 		}
 		tests := map[string]func(*testing.T){
-			"a sandbox reaches the outside only through the proxy": egress,
-			"an agent uses its provider":                           providers,
-			"the models of a provider are listed":                  models,
-			"a provider keeps its key in a secret store":           secretStore,
-			"a failed turn reports its reason":                     failures,
-			"an idle session loses its sandbox":                    loses,
-			"a home is restored as soon as it is archived":         restoresAtOnce,
-			"a message carries files into its sandbox":             attaches,
-			"a turn is cancelled":                                  cancel,
-			"a session is ended":                                   ended,
-			"an agent is deleted":                                  deletes,
-			"a client watches the sessions of a project":           watches,
-			"the Supervisors report turn metrics":                  supervisorMetrics,
-			"the depots share their volume":                        depots,
+			"a sandbox reaches only the hosts that it may": egress,
+			"an agent uses its provider":                   providers,
+			"the models of a provider are listed":          models,
+			"a provider keeps its key in a secret store":   secretStore,
+			"a failed turn reports its reason":             failures,
+			"an idle session loses its sandbox":            loses,
+			"a message carries files into its sandbox":     attaches,
+			"a turn is cancelled":                          cancel,
+			"a session is ended":                           ended,
+			"an agent is deleted":                          deletes,
+			"a client watches the sessions of a project":   watches,
+			"the Supervisors report turn metrics":          supervisorMetrics,
+			"the depots share their volume":                depots,
 		}
 		if identity {
 			tests["the API authenticates and authorizes callers"] = callers
@@ -122,14 +117,12 @@ func ready(t *testing.T, component string, count int) bool {
 // than a turn waits for it, so the first turns are retried until one of each
 // harness completes.
 func installation(t *testing.T) {
-	for _, component := range []string{"supervisor", "egress-proxy"} {
-		if !ready(t, component, 2) {
-			t.Fatalf("%s does not have 2 ready pods; run `make e2e` to install Aviary", component)
-		}
+	if !ready(t, "supervisor", 2) {
+		t.Fatal("the Supervisor does not have 2 ready pods; run `make e2e` to install Aviary")
 	}
-	// The sandboxes of an earlier run may still be terminating.
+	// The sandboxes of an earlier run may still be being deleted.
 	eventually(t, soon, "the cluster still has sandboxes from earlier runs; run `make e2e` to create a new cluster", func() bool {
-		return len(sandboxes(t, "")) == 0
+		return sandboxCount(t) == 0
 	})
 	for _, name := range harnesses {
 		session := newAgent(t, harness(name)).session(t)
@@ -195,8 +188,8 @@ func session(t *testing.T, name string) {
 			len(list.Turns) != 2 || list.Turns[0].Seq != 4 || list.Turns[1].Seq != 3 || list.Turns[1].said() != third.said() {
 			t.Errorf("listed turns = %+v, want turns 4 and 3", list.Turns)
 		}
-		if kept := sandboxes(t, session); len(kept) != 1 {
-			t.Errorf("sandboxes after four turns = %v, want one", kept)
+		if actorOf(t, session) == nil {
+			t.Error("session has no sandbox after four turns")
 		}
 	})
 	t.Run("is isolated", func(t *testing.T) {
@@ -329,23 +322,23 @@ func replaces(t *testing.T, name string) {
 	}
 }
 
-// An idle session sleeps: its pod is deleted and its home volume is kept. The
-// next message wakes it in a new pod, where the agent still has the
-// conversation, its files and the packages that it installed.
+// An idle session sleeps: its sandbox leaves its worker, and a snapshot keeps
+// it. The next message wakes it, where the agent still has the conversation,
+// its files and the packages that it installed.
 func sleeps(t *testing.T, name string) {
 	session := newAgent(t, harness(name)).session(t)
 	content, file := unique("content"), unique("note")+".txt"
 	write := fmt.Sprintf("run printf %s > %s", content, file)
 	run(t, session, write)
-	// pip fetches the package through the Egress Proxy. The check reads what
-	// the model said, since not every harness keeps the command output in
-	// its tool call.
+	// pip fetches the package from mock-llm, which the sandboxes may reach.
+	// The check reads what the model said, since not every harness keeps the
+	// command output in its tool call.
 	if installed := run(t, session, "run pip install "+probeURL); !strings.Contains(installed.said(), "Successfully installed aviary-probe-1.0") {
 		t.Fatalf("agent did not install the package: said %q", installed.said())
 	}
-	before, awake := sandboxesOf(t, session), sessionPods(t, session)
-	if len(before) != 1 || len(awake) != 1 {
-		t.Fatalf("session has %d sandboxes and %d pods, want one of each", len(before), len(awake))
+	before := actorOf(t, session)
+	if before == nil || before.State != ateapi.ActorState_ACTOR_STATE_RUNNING {
+		t.Fatalf("sandbox of the session = %+v, want it running", before)
 	}
 	if state := sandboxState(t, session); state != "awake" {
 		t.Errorf("session says that its sandbox is %q, want awake", state)
@@ -359,9 +352,6 @@ func sleeps(t *testing.T, name string) {
 		t.Errorf("state metrics count %v awake sandboxes while the session is awake", awake)
 	}
 	asleep(t, session)
-	eventually(t, soon, "the sleeping sandbox's pod still exists", func() bool {
-		return len(sessionPods(t, session)) == 0
-	})
 	eventually(t, soon, "the session does not say that its sandbox is asleep", func() bool {
 		return sandboxState(t, session) == "asleep"
 	})
@@ -381,103 +371,8 @@ func sleeps(t *testing.T, name string) {
 	if shown := run(t, session, "run pip show aviary-probe"); !strings.Contains(shown.said(), "Location: /home/.local/lib/python3") {
 		t.Errorf("woken session lost the installed package: said %q", shown.said())
 	}
-	after, woken := sandboxesOf(t, session), sessionPods(t, session)
-	if len(after) != 1 || after[0].Metadata.UID != before[0].Metadata.UID {
-		t.Errorf("sandbox before sleeping = %s, after = %v, want the same sandbox", before[0].Metadata.UID, after)
-	}
-	if len(woken) != 1 || woken[0].UID == awake[0].UID {
-		t.Errorf("session slept in pod %s and woke in %d pods, want one new pod", awake[0].UID, len(woken))
-	}
-}
-
-// A session that has slept for long gives up its sandbox and its volume: its
-// home is archived in the depot. The next turn restores the home into a new
-// sandbox, with the harness's memory of the conversation, the agent's files
-// and what the agent installed.
-func archives(t *testing.T, name string) {
-	session := newAgent(t, harness(name)).session(t)
-	content, file := unique("content"), unique("note")+".txt"
-	write := fmt.Sprintf("run printf %s > %s", content, file)
-	run(t, session, write)
-	if installed := run(t, session, "run pip install "+probeURL); !strings.Contains(installed.said(), "Successfully installed aviary-probe-1.0") {
-		t.Fatalf("agent did not install the package: said %q", installed.said())
-	}
-	before := sandboxesOf(t, session)
-	if len(before) != 1 {
-		t.Fatalf("session has %d sandboxes, want one", len(before))
-	}
-	// agent-sandbox names a volume claim <template>-<sandbox>.
-	volume := "home-" + before[0].Metadata.Name
-
-	// The Supervisors look at the sandboxes before the session sleeps, and
-	// again before its home is archived.
-	eventually(t, idle+look+archive+look+patience, "the session does not say that its home is archived", func() bool {
-		return sandboxState(t, session) == "archived"
-	})
-	eventually(t, soon, "the sandbox of the archived home still exists", func() bool {
-		return len(sandboxesOf(t, session)) == 0
-	})
-	eventually(t, patience, "the volume of the archived home still exists", func() bool {
-		_, err := cluster.CoreV1().PersistentVolumeClaims(runtime).Get(ctx, volume, metav1.GetOptions{})
-		return apierrors.IsNotFound(err)
-	})
-	// Other tests have homes archived too, so the state metrics are only
-	// checked to count this one.
-	if archived := total(metrics(t, "state-metrics"), `aviary_sandboxes{state="archived"}`); archived < 1 {
-		t.Errorf("state metrics count %v archived homes while the session's home is archived", archived)
-	}
-
-	if recalled := run(t, session, "recall"); !strings.Contains(recalled.said(), write) {
-		t.Errorf("session with its home restored did not recall the conversation: said %q", recalled.said())
-	}
-	if state := sandboxState(t, session); state != "awake" {
-		t.Errorf("session with its home restored says that its sandbox is %q, want awake", state)
-	}
-	if read := run(t, session, "run cat "+file); !strings.Contains(read.tools(), content) {
-		t.Errorf("session with its home restored did not read its file: tool calls %s", read.tools())
-	}
-	if shown := run(t, session, "run pip show aviary-probe"); !strings.Contains(shown.said(), "Location: /home/.local/lib/python3") {
-		t.Errorf("session with its home restored lost the installed package: said %q", shown.said())
-	}
-	if after := sandboxesOf(t, session); len(after) != 1 || after[0].Metadata.UID == before[0].Metadata.UID {
-		t.Errorf("sandbox before archiving = %s, after restoring = %v, want one new sandbox", before[0].Metadata.UID, after)
-	}
-	for _, operation := range []string{"write", "read"} {
-		if moved := total(metrics(t, "depot"), `aviary_depot_object_bytes_total{operation="`+operation+`"}`); moved <= 0 {
-			t.Errorf("the depots report %v bytes of objects that they %s", moved, operation)
-		}
-	}
-}
-
-// A message that arrives as soon as the home is archived restores it as
-// well: the new sandbox comes after the former one and gets a volume of its
-// own, although the former volume may still be there when the turn begins.
-func restoresAtOnce(t *testing.T) {
-	session := newAgent(t, harness(harnesses[0])).session(t)
-	content, file := unique("content"), unique("note")+".txt"
-	run(t, session, fmt.Sprintf("run printf %s > %s", content, file))
-	before := sandboxesOf(t, session)
-	if len(before) != 1 {
-		t.Fatalf("session has %d sandboxes, want one", len(before))
-	}
-	// agent-sandbox names a volume claim <template>-<sandbox>.
-	volume := "home-" + before[0].Metadata.Name
-	former, err := cluster.CoreV1().PersistentVolumeClaims(runtime).Get(ctx, volume, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get session volume: %v", err)
-	}
-	eventually(t, idle+look+archive+look+patience, "the session does not say that its home is archived", func() bool {
-		return sandboxState(t, session) == "archived"
-	})
-
-	if read := run(t, session, "run cat "+file); !strings.Contains(read.tools(), content) {
-		t.Errorf("session with its home restored did not read its file: tool calls %s", read.tools())
-	}
-	if after := sandboxesOf(t, session); len(after) != 1 || after[0].Metadata.UID == before[0].Metadata.UID {
-		t.Errorf("sandbox before archiving = %s, after restoring = %v, want one new sandbox", before[0].Metadata.UID, after)
-	}
-	if claimed, err := cluster.CoreV1().PersistentVolumeClaims(runtime).Get(ctx, volume, metav1.GetOptions{}); err != nil || claimed.UID == former.UID {
-		t.Errorf("volume of the restored home = %v, %v; want a new one in place of %s", claimed.UID, err, former.UID)
+	if after := actorOf(t, session); after == nil || after.UID != before.UID {
+		t.Errorf("sandbox before sleeping = %s, after = %+v, want the same sandbox", before.UID, after)
 	}
 }
 
@@ -572,13 +467,12 @@ func keepsAwake(t *testing.T, name string) {
 	read(t, accepted.ID).until(t, "asked for approval", func(next event) bool {
 		return next.Type == "approval.requested" && json.Unmarshal([]byte(next.Data), &asked) == nil
 	})
-	waiting := sessionPods(t, session)
+	waiting := actorOf(t, session)
 	// Past the idle time, and long enough for every Supervisor to have looked
 	// for idle sessions since.
 	time.Sleep(idle + look + 5*time.Second)
-	found, still := sandboxesOf(t, session), sessionPods(t, session)
-	if len(found) != 1 || found[0].Spec.OperatingMode == "Suspended" || len(waiting) != 1 || len(still) != 1 || still[0].UID != waiting[0].UID {
-		t.Fatalf("sandbox of a turn awaiting approval was suspended or its pod replaced: %v", found)
+	if still := actorOf(t, session); waiting == nil || still == nil || still.UID != waiting.UID || still.State != ateapi.ActorState_ACTOR_STATE_RUNNING {
+		t.Fatalf("sandbox of a turn awaiting approval = %+v, then %+v; want it running all along", waiting, still)
 	}
 	// Other tests have turns too, so the state metrics are only checked to
 	// count this one.
@@ -607,93 +501,51 @@ func keepsAwake(t *testing.T, name string) {
 	}
 }
 
-// Instructions that have the agent run a command in its sandbox. fetch gets a
-// URL through the Egress Proxy, as the sandbox is configured to, and prints
-// the response status. connect opens a TCP connection to port 80 of an
-// address, bypassing the proxy, and prints whether it connected.
-const (
-	fetch   = `run node -e "fetch(process.argv[1]).then(r => console.log('status', r.status), () => console.log('failed'))" `
-	connect = `run node -e "const s = require('net').connect({host: process.argv[1], port: 80, timeout: 3000}); ` +
-		`s.on('connect', () => { console.log('connected'); s.destroy() }); ` +
-		`s.on('timeout', () => { console.log('no answer'); s.destroy() }); s.on('error', () => console.log('no answer'))" `
-)
+// fetch is the instruction that has the agent get a URL in its sandbox and
+// print the response status, or that it failed.
+const fetch = `run node -e "fetch(process.argv[1]).then(r => console.log('status', r.status), () => console.log('failed'))" `
 
-// A sandbox holds no model API key and reaches the outside only through the
-// Egress Proxy, which allows only the listed hosts and logs every request
-// with its turn.
+// A sandbox holds no model API key, and reaches only the hosts that it may:
+// those of the installation, and the provider of its turn, into whose
+// requests the egress gateway puts the key.
 func egress(t *testing.T) {
 	project := newProject(t)
-	keyed := provider(t, project, mockKey)
-	agent := agentOf(t, project, keyed, harness(harnesses[0]))
-
-	t.Run("requests", func(t *testing.T) {
-		t.Run("to the model", func(t *testing.T) {
-			t.Parallel()
-			session := agent.session(t)
-			environment := run(t, session, "run env")
-			seen := environment.said() + environment.tools()
-			if !strings.Contains(seen, "AVIARY_LLM_BASE_URL=http://aviary-egress-proxy") {
-				t.Errorf("harness model endpoint is not the Egress Proxy: %s", seen)
-			}
-			if strings.Contains(seen, mockKey) {
-				t.Error("sandbox has the model API key")
-			}
-			// mock-llm accepts only its own key, so the proxy added it. The
-			// access log line identifies the origin of the request.
-			line := logged(t, environment.ID, "llm", mockHost, 200)
-			for field, value := range map[string]string{"session": session, "agent": agent.id, "project": project, "provider": keyed} {
-				if line[field] != value {
-					t.Errorf("access log %s = %v, want %s: %v", field, line[field], value, line)
-				}
-			}
-			// With authentication, the line also identifies the caller.
-			_, user := line["user"].(string)
-			if _, subject := line["subject"].(string); user != identity || subject != identity {
-				t.Errorf("access log user = %v, subject = %v; want both set only with an identity provider", line["user"], line["subject"])
-			}
-		})
-		t.Run("to an allowed host", func(t *testing.T) {
-			t.Parallel()
-			allowed := run(t, agent.session(t), fetch+"http://"+mockHost+"/healthz")
-			if !strings.Contains(allowed.said(), "status 200") {
-				t.Errorf("fetch of an allowed host: said %q, want status 200", allowed.said())
-			}
-			logged(t, allowed.ID, "forward", mockHost, 200)
-		})
-		t.Run("to a disallowed host", func(t *testing.T) {
-			t.Parallel()
-			refused := run(t, agent.session(t), fetch+"http://example.com/")
-			if !strings.Contains(refused.said(), "status 403") {
-				t.Errorf("fetch of a disallowed host: said %q, want status 403", refused.said())
-			}
-			logged(t, refused.ID, "forward", "example.com", 403)
-		})
-		t.Run("without the proxy", func(t *testing.T) {
-			t.Parallel()
-			// Not even to the address of a host that the proxy allows.
-			model, err := cluster.CoreV1().Services("aviary-e2e").Get(ctx, "mock-llm", metav1.GetOptions{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			direct := run(t, agent.session(t), connect+model.Spec.ClusterIP)
-			if !strings.Contains(direct.said(), "no answer") {
-				t.Errorf("direct connection without the proxy: said %q, want no answer", direct.said())
-			}
-		})
+	agent := agentOf(t, project, provider(t, project, mockKey), harness(harnesses[0]))
+	t.Run("to the model", func(t *testing.T) {
+		t.Parallel()
+		environment := run(t, agent.session(t), "run env")
+		// mock-llm accepts only its own key, so the gateway put it in.
+		seen := environment.said() + environment.tools()
+		if !strings.Contains(seen, "AVIARY_LLM_BASE_URL="+mockURL) || !strings.Contains(seen, "AVIARY_LLM_API_KEY=aviary") || strings.Contains(seen, mockKey) {
+			t.Errorf("harness environment = %s, want the provider's URL and a placeholder in place of its key", seen)
+		}
 	})
-
-	// The proxies' metrics count these requests: those allowed on both
-	// listeners, the refused one, and the durations of the model requests.
-	for _, series := range []string{
-		`envoy_http_ext_authz_ok{envoy_http_conn_manager_prefix="llm"`,
-		`envoy_http_ext_authz_ok{envoy_http_conn_manager_prefix="forward"`,
-		`envoy_http_rbac_denied`,
-		`envoy_http_downstream_rq_time_count{envoy_http_conn_manager_prefix="llm"`,
-	} {
-		eventually(t, soon, "Egress Proxy metrics have no "+series, func() bool {
-			return total(metrics(t, "egress-proxy"), series) >= 1
-		})
-	}
+	t.Run("to an allowed host", func(t *testing.T) {
+		t.Parallel()
+		allowed := run(t, agent.session(t), fetch+"http://"+mockHost+"/healthz")
+		if !strings.Contains(allowed.said(), "status 200") {
+			t.Errorf("fetch of an allowed host: said %q, want status 200", allowed.said())
+		}
+	})
+	t.Run("to a disallowed host", func(t *testing.T) {
+		t.Parallel()
+		refused := run(t, agent.session(t), fetch+"http://example.com/")
+		if said := refused.said(); !strings.Contains(said, "failed") && !strings.Contains(said, "status 403") {
+			t.Errorf("fetch of a disallowed host: said %q, want it failed or refused", said)
+		}
+	})
+	t.Run("at an address", func(t *testing.T) {
+		t.Parallel()
+		// Not even at the address of a host that the sandbox may reach.
+		model, err := cluster.CoreV1().Services("aviary-e2e").Get(ctx, "mock-llm", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		direct := run(t, agent.session(t), fetch+"http://"+model.Spec.ClusterIP+"/healthz")
+		if said := direct.said(); strings.Contains(said, "status 200") || !strings.Contains(said, "failed") && !strings.Contains(said, "status 403") {
+			t.Errorf("fetch at an address: said %q, want it failed or refused", said)
+		}
+	})
 }
 
 // A turn's model requests go to the provider of its agent, with that
@@ -706,18 +558,14 @@ func providers(t *testing.T) {
 	able := agentOf(t, project, right, harness(harnesses[0]))
 	unable := agentOf(t, project, wrong, harness(harnesses[0]))
 
-	completed := run(t, able.session(t), "say done")
-	if line := logged(t, completed.ID, "llm", mockHost, 200); line["provider"] != right {
-		t.Errorf("access log line for provider %s = %v", right, line)
+	if completed := run(t, able.session(t), "say done"); !strings.Contains(completed.said(), "done") {
+		t.Errorf("the agent of the provider with the right key said %q", completed.said())
 	}
 
 	session := unable.session(t)
 	refused := send(t, session, "say done")
 	if last := read(t, refused.ID).end(t); last.Type != "turn.failed" || !strings.Contains(last.Data, "harness_error") {
 		t.Fatalf("turn with a wrong provider key ended with %s %s, want turn.failed with harness_error", last.Type, last.Data)
-	}
-	if line := logged(t, refused.ID, "llm", mockHost, 401); line["provider"] != wrong {
-		t.Errorf("access log line for provider %s = %v", wrong, line)
 	}
 
 	body := fmt.Sprintf(`{"name": "mock", "url": %q, "api_key": {"value": %q}}`, mockURL, mockKey)
@@ -728,18 +576,17 @@ func providers(t *testing.T) {
 		t.Errorf("after the provider key was replaced, the agent said %q", next.said())
 	}
 
-	// A provider at localhost is reached at the host that egressProxy.localhost
+	// A provider at localhost is reached at the host that sandboxes.localhost
 	// names.
 	local := create(t, "/v1/projects/"+project+"/providers", fmt.Sprintf(`{"name": "local", "url": "http://localhost/v1", "api_key": {"value": %q}}`, mockKey))
-	here := run(t, agentOf(t, project, local, harness(harnesses[0])).session(t), "say done")
-	if line := logged(t, here.ID, "llm", mockHost, 200); line["provider"] != local {
-		t.Errorf("access log line for provider %s = %v", local, line)
+	if here := run(t, agentOf(t, project, local, harness(harnesses[0])).session(t), "say done"); !strings.Contains(here.said(), "done") {
+		t.Errorf("the agent of a provider at localhost said %q", here.said())
 	}
 }
 
-// The models of a provider are listed, whether it is registered or not: a
-// model request goes to its endpoint through the Egress Proxy, and the answer
-// is the endpoint's models and status, or why the proxy got none.
+// The models of a provider are listed, whether it is registered or not: the
+// Supervisor asks its endpoint, and the answer is the endpoint's models and
+// status, or why there was none.
 func models(t *testing.T) {
 	project := newProject(t)
 	type listed struct {
@@ -760,8 +607,8 @@ func models(t *testing.T) {
 		"with its key":                        {mockURL, mockKey, true, http.StatusOK, "mock", ""},
 		"with a key that the model refuses":   {mockURL, "a-key-that-the-model-does-not-know", true, http.StatusUnauthorized, "", ""},
 		"at localhost":                        {"http://localhost/v1", mockKey, true, http.StatusOK, "mock", ""},
-		"at a host that is not allowed":       {"https://model.example.com/v1", mockKey, false, 0, "", "egressProxy.allowedHosts"},
-		"at a port where nothing listens":     {"https://" + mockHost + "/v1", mockKey, false, 0, "", "upstream connect error"},
+		"at a host that is not reached":       {"https://model.example.com/v1", mockKey, false, 0, "", "cannot be reached"},
+		"at a port where nothing listens":     {"https://" + mockHost + "/v1", mockKey, false, 0, "", "cannot be reached"},
 		"under a path that the model has not": {"http://" + mockHost + "/v2", mockKey, true, http.StatusNotFound, "", ""},
 	} {
 		var got listed
@@ -792,9 +639,9 @@ func models(t *testing.T) {
 }
 
 // A provider's key may be kept in a secret store of the project. A Supervisor
-// reads it when the Egress Proxy asks about a model request, and caches it
-// for the configured time, after which model requests carry the store's
-// current key.
+// reads it when the egress gateway asks for it for a model request, and
+// caches it for the configured time, after which model requests carry the
+// store's current key.
 func secretStore(t *testing.T) {
 	project := newProject(t)
 	// The store's owner gives Aviary an AppRole that may read the secrets
@@ -827,18 +674,12 @@ func secretStore(t *testing.T) {
 	if last := read(t, refused.ID).end(t); last.Type != "turn.failed" || !strings.Contains(last.Data, "harness_error") {
 		t.Fatalf("turn with a wrong key in the secret store ended with %s %s, want turn.failed with harness_error", last.Type, last.Data)
 	}
-	if line := logged(t, refused.ID, "llm", mockHost, 401); line["provider"] != elsewhere {
-		t.Errorf("access log line for provider %s = %v", elsewhere, line)
-	}
 
 	keep(mockKey)
 	time.Sleep(remembered)
 	next := run(t, session, "say done")
 	if !strings.Contains(next.said(), "done") {
 		t.Errorf("after the key in the secret store was changed, the agent said %q", next.said())
-	}
-	if line := logged(t, next.ID, "llm", mockHost, 200); line["provider"] != elsewhere {
-		t.Errorf("access log line for provider %s = %v", elsewhere, line)
 	}
 }
 
@@ -861,12 +702,11 @@ func failures(t *testing.T) {
 		return failed
 	}
 
-	// The model, not the Egress Proxy, refuses the request, and the runner
-	// reports the harness's error.
+	// The model refuses the request, and the runner reports the harness's
+	// error.
 	t.Run("the model refuses", func(t *testing.T) {
 		t.Parallel()
-		refused := fails(t, newAgent(t, harness(harnesses[0])).session(t), "fail the model is out of order", "harness_error")
-		logged(t, refused.ID, "llm", mockHost, 401)
+		fails(t, newAgent(t, harness(harnesses[0])).session(t), "fail the model is out of order", "harness_error")
 	})
 	// Deleting the sandbox fails the running turn. The turn keeps what the
 	// agent did until then, and the next turn gets a new sandbox.
@@ -876,13 +716,11 @@ func failures(t *testing.T) {
 		accepted := send(t, session, "run sleep 60")
 		events := read(t, accepted.ID)
 		events.until(t, "called its tool", func(next event) bool { return next.Type == "tool.call" })
-		had := sandboxesOf(t, session)
-		if len(had) != 1 {
-			t.Fatalf("session sandboxes = %v, want one", had)
+		had := actorOf(t, session)
+		if had == nil {
+			t.Fatal("session has no sandbox")
 		}
-		if err := cluster.CoreV1().RESTClient().Delete().AbsPath(sandboxAPI, had[0].Metadata.Name).Do(ctx).Error(); err != nil {
-			t.Fatal(err)
-		}
+		deleteSandbox(t, session)
 		last := events.end(t)
 		lost := record(t, accepted.ID)
 		if last.Type != "turn.failed" || lost.Failure["reason"] != "sandbox_lost" || lost.tools() == "" {
@@ -894,8 +732,8 @@ func failures(t *testing.T) {
 		if next := run(t, session, "say done"); !strings.Contains(next.said(), "done") {
 			t.Errorf("session did not continue after its sandbox was deleted: said %q", next.said())
 		}
-		if has := sandboxesOf(t, session); len(has) != 1 || has[0].Metadata.UID == had[0].Metadata.UID {
-			t.Errorf("sandboxes after deleting %s = %v, want one new sandbox", had[0].Metadata.UID, has)
+		if has := actorOf(t, session); has == nil || has.UID == had.UID {
+			t.Errorf("sandbox after deleting %s = %+v, want a new one", had.UID, has)
 		}
 	})
 }
@@ -905,21 +743,19 @@ func failures(t *testing.T) {
 func loses(t *testing.T) {
 	session := newAgent(t, harness(harnesses[0])).session(t)
 	run(t, session, "say ready")
-	had := sandboxesOf(t, session)
-	if len(had) != 1 {
-		t.Fatalf("session sandboxes = %v, want one", had)
+	had := actorOf(t, session)
+	if had == nil {
+		t.Fatal("session has no sandbox")
 	}
-	if err := cluster.CoreV1().RESTClient().Delete().AbsPath(sandboxAPI, had[0].Metadata.Name).Do(ctx).Error(); err != nil {
-		t.Fatal(err)
-	}
+	deleteSandbox(t, session)
 	eventually(t, look+soon, "the session does not say that its sandbox is lost", func() bool {
 		return sandboxState(t, session) == "lost"
 	})
 	if next := run(t, session, "say done"); !strings.Contains(next.said(), "done") {
 		t.Errorf("session did not continue after its sandbox was deleted: said %q", next.said())
 	}
-	if has := sandboxesOf(t, session); len(has) != 1 || has[0].Metadata.UID == had[0].Metadata.UID {
-		t.Errorf("sandboxes after deleting %s = %v, want one new sandbox", had[0].Metadata.UID, has)
+	if has := actorOf(t, session); has == nil || has.UID == had.UID {
+		t.Errorf("sandbox after deleting %s = %+v, want a new one", had.UID, has)
 	}
 	if state := sandboxState(t, session); state != "awake" {
 		t.Errorf("session with a new sandbox says that its sandbox is %q, want awake", state)
@@ -967,7 +803,7 @@ func cancel(t *testing.T) {
 	}
 }
 
-// Ending a session deletes its sandbox and home volume, keeps its turns, and
+// Ending a session deletes its sandbox with its home, keeps its turns, and
 // refuses further messages. A session with a running turn cannot be ended.
 func ended(t *testing.T) {
 	session := newAgent(t, harness(harnesses[0])).session(t)
@@ -983,14 +819,8 @@ func ended(t *testing.T) {
 	if last := events.end(t); last.Type != "turn.completed" {
 		t.Fatalf("turn ended with %s %s, want turn.completed", last.Type, last.Data)
 	}
-	kept := sandboxes(t, session)
-	if len(kept) != 1 {
-		t.Fatalf("session sandboxes = %v, want one", kept)
-	}
-	// agent-sandbox names a volume claim <template>-<sandbox>.
-	volume := "home-" + kept[0]
-	if _, err := cluster.CoreV1().PersistentVolumeClaims(runtime).Get(ctx, volume, metav1.GetOptions{}); err != nil {
-		t.Fatalf("get session volume: %v", err)
+	if actorOf(t, session) == nil {
+		t.Fatal("session has no sandbox")
 	}
 
 	var over struct {
@@ -1001,11 +831,7 @@ func ended(t *testing.T) {
 		t.Fatalf("end session: got %d %+v, want 200 with ended_at", status, over)
 	}
 	eventually(t, soon, "the ended session's sandbox still exists", func() bool {
-		return len(sandboxes(t, session)) == 0
-	})
-	eventually(t, patience, "the ended session's volume still exists", func() bool {
-		_, err := cluster.CoreV1().PersistentVolumeClaims(runtime).Get(ctx, volume, metav1.GetOptions{})
-		return apierrors.IsNotFound(err)
+		return actorOf(t, session) == nil
 	})
 	if status := request(t, "POST", path+"/messages", `{"text": "say more"}`, &refusal); status != http.StatusConflict || refusal.Code != "session_ended" {
 		t.Errorf("message to an ended session: got %d %s, want 409 session_ended", status, refusal.Code)
@@ -1053,8 +879,8 @@ func deletes(t *testing.T) {
 	path := "/v1/agents/" + agent.id
 	session := agent.session(t)
 	run(t, session, "say done")
-	if kept := sandboxes(t, session); len(kept) != 1 {
-		t.Fatalf("session sandboxes = %v, want one", kept)
+	if actorOf(t, session) == nil {
+		t.Fatal("session has no sandbox")
 	}
 
 	var deleted struct {
@@ -1073,7 +899,7 @@ func deletes(t *testing.T) {
 		t.Errorf("session of the deleted agent: got %d %+v, want it ended with the reason agent_deleted", status, over)
 	}
 	eventually(t, soon, "the sandbox of the deleted agent's session still exists", func() bool {
-		return len(sandboxes(t, session)) == 0
+		return actorOf(t, session) == nil
 	})
 	var list struct{ Turns []turn }
 	if status := request(t, "GET", "/v1/sessions/"+session+"/turns", "", &list); status != http.StatusOK ||
@@ -1198,11 +1024,6 @@ func callers(t *testing.T) {
 	if status := requestAs(t, member, "GET", "/v1/turns/"+accepted.ID, "", &sent); status != http.StatusOK || sent.CreatedBy != bob.ID {
 		t.Errorf("get turn as the member %s: got status %d, created_by %q", bob.ID, status, sent.CreatedBy)
 	}
-	// The access log line names the user, and the subject that the identity
-	// provider knows the user by.
-	if line := logged(t, accepted.ID, "llm", mockHost, 200); line["user"] != bob.ID || line["subject"] != bob.Subject {
-		t.Errorf("access log line for the member %s with subject %s = %v", bob.ID, bob.Subject, line)
-	}
 
 	for _, try := range []struct {
 		user, method, path string
@@ -1322,21 +1143,19 @@ func waits(t *testing.T) {
 }
 
 // An agent uses the tools of the MCP servers that its session has on, which
-// mock-llm serves. The harness reaches them through the Egress Proxy, which
-// sends each request on with the server's headers, its token in place of the
-// session's, and without the header that names the server. A harness that
-// does not support a server's transport says so in the turn, and a server
-// that the session turns off is gone from its next turn.
+// mock-llm serves. The harness sends each request with the server's headers,
+// and the egress gateway puts the server's token in place of a placeholder. A
+// harness that does not support a server's transport says so in the turn, and
+// a server that the session turns off is gone from its next turn.
 func mcpServers(t *testing.T, harness string) {
 	project := newProject(t)
-	server := func(slug, path, transport string) string {
+	server := func(slug, url, transport string) string {
 		return create(t, "/v1/projects/"+project+"/mcp-servers", fmt.Sprintf(`{"slug": %q, "url": %q, "transport": %q,
 			"headers": [{"name": "authorization", "secret": {"value": "Bearer %s"}}, {"name": "x-probe", "value": "from %s"}]}`,
-			slug, "http://"+mockHost+path, transport, mockKey, slug))
+			slug, url, transport, mockKey, slug))
 	}
-	web, feed := server("web", "/mcp", "http"), server("feed", "/sse", "sse")
-	// The servers' tools were listed through the proxy as they were
-	// registered.
+	web, feed := server("web", "http://"+mcpHost+"/mcp", "http"), server("feed", "http://"+sseHost+"/sse", "sse")
+	// The servers' tools were listed as they were registered.
 	for _, id := range []string{web, feed} {
 		var registered struct{ Tools []struct{ Name string } }
 		if status := request(t, "GET", "/v1/mcp-servers/"+id, "", &registered); status != http.StatusOK || len(registered.Tools) != 1 || registered.Tools[0].Name != "headers" {
@@ -1346,18 +1165,13 @@ func mcpServers(t *testing.T, harness string) {
 	agent := agentOf(t, project, provider(t, project, mockKey), fmt.Sprintf(`{"harness": %q, "mcp_servers": [%q, %q]}`, harness, web, feed))
 	session := agent.session(t)
 
-	used := run(t, session, `use web headers {"names": ["x-aviary-mcp", "x-probe"]}`)
-	if said := used.said(); !strings.Contains(said, "x-aviary-mcp: none") || !strings.Contains(said, "x-probe: from web") {
+	used := run(t, session, `use web headers {"names": ["x-probe"]}`)
+	if said := used.said(); !strings.Contains(said, "x-probe: from web") {
 		t.Errorf("the tool of the server said %q", said)
 	}
 	if called := mcpCalls(t, used); !slices.Contains(called, web+" web headers") {
 		t.Errorf("calls of the tools of MCP servers: %v", called)
 	}
-	eventually(t, soon, "no access log line of a request to the MCP server", func() bool {
-		return slices.ContainsFunc(recorded(t, used.ID), func(line map[string]any) bool {
-			return line["mcp_server"] == web && line["status"] == float64(http.StatusOK)
-		})
-	})
 
 	fed := run(t, session, `use feed headers {"names": ["x-probe"]}`)
 	if unsupported := itemsOf(t, fed, "mcp_unsupported"); len(unsupported) > 0 {

@@ -19,10 +19,10 @@ sandboxes:
   # Short, so that the tests see sessions sleep without a long wait.
   idleSeconds: 30
   allowedHosts:
-    - http://mock-llm.aviary-e2e
+    - http://mock-llm.aviary-e2e.svc.cluster.local
   # A provider at localhost is the mock model server, as it is a model on
   # the machine of an installation that names that machine.
-  localhost: mock-llm.aviary-e2e
+  localhost: mock-llm.aviary-e2e.svc.cluster.local
 runtime:
   harnesses:
     # Small, so that the sessions of the parallel tests fit on the workers.

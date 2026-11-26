@@ -27,32 +27,31 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
-	// The namespaces of Aviary, of the sandboxes, and of the identity provider
-	// and the secret store.
-	system  = "aviary-system"
-	runtime = "aviary-runtime"
-	data    = "aviary-data"
+	// The namespaces of Aviary, and of the identity provider and the secret
+	// store.
+	system = "aviary-system"
+	data   = "aviary-data"
 	// patience is how long a test waits for a turn to end, which includes
 	// starting the sandbox for the first turn of a session, and the slowest
 	// drawl of the tests.
 	patience = 3 * time.Minute
 	// soon is how long a test waits for something that should follow at once.
 	soon = 30 * time.Second
-	// idle and archive are sandboxes.idleSeconds and .archiveAfterSeconds in
-	// values.yaml, and look is how often the Supervisors look at the
-	// sandboxes.
-	idle    = 30 * time.Second
-	archive = time.Minute
-	look    = time.Minute
+	// idle is sandboxes.idleSeconds in values.yaml, and look is how often the
+	// Supervisors look at the sandboxes.
+	idle = 30 * time.Second
+	look = time.Minute
 )
 
 var (
-	ctx     = context.Background()
-	cluster *kubernetes.Clientset
+	ctx        = context.Background()
+	cluster    *kubernetes.Clientset
+	restConfig *rest.Config
 	// apiURL is the Aviary API at a node port of the cluster.
 	apiURL = os.Getenv("AVIARY_E2E_API")
 	// identity reports whether the installation authenticates requests with
@@ -74,6 +73,7 @@ func TestMain(m *testing.M) {
 	if err == nil {
 		// The parallel tests query the API server often.
 		config.QPS, config.Burst = 200, 400
+		restConfig = config
 		cluster, err = kubernetes.NewForConfig(config)
 	}
 	if err != nil {
@@ -216,10 +216,15 @@ func create(t *testing.T, path, body string) string {
 }
 
 // The mock model server. It accepts only requests with mockKey, which the
-// sandboxes do not hold: the Egress Proxy adds it to model requests. It also
-// serves a Python package at probeURL.
+// sandboxes do not hold: the egress gateway puts it into their model
+// requests. It also serves a Python package at probeURL. A sandbox resolves
+// a name as it is given, so the Service has its full name.
 const (
-	mockHost = "mock-llm.aviary-e2e"
+	mockHost = "mock-llm.aviary-e2e.svc.cluster.local"
+	// mcpHost and sseHost are the mock model server as the MCP servers of the
+	// tests, of Streamable HTTP and of SSE.
+	mcpHost  = "mock-mcp.aviary-e2e.svc.cluster.local"
+	sseHost  = "mock-sse.aviary-e2e.svc.cluster.local"
 	mockURL  = "http://" + mockHost + "/v1"
 	mockKey  = "mock-llm-key"
 	probeURL = "http://" + mockHost + "/packages/aviary_probe-1.0-py3-none-any.whl"
@@ -604,104 +609,8 @@ func metrics(t *testing.T, component string) string {
 	return metrics.String()
 }
 
-// recorded returns the access log lines of the Egress Proxies for the turn.
-func recorded(t *testing.T, id string) []map[string]any {
-	t.Helper()
-	var requests []map[string]any
-	for _, pod := range running(t, "egress-proxy") {
-		log, err := cluster.CoreV1().Pods(system).GetLogs(pod.Name, &corev1.PodLogOptions{}).Stream(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		lines := bufio.NewScanner(log)
-		lines.Buffer(nil, 1<<20)
-		for lines.Scan() {
-			var line map[string]any
-			if json.Unmarshal(lines.Bytes(), &line) == nil && line["turn"] == id {
-				requests = append(requests, line)
-			}
-		}
-		log.Close()
-	}
-	return requests
-}
-
-// logged waits for an access log line of the turn with the route, host and
-// status, and returns it.
-func logged(t *testing.T, id, route, host string, status float64) map[string]any {
-	t.Helper()
-	var found map[string]any
-	eventually(t, soon, fmt.Sprintf("no Egress Proxy access log line with route %s, turn %s, host %s and status %v", route, id, host, status), func() bool {
-		for _, line := range recorded(t, id) {
-			if line["route"] == route && line["host"] == host && line["status"] == status {
-				found = line
-			}
-		}
-		return found != nil
-	})
-	return found
-}
-
-// sandbox is the part of an agent-sandbox Sandbox that the tests read.
-type sandbox struct {
-	Metadata struct{ Name, UID string }
-	Spec     struct{ OperatingMode string }
-	Status   struct {
-		Conditions []struct{ Type, Status string }
-	}
-}
-
-const sandboxAPI = "/apis/agents.x-k8s.io/v1beta1/namespaces/" + runtime + "/sandboxes"
-
-// sandboxesOf returns the Sandboxes of the session, or of all sessions if
-// session is empty.
-func sandboxesOf(t *testing.T, session string) []sandbox {
-	t.Helper()
-	selector := "aviary.io/session"
-	if session != "" {
-		selector += "=" + session
-	}
-	raw, err := cluster.CoreV1().RESTClient().Get().AbsPath(sandboxAPI).Param("labelSelector", selector).DoRaw(ctx)
-	if err != nil {
-		t.Fatalf("list sandboxes: %v: %s", err, raw)
-	}
-	var listed struct{ Items []sandbox }
-	if err := json.Unmarshal(raw, &listed); err != nil {
-		t.Fatal(err)
-	}
-	return listed.Items
-}
-
-// sandboxes returns the names of the Sandboxes that sandboxesOf returns.
-func sandboxes(t *testing.T, session string) []string {
-	t.Helper()
-	var names []string
-	for _, found := range sandboxesOf(t, session) {
-		names = append(names, found.Metadata.Name)
-	}
-	return names
-}
-
-// asleep waits until the Supervisors have put the session's sandbox to sleep
-// and its pod has terminated.
-func asleep(t *testing.T, session string) {
-	t.Helper()
-	eventually(t, patience, "session "+session+" is not asleep", func() bool {
-		found := sandboxesOf(t, session)
-		if len(found) != 1 || found[0].Spec.OperatingMode != "Suspended" {
-			return false
-		}
-		for _, condition := range found[0].Status.Conditions {
-			if condition.Type == "Suspended" {
-				return condition.Status == "True"
-			}
-		}
-		return false
-	})
-}
-
-// sandboxState returns what the session says of its sandbox: awake, asleep,
-// archived, restoring or lost, or nothing if it has none.
+// sandboxState returns what the session says of its sandbox: awake, asleep
+// or lost, or nothing if it has none.
 func sandboxState(t *testing.T, session string) string {
 	t.Helper()
 	var read struct{ Sandbox string }
@@ -709,12 +618,6 @@ func sandboxState(t *testing.T, session string) string {
 		t.Fatalf("GET session %s: status %d, want 200", session, status)
 	}
 	return read.Sandbox
-}
-
-// sessionPods returns the pods of the session's sandbox, one while it runs.
-func sessionPods(t *testing.T, session string) []corev1.Pod {
-	t.Helper()
-	return pods(t, runtime, "aviary.io/session="+session)
 }
 
 // total sums the samples in metrics whose name and labels start with series.
