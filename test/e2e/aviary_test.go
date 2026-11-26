@@ -608,7 +608,7 @@ func models(t *testing.T) {
 		"with a key that the model refuses":   {mockURL, "a-key-that-the-model-does-not-know", true, http.StatusUnauthorized, "", ""},
 		"at localhost":                        {"http://localhost/v1", mockKey, true, http.StatusOK, "mock", ""},
 		"at a host that is not reached":       {"https://model.example.com/v1", mockKey, false, 0, "", "cannot be reached"},
-		"at a port where nothing listens":     {"https://" + mockHost + "/v1", mockKey, false, 0, "", "cannot be reached"},
+		"at a port where nothing listens":     {"https://mock-closed.aviary-e2e.svc.cluster.local/v1", mockKey, false, 0, "", "cannot be reached"},
 		"under a path that the model has not": {"http://" + mockHost + "/v2", mockKey, true, http.StatusNotFound, "", ""},
 	} {
 		var got listed
