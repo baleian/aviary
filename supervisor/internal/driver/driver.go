@@ -765,12 +765,47 @@ type setup struct {
 	egress      sandbox.Egress
 }
 
+// sender names who sends a header to a host: the turn's provider, or an MCP
+// server by its ID. The egress gateway puts a secret into the header of every
+// request to its host, so a header with a secret has one sender.
+type sender struct {
+	sandbox.Host
+	header string
+}
+
+// senders are the headers that are sent to each host, and whether a secret
+// goes into them.
+type senders map[sender]struct {
+	by     string
+	secret bool
+}
+
+// clash reports whether one of the headers clashes with those of another
+// sender to the host: one of them, or the other's, has a secret.
+func (s senders) clash(host sandbox.Host, by string, headers []store.Header) bool {
+	for _, header := range headers {
+		sent, found := s[sender{host, strings.ToLower(header.Name)}]
+		if found && sent.by != by && (sent.secret || credentials.Secret(header)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s senders) add(host sandbox.Host, by, header string, secret bool) {
+	s[sender{host, strings.ToLower(header)}] = struct {
+		by     string
+		secret bool
+	}{by, secret}
+}
+
 // setUp returns what the turn's harness is given: the model of the turn's
 // agent at its provider's URL, with placeholders in place of the provider's
 // secrets, and the MCP servers that the session has on, with placeholders
 // in place of theirs. The sandbox may reach the installation's hosts, the
 // provider and the servers, and the egress gateway puts the secrets into
-// their requests.
+// their requests. A server whose headers clash with those of the provider or
+// of another server at its host is left out.
 func (d *Driver) setUp(ctx context.Context, turn store.FollowedTurn) (setup, error) {
 	agent, err := d.store.Agent(ctx, turn.AgentID)
 	if err != nil {
@@ -789,12 +824,15 @@ func (d *Driver) setUp(ctx context.Context, turn store.FollowedTurn) (setup, err
 		return setup{}, err
 	}
 	set := setup{egress: sandbox.Egress{Hosts: slices.Clone(d.config.Hosts)}}
+	sent := senders{}
 	headers := map[string]string{}
 	var secrets []sandbox.Secret
 	if provider.APIKey != nil || provider.APIKeyAt != nil {
 		secrets = append(secrets, sandbox.Secret{Host: host, Header: "authorization", Prefix: "Bearer ", URI: credentials.ProviderKey(provider.ID)})
+		sent.add(host, "", "authorization", true)
 	}
 	for _, header := range provider.Headers {
+		sent.add(host, "", header.Name, credentials.Secret(header))
 		if !credentials.Secret(header) {
 			headers[header.Name] = header.Value
 			continue
@@ -841,9 +879,15 @@ func (d *Driver) setUp(ctx context.Context, turn store.FollowedTurn) (setup, err
 			slog.WarnContext(ctx, "MCP server left out of a turn", "server", server.ID, "error", err)
 			continue
 		}
+		if sent.clash(host, server.ID.String(), server.Headers) {
+			slog.WarnContext(ctx, "MCP server left out of a turn: a header of its host has a secret of another sender",
+				"server", server.ID, "host", host.Name)
+			continue
+		}
 		given := sandbox.McpServer{ID: server.ID, Name: server.Slug, Transport: server.Transport, URL: address}
 		secret := false
 		for _, header := range server.Headers {
+			sent.add(host, server.ID.String(), header.Name, credentials.Secret(header))
 			if !credentials.Secret(header) {
 				given.Headers = append(given.Headers, sandbox.McpHeader{Name: header.Name, Value: header.Value})
 				continue

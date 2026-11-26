@@ -1385,3 +1385,62 @@ func TestAHarnessThatAnInstallationHas(t *testing.T) {
 		t.Error("HasHarness does not match the configured harnesses")
 	}
 }
+
+// The egress gateway puts a secret into a header of every request to its
+// host, so an MCP server is left out of a turn if a header of its clashes with
+// one of the provider or of another server at its host: either of them has a
+// secret.
+func TestMcpServersThatClashAreLeftOut(t *testing.T) {
+	i := install(t)
+	driver, _ := i.supervisor()
+	project, err := i.store.CreateProject(ctx, store.Project{Slug: "project-" + uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := i.store.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "gateway", URL: "https://gateway.example.com/v1", APIKey: []byte("sealed")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := func(name string) store.Header { return store.Header{Name: name, Sealed: []byte("sealed")} }
+	plain := func(name string) store.Header { return store.Header{Name: name, Value: "a value"} }
+	var servers []uuid.UUID
+	for _, server := range []store.McpServer{
+		// The provider's key goes into the header.
+		{Slug: "token", URL: "https://gateway.example.com/mcp", Headers: []store.Header{secret("authorization")}},
+		{Slug: "plain", URL: "https://gateway.example.com/mcp", Headers: []store.Header{plain("authorization")}},
+		{Slug: "probe", URL: "https://gateway.example.com/mcp", Headers: []store.Header{plain("x-probe")}},
+		{Slug: "first", URL: "https://tools.example.com/mcp", Headers: []store.Header{secret("x-token")}},
+		// The first server's secret goes into the header.
+		{Slug: "second", URL: "https://tools.example.com/mcp", Headers: []store.Header{secret("x-token")}},
+		{Slug: "elsewhere", URL: "https://tools.example.com:8443/mcp", Headers: []store.Header{secret("x-token")}},
+	} {
+		server.ID, server.ProjectID, server.Transport = uuid.New(), project.ID, store.TransportHTTP
+		made, err := i.store.CreateMcpServer(ctx, server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		servers = append(servers, made.ID)
+	}
+	agent, err := i.store.CreateAgent(ctx, project.ID, store.Agent{
+		Slug: "agent", Harness: "opencode", Model: store.Model{Provider: provider.ID, Name: "a-model"}, McpServers: servers,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := i.store.CreateSession(ctx, agent.ID, uuid.Nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i.send(driver, session, "hello")
+	given := i.service.Turn(t)
+	var names []string
+	for _, server := range given.McpServers {
+		names = append(names, server.Name)
+	}
+	if want := []string{"probe", "first", "elsewhere"}; !slices.Equal(names, want) {
+		t.Errorf("MCP servers of the turn = %v, want %v", names, want)
+	}
+	if secrets := i.service.Made()[given.Sandbox].Egress.Secrets; len(secrets) != 3 {
+		t.Errorf("secrets of the sandbox = %+v, want those of the provider, first and elsewhere", secrets)
+	}
+}
