@@ -32,6 +32,9 @@ type Service struct {
 	slow bool
 	// draining are the sandboxes whose workers go away.
 	draining map[string]bool
+	// room is how many sandboxes the workers hold at once, or 0 for any
+	// number.
+	room int
 }
 
 type made struct {
@@ -131,6 +134,8 @@ func (s *Service) Resume(_ context.Context, name string) error {
 		return fmt.Errorf("sandbox %s: %w", name, sandbox.ErrCrashed)
 	case m.state != sandbox.Asleep:
 		return nil
+	case s.room > 0 && s.awake() >= s.room:
+		return fmt.Errorf("sandbox %s: %w", name, sandbox.ErrNoWorker)
 	}
 	m.woken++
 	m.state = sandbox.Running
@@ -138,6 +143,26 @@ func (s *Service) Resume(_ context.Context, name string) error {
 		m.state = sandbox.Starting
 	}
 	return nil
+}
+
+// Room makes the workers hold at most n sandboxes at once, or any number if n
+// is 0: a sandbox that wakes up beyond them finds no worker with room.
+func (s *Service) Room(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.room = n
+}
+
+// awake counts the sandboxes that hold a place on a worker. The caller holds
+// mu.
+func (s *Service) awake() int {
+	awake := 0
+	for _, m := range s.sandboxes {
+		if m.state == sandbox.Running || m.state == sandbox.Starting {
+			awake++
+		}
+	}
+	return awake
 }
 
 // Suspend puts the sandbox to sleep. Its runner goes, which cuts off the

@@ -49,7 +49,7 @@ func (suite suite) testApprovals(t *testing.T) {
 		}
 		return requests
 	}
-	answers := func(of *store.Dispatch) []store.Answer {
+	answers := func(of *store.QueuedTurn) []store.Answer {
 		t.Helper()
 		var answers []store.Answer
 		var err error

@@ -56,7 +56,6 @@ const (
 	userGroups         = "AVIARY_USER_GROUPS"
 	allowedOrigins     = "AVIARY_ALLOWED_ORIGINS"
 	harnesses          = "AVIARY_HARNESSES"
-	maxConcurrentTurns = "AVIARY_MAX_CONCURRENT_TURNS"
 	maxQueuedTurns     = "AVIARY_MAX_QUEUED_TURNS"
 	maxQueueWait       = "AVIARY_MAX_QUEUE_WAIT_SECONDS"
 	maxStartup         = "AVIARY_MAX_STARTUP_SECONDS"
@@ -607,13 +606,6 @@ func driverConfig(ctx context.Context) (driver.Config, error) {
 		return config, fmt.Errorf("%s must be a number of seconds, or 0 to keep sandboxes until their session ends", sandboxRetention)
 	}
 	config.Retention = time.Duration(seconds) * time.Second
-	limit, err := env(maxConcurrentTurns)
-	if err != nil {
-		return config, err
-	}
-	if config.MaxConcurrentTurns, err = strconv.Atoi(limit); err != nil || config.MaxConcurrentTurns < 1 {
-		return config, fmt.Errorf("%s must be a positive number", maxConcurrentTurns)
-	}
 	queued, err := env(maxQueuedTurns)
 	if err != nil {
 		return config, err

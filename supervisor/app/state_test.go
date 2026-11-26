@@ -119,7 +119,8 @@ func TestStateMetricsCountSandboxes(t *testing.T) {
 // every series of the harnesses from the start.
 func TestStateMetricsCountTurns(t *testing.T) {
 	t.Parallel()
-	aviary := install(t, func(config *driver.Config) { config.MaxConcurrentTurns = 3 })
+	aviary := install(t)
+	aviary.service.Room(3)
 	s := aviary.supervisor()
 	metrics := stateMetrics(t, aviary.records)
 	// sample returns the sample of the series, or -1 if there is none.
@@ -156,9 +157,9 @@ func TestStateMetricsCountTurns(t *testing.T) {
 		}
 	}
 
-	// Three turns take the room to run: one whose harness does not have the
-	// message yet, one that runs, and one that waits for a person. A fourth
-	// is queued.
+	// Three turns take the room of the workers: one whose harness does not
+	// have the message yet, one that runs, and one that waits for a person. A
+	// fourth is queued.
 	aviary.given(s.send(s.session(), "one").ID)
 	aviary.given(s.send(s.session(), "two").ID).report(started("harness-session"))
 	third := s.send(s.session(`{"harness": "codex"}`), "three")

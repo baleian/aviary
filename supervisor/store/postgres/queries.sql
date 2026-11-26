@@ -65,10 +65,10 @@ update sessions set title = @title where id = @id returning *;
 
 -- name: SetSandbox :execrows
 -- Changes the session's sandbox only if it is still @was. An empty string
--- means none. A sandbox that is set is awake.
+-- means none. A sandbox that is set is asleep, as sandboxes are created.
 update sessions
 set sandbox = nullif(sqlc.arg(sandbox)::text, ''),
-    sandbox_state = case when sqlc.arg(sandbox)::text <> '' then 'awake' end
+    sandbox_state = case when sqlc.arg(sandbox)::text <> '' then 'asleep' end
 where id = @id and coalesce(sandbox, '') = sqlc.arg(was)::text;
 
 -- name: SetSandboxState :exec
@@ -304,30 +304,37 @@ join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
 where turns.id = @id;
 
--- name: CountWaitingTurns :one
--- Counts the queued turns that have no room to run among @max_running. The
--- count is negative if room is left. The dispatching and running turns are
--- found by ended_at, as wherever they are read: the unfinished turns have an
--- index, and the states alone would read every turn.
-select ((select count(*) from turns where state = 'queued')
-        - greatest(0, sqlc.arg(max_running)::bigint
-                      - (select count(*) from turns
-                         where ended_at is null and state in ('dispatching', 'running'))))::bigint as waiting;
+-- name: CountQueuedTurns :one
+select count(*) from turns where state = 'queued';
 
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
 
 -- name: NextTurns :many
--- Lists the oldest queued turns that have room to run among @max_running.
-select turns.id as turn_id, agents.harness, extract(epoch from now() - turns.created_at)::float8 as waited
+-- Lists the oldest queued turns, with the sandboxes of their sessions.
+select turns.id as turn_id, turns.session_id, agents.harness, coalesce(sessions.sandbox, '') as sandbox,
+       coalesce(sessions.sandbox_state, '') as sandbox_state,
+       extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
-limit greatest(sqlc.arg(max_running)::bigint
-               - (select count(*) from turns as running
-                  where running.ended_at is null and running.state in ('dispatching', 'running')), 0);
+limit @max;
+
+-- name: IdleSandboxes :many
+-- Lists the sessions whose sandboxes are recorded awake and that have no
+-- unfinished turn, the longest idle first: idle is the seconds since the
+-- session's last turn ended.
+select sessions.id, coalesce(sessions.sandbox, '') as sandbox,
+       extract(epoch from now() - coalesce(last.ended_at, sessions.created_at))::float8 as idle
+from sessions
+left join lateral (select turns.ended_at from turns
+                   where turns.session_id = sessions.id order by turns.seq desc limit 1) as last on true
+where sessions.sandbox is not null and sessions.sandbox_state = 'awake'
+  and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
+order by idle desc, sessions.id
+limit @max;
 
 -- name: DispatchTurn :execrows
 -- Dispatches the turn if it is still queued: it may have been cancelled since

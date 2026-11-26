@@ -129,7 +129,7 @@ func (suite suite) testCreatedBy(t *testing.T) {
 	}
 	senders := map[uuid.UUID]uuid.UUID{}
 	for session, sender := range map[uuid.UUID]uuid.UUID{created.ID: other.ID, nobodys.ID: user.ID, st.session(): uuid.Nil} {
-		sent, _, err := st.CreateTurn(ctx, session, sender, "hello", nil, 0, 50)
+		sent, _, err := st.CreateTurn(ctx, session, sender, "hello", nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -147,11 +147,14 @@ func (suite suite) testCreatedBy(t *testing.T) {
 		}
 	}
 
-	dispatches, err := st.DispatchTurns(ctx, 50)
+	dispatches, err := st.NextTurns(ctx, 50)
 	if err != nil || len(dispatches) != 3 {
-		t.Fatalf("DispatchTurns = %+v, %v, want 3 turns", dispatches, err)
+		t.Fatalf("NextTurns = %+v, %v, want 3 turns", dispatches, err)
 	}
 	for _, dispatch := range dispatches {
+		if dispatched, err := st.DispatchTurn(ctx, dispatch.TurnID); err != nil || !dispatched {
+			t.Fatalf("DispatchTurn = %t, %v", dispatched, err)
+		}
 		followed, err := st.FollowTurn(ctx, dispatch.TurnID)
 		if err != nil {
 			t.Fatal(err)

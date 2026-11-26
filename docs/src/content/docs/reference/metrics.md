@@ -11,7 +11,7 @@ each pod.
 
 | Metric | Description |
 | --- | --- |
-| `aviary_turn_queue_length` | Number of queued turns when a turn was accepted, that turn included. 0 for a turn that did not have to wait. |
+| `aviary_turn_queue_length` | Number of queued turns when a turn was accepted, that turn included. |
 | `aviary_turns_followed` | Turns that this Supervisor follows, by `harness`. |
 | `aviary_turns_ended_total` | Ended turns, by `harness`, `state` and, for a failed turn, `reason`. |
 | `aviary_turn_queue_duration_seconds` | Time that a turn waited to run, from its message until it left the queue, by `harness`. |

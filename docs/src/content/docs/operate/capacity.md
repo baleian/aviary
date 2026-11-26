@@ -5,16 +5,20 @@ description: How many turns run at once, what waits, and what happens when a par
 
 ## Turns
 
-`runtime.maxConcurrentTurns` is the number of turns that run at once, 50 by
-default. Each of them has an awake sandbox, of the size of its harness,
-which `runtime.harnesses` sets.
+A turn runs in the awake sandbox of its session, of the size of its harness,
+which `runtime.harnesses` sets, so the workers bound the turns that run at
+once: see [Sandboxes](#sandboxes). The turn of a session whose sandbox is
+awake runs at once. Other turns wait in a queue, in the order in which they
+were sent, and each leaves it as soon as a worker has taken its sandbox.
+When no worker has room, the sandbox that has been idle the longest is put
+to sleep to make room, and while every awake sandbox runs a turn, the queue
+waits for one of them to end.
 
-Further turns wait in a queue, in the order in which they were sent. Beyond
-`runtime.maxQueuedTurns`, 500 by default, new messages get 429, and a turn
-that is queued for longer than `runtime.maxQueueWaitSeconds`, 120 by
+Beyond `runtime.maxQueuedTurns`, 500 by default, new messages get 429, and a
+turn that is queued for longer than `runtime.maxQueueWaitSeconds`, 120 by
 default, expires. A turn fails if it takes longer than
-`runtime.maxStartupSeconds` to reach its harness, or runs for longer than
-`runtime.maxTurnSeconds`. See
+`runtime.maxStartupSeconds` to reach its harness after it leaves the queue,
+or runs for longer than `runtime.maxTurnSeconds`. See
 [Configuration](../reference/configuration.md#runtime) for all of them,
 and [Metrics](../reference/metrics.md) for the queue and the turns as
 they are.
@@ -23,14 +27,14 @@ they are.
 
 The workers of Agent Substrate hold the sandboxes while they are awake: the
 running turns, and the sessions that were in use within the last
-`sandboxes.idleSeconds`. A worker has the room of its `workers.resources`,
-and holds the sandboxes whose limits fit in it, so `workers.replicas` and
-`workers.resources` bound the sessions that are awake at once, and the
-resources that they take. A sleeping sandbox takes no room: its snapshot
-is in the [object storage](./storage.md#the-object-storage), and a session
-that exists costs only that. A turn whose sandbox finds no worker with room waits for one, and fails if
-none has room within `runtime.maxStartupSeconds`. To have more room, add
-workers, by hand or with an autoscaler of the WorkerPool.
+`sandboxes.idleSeconds` unless a queued turn needs their room. A worker has
+the room of its `workers.resources`, and holds the sandboxes whose limits
+fit in it, so `workers.replicas` and `workers.resources` bound the sessions
+that are awake at once, and the resources that they take. A sleeping
+sandbox takes no room: its snapshot is in the
+[object storage](./storage.md#the-object-storage), and a session that
+exists costs only that. To have more room, add workers, by hand or with an
+autoscaler of the WorkerPool.
 
 ## Replicas
 

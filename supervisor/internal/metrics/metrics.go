@@ -60,7 +60,7 @@ func New(harnesses, secretStoreKinds []string) *Metrics {
 		registry: prometheus.NewRegistry(),
 		queue: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "aviary_turn_queue_length",
-			Help:    "Number of turns waiting to run when a turn is accepted, including that turn. 0 if the turn did not have to wait.",
+			Help:    "Number of queued turns when a turn is accepted, including that turn.",
 			Buckets: []float64{0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000},
 		}),
 		followed: prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -148,8 +148,8 @@ func (m *Metrics) Handler() http.Handler {
 
 // Accepted records an accepted turn and the number of queued turns, including
 // it.
-func (m *Metrics) Accepted(waiting int) {
-	m.queue.Observe(float64(waiting))
+func (m *Metrics) Accepted(queued int) {
+	m.queue.Observe(float64(queued))
 }
 
 // Following counts a turn that this Supervisor follows, until the returned

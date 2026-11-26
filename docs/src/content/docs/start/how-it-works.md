@@ -28,16 +28,18 @@ them, and any replica serves any request.
 1. A client creates a project with a model provider and an agent that uses
    one of the provider's models, creates a session of the agent, and sends
    the session a message.
-2. The **Supervisor** records the message as a turn. If fewer turns are
-   running than the limit allows, a Supervisor takes the turn and follows it
-   until it ends. Otherwise the turn is queued, and queued turns run in the
-   order in which they were sent.
-3. The Supervisor has Substrate create the session's **sandbox** from the
+2. The **Supervisor** records the message as a turn and queues it. A
+   Supervisor has Substrate create the session's **sandbox** from the
    template of the agent's harness, or wake it if it sleeps, on a worker
-   that has room for it. It then gives the turn to the **runner** in the
-   sandbox. The runner starts the **harness** on the first turn and talks
-   to it over the [Agent Client Protocol](https://agentclientprotocol.com),
-   so it does not depend on which harness it runs.
+   that has room for it, and the turn leaves the queue. Queued turns get
+   their places in the order in which they were sent, and when no worker
+   has room, the sandbox that has been idle the longest is put to sleep to
+   make room.
+3. The Supervisor follows the turn until it ends, and gives it to the
+   **runner** in the sandbox. The runner starts the **harness** on the
+   first turn and talks to it over the
+   [Agent Client Protocol](https://agentclientprotocol.com), so it does not
+   depend on which harness it runs.
 4. The harness works on the message in its home, `/home`. It reaches the
    agent's provider and the session's MCP servers at their URLs, through
    the [egress gateway](../operate/egress.md), which puts their secrets in
@@ -48,8 +50,9 @@ them, and any replica serves any request.
 6. When the runner reports that the turn has ended, the Supervisor ends the
    turn and stores what the agent said and did. The harness and the files
    stay in the sandbox for the next turn. A session with no running turn is
-   put to sleep after a while: a [snapshot](../operate/storage.md#the-snapshot)
-   keeps its sandbox, which leaves its worker. The next message wakes the
+   put to sleep after a while, or when a queued turn needs its room: a
+   [snapshot](../operate/storage.md#the-snapshot) keeps its sandbox, which
+   leaves its worker. The next message wakes the
    session on a worker that has room, and the harness continues from there.
 
 ## What the Supervisor is connected to

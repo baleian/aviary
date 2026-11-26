@@ -32,12 +32,9 @@ const (
 	mcpServerSlug = "mcp_servers_project_slug"
 )
 
-// dispatchLock is the key of the advisory lock that serializes dispatching.
-const dispatchLock int64 = 0x617669617279 // "aviary"
-
 // queueLock is the key of the advisory lock that serializes counting the
 // queue and announcing it.
-const queueLock int64 = dispatchLock + 1
+const queueLock int64 = 0x61766961727a // "aviarz"
 
 type records struct {
 	pool    *pgxpool.Pool
@@ -997,7 +994,7 @@ func (s *records) ReplaceSecretStore(ctx context.Context, secrets store.SecretSt
 	return secretStoreFrom(row), err
 }
 
-func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting, maxRunning int) (store.Turn, int, error) {
+func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting int) (store.Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Turn{}, 0, err
@@ -1038,14 +1035,14 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 	if err := attach(ctx, queries, sessionID, id, attachments); err != nil {
 		return store.Turn{}, 0, err
 	}
-	waiting, err := queries.CountWaitingTurns(ctx, int64(maxRunning))
+	waiting, err := queries.CountQueuedTurns(ctx)
 	if err != nil {
 		return store.Turn{}, 0, err
 	}
 	if maxWaiting > 0 && waiting > int64(maxWaiting) {
 		return store.Turn{}, 0, store.ErrQueueFull
 	}
-	return turnFrom(row), int(max(waiting, 0)), tx.Commit(ctx)
+	return turnFrom(row), int(waiting), tx.Commit(ctx)
 }
 
 func (s *records) AnnounceQueue(ctx context.Context, announce func(queued []uuid.UUID) error) error {
@@ -1112,35 +1109,36 @@ func (s *records) TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.
 	return items, nil
 }
 
-func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatch, error) {
-	tx, err := s.pool.Begin(ctx)
+func (s *records) NextTurns(ctx context.Context, limit int) ([]store.QueuedTurn, error) {
+	rows, err := s.queries.NextTurns(ctx, int32(limit))
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
-	queries := s.queries.WithTx(tx)
-	// Dispatch on one Supervisor at a time, so that together they keep to the
-	// limit.
-	if err := queries.Lock(ctx, dispatchLock); err != nil {
-		return nil, err
-	}
-	rows, err := queries.NextTurns(ctx, int64(limit))
-	if err != nil {
-		return nil, err
-	}
-	dispatches := []store.Dispatch{}
+	next := make([]store.QueuedTurn, 0, len(rows))
 	for _, row := range rows {
-		taken, err := queries.DispatchTurn(ctx, row.TurnID)
-		if err != nil {
-			return nil, err
-		}
-		if taken == 1 {
-			dispatches = append(dispatches, store.Dispatch{
-				TurnID: row.TurnID, Harness: row.Harness, Waited: time.Duration(row.Waited * float64(time.Second)),
-			})
-		}
+		next = append(next, store.QueuedTurn{
+			TurnID: row.TurnID, SessionID: row.SessionID, Harness: row.Harness,
+			Sandbox: row.Sandbox, SandboxState: row.SandboxState, Waited: time.Duration(row.Waited * float64(time.Second)),
+		})
 	}
-	return dispatches, tx.Commit(ctx)
+	return next, nil
+}
+
+func (s *records) DispatchTurn(ctx context.Context, turnID uuid.UUID) (bool, error) {
+	taken, err := s.queries.DispatchTurn(ctx, turnID)
+	return taken == 1, err
+}
+
+func (s *records) IdleSandboxes(ctx context.Context, limit int) ([]store.IdleSandbox, error) {
+	rows, err := s.queries.IdleSandboxes(ctx, int32(limit))
+	if err != nil {
+		return nil, err
+	}
+	idle := make([]store.IdleSandbox, 0, len(rows))
+	for _, row := range rows {
+		idle = append(idle, store.IdleSandbox{SessionID: row.ID, Sandbox: row.Sandbox, Idle: time.Duration(row.Idle * float64(time.Second))})
+	}
+	return idle, nil
 }
 
 func (s *records) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool, error) {

@@ -147,18 +147,16 @@ sandboxes:
   localhost: ""
 
 runtime:
-  # Maximum number of turns that run at once. Further turns are queued in
-  # the order in which they arrive.
-  maxConcurrentTurns: 50
-  # Maximum number of queued turns. Beyond it, new messages are refused and
-  # the client is told to retry later. 0 means no limit.
+  # Maximum number of queued turns. A turn is queued until a worker has room
+  # for the sandbox of its session, and queued turns run in the order in
+  # which they arrive. Beyond it, new messages are refused and the client is
+  # told to retry later. 0 means no limit.
   maxQueuedTurns: 500
   # Seconds a turn may stay queued before it expires. 0 means no limit.
   maxQueueWaitSeconds: 120
-  # Seconds a turn may take to reach its harness, which includes creating or
-  # waking the sandbox, waiting for a worker with room for it and pulling the
-  # harness image onto the worker. A turn that takes longer fails. 0 means no
-  # limit.
+  # Seconds a turn may take to reach its harness after it leaves the queue,
+  # which includes waking the sandbox on its worker and pulling the harness
+  # image onto the worker. A turn that takes longer fails. 0 means no limit.
   maxStartupSeconds: 120
   # Seconds a turn may run after it leaves the queue, including the time it
   # waits for approval. A turn that runs longer fails, and what runs in its

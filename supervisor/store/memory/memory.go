@@ -795,7 +795,7 @@ func (s *Store) SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to st
 	}
 	session.Sandbox, session.SandboxState = to, ""
 	if to != "" {
-		session.SandboxState = store.SandboxAwake
+		session.SandboxState = store.SandboxAsleep
 	}
 	return true, nil
 }
@@ -1275,18 +1275,7 @@ func (s *Store) queued() []*turn {
 	return queued
 }
 
-// running counts the dispatching and running turns. The caller holds mu.
-func (s *Store) running() int {
-	running := 0
-	for _, turn := range s.created {
-		if turn.State == store.TurnDispatching || turn.State == store.TurnRunning {
-			running++
-		}
-	}
-	return running
-}
-
-func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting, maxRunning int) (store.Turn, int, error) {
+func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting int) (store.Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Turn{}, 0, err
@@ -1317,8 +1306,7 @@ func (s *Store) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text st
 		}
 		carried[i], names[i] = s.attachments[at], s.attachments[at].Name
 	}
-	// Queued turns that have room to run do not wait.
-	waiting := len(s.queued()) + 1 - max(0, maxRunning-s.running())
+	waiting := len(s.queued()) + 1
 	if maxWaiting > 0 && waiting > maxWaiting {
 		return store.Turn{}, 0, store.ErrQueueFull
 	}
@@ -1410,20 +1398,65 @@ func cloned(values []json.RawMessage) []json.RawMessage {
 	return cloned
 }
 
-func (s *Store) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatch, error) {
+func (s *Store) NextTurns(ctx context.Context, limit int) ([]store.QueuedTurn, error) {
 	if err := s.begin(ctx); err != nil {
 		return nil, err
 	}
 	defer s.mu.Unlock()
 	queued := s.queued()
-	room := min(max(limit-s.running(), 0), len(queued))
-	dispatches := make([]store.Dispatch, room)
-	for i, turn := range queued[:room] {
-		agent, now := s.agents[s.sessions[turn.SessionID].AgentID], s.now()
-		turn.State, turn.dispatchedAt = store.TurnDispatching, &now
-		dispatches[i] = store.Dispatch{TurnID: turn.ID, Harness: agent.Harness, Waited: now.Sub(turn.CreatedAt)}
+	next := make([]store.QueuedTurn, 0, min(limit, len(queued)))
+	now := s.now()
+	for _, turn := range queued[:min(limit, len(queued))] {
+		session := s.sessions[turn.SessionID]
+		next = append(next, store.QueuedTurn{
+			TurnID: turn.ID, SessionID: turn.SessionID, Harness: s.agents[session.AgentID].Harness,
+			Sandbox: session.Sandbox, SandboxState: session.SandboxState, Waited: now.Sub(turn.CreatedAt),
+		})
 	}
-	return dispatches, nil
+	return next, nil
+}
+
+func (s *Store) DispatchTurn(ctx context.Context, turnID uuid.UUID) (bool, error) {
+	if err := s.begin(ctx); err != nil {
+		return false, err
+	}
+	defer s.mu.Unlock()
+	turn, found := s.turns[turnID]
+	if !found || turn.State != store.TurnQueued {
+		return false, nil
+	}
+	now := s.now()
+	turn.State, turn.dispatchedAt = store.TurnDispatching, &now
+	return true, nil
+}
+
+func (s *Store) IdleSandboxes(ctx context.Context, limit int) ([]store.IdleSandbox, error) {
+	if err := s.begin(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	now := s.now()
+	var idle []store.IdleSandbox
+	for _, session := range s.sessions {
+		if session.Sandbox == "" || session.SandboxState != store.SandboxAwake {
+			continue
+		}
+		since := session.CreatedAt
+		if last := len(session.turns); last > 0 {
+			if session.turns[last-1].EndedAt == nil {
+				continue
+			}
+			since = *session.turns[last-1].EndedAt
+		}
+		idle = append(idle, store.IdleSandbox{SessionID: session.ID, Sandbox: session.Sandbox, Idle: now.Sub(since)})
+	}
+	slices.SortFunc(idle, func(one, other store.IdleSandbox) int {
+		if order := cmp.Compare(other.Idle, one.Idle); order != 0 {
+			return order
+		}
+		return bytes.Compare(one.SessionID[:], other.SessionID[:])
+	})
+	return idle[:min(limit, len(idle))], nil
 }
 
 func (s *Store) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool, error) {

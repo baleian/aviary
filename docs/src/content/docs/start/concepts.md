@@ -40,8 +40,8 @@ and the files of the session between turns. See
 
 ## Turn
 
-Each message that a user sends is a turn. A turn runs at once if fewer turns
-are running than the installation allows, and waits in a queue otherwise.
+Each message that a user sends is a turn. A turn runs as soon as a worker
+has room for the sandbox of its session, and waits in a queue until then.
 While it runs, what the agent says and does is streamed as events. When it
 has ended, it is kept as part of the conversation.
 

@@ -104,8 +104,8 @@ func (a announcing) EndSession(ctx context.Context, id uuid.UUID, reason string)
 	return session, err
 }
 
-func (a announcing) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting, maxRunning int) (store.Turn, int, error) {
-	turn, waiting, err := a.Store.CreateTurn(ctx, sessionID, by, text, attachments, maxWaiting, maxRunning)
+func (a announcing) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting int) (store.Turn, int, error) {
+	turn, waiting, err := a.Store.CreateTurn(ctx, sessionID, by, text, attachments, maxWaiting)
 	if err == nil {
 		a.changed(ctx, sessionID)
 	}

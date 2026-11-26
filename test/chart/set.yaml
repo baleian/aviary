@@ -44,7 +44,6 @@ sandboxes:
     - https://git.example.com:8443
   localhost: host.example.com
 runtime:
-  maxConcurrentTurns: 7
   maxQueuedTurns: 11
   maxQueueWaitSeconds: 13
   maxStartupSeconds: 17

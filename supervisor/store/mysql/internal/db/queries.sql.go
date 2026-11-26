@@ -281,18 +281,6 @@ func (q *Queries) CountQueuedTurns(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const countRunningTurns = `-- name: CountRunningTurns :one
-select count(*) from turns where state in ('dispatching', 'running')
-`
-
-// Counts the dispatching and running turns, which both take room to run.
-func (q *Queries) CountRunningTurns(ctx context.Context) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countRunningTurns)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countSandboxes = `-- name: CountSandboxes :many
 select sandbox_state as state, count(*) as sandboxes from sessions
 where sandbox is not null and ended_at is null
@@ -1152,6 +1140,53 @@ func (q *Queries) HoldAgent(ctx context.Context, id key.ID) (key.ID, error) {
 	var id_2 key.ID
 	err := row.Scan(&id_2)
 	return id_2, err
+}
+
+const idleSandboxes = `-- name: IdleSandboxes :many
+select sessions.id, coalesce(sessions.sandbox, '') as sandbox,
+       cast(timestampdiff(microsecond,
+                          coalesce((select last.ended_at from turns as last
+                                    where last.session_id = sessions.id order by last.seq desc limit 1),
+                                   sessions.created_at),
+                          now(6)) as signed) as idle
+from sessions
+where sessions.sandbox is not null and sessions.sandbox_state = 'awake'
+  and not exists (select 1 from turns
+                  where turns.session_id = sessions.id and turns.state in ('queued', 'dispatching', 'running'))
+order by idle desc, sessions.id
+limit ?
+`
+
+type IdleSandboxesRow struct {
+	ID      key.ID
+	Sandbox string
+	Idle    int64
+}
+
+// Lists the sessions whose sandboxes are recorded awake and that have no
+// unfinished turn, the longest idle first: idle is the microseconds since
+// the session's last turn ended.
+func (q *Queries) IdleSandboxes(ctx context.Context, limit int32) ([]IdleSandboxesRow, error) {
+	rows, err := q.db.QueryContext(ctx, idleSandboxes, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []IdleSandboxesRow
+	for rows.Next() {
+		var i IdleSandboxesRow
+		if err := rows.Scan(&i.ID, &i.Sandbox, &i.Idle); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const isAgentBusy = `-- name: IsAgentBusy :one
@@ -2436,7 +2471,9 @@ func (q *Queries) NextSeq(ctx context.Context, sessionID key.ID) (int64, error) 
 }
 
 const nextTurns = `-- name: NextTurns :many
-select turns.id as turn_id, agents.harness, cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
+select turns.id as turn_id, turns.session_id, agents.harness, coalesce(sessions.sandbox, '') as sandbox,
+       coalesce(sessions.sandbox_state, '') as sandbox_state,
+       cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
@@ -2446,11 +2483,15 @@ limit ?
 `
 
 type NextTurnsRow struct {
-	TurnID  key.ID
-	Harness string
-	Waited  int64
+	TurnID       key.ID
+	SessionID    key.ID
+	Harness      string
+	Sandbox      string
+	SandboxState string
+	Waited       int64
 }
 
+// Lists the oldest queued turns, with the sandboxes of their sessions.
 func (q *Queries) NextTurns(ctx context.Context, limit int32) ([]NextTurnsRow, error) {
 	rows, err := q.db.QueryContext(ctx, nextTurns, limit)
 	if err != nil {
@@ -2460,7 +2501,14 @@ func (q *Queries) NextTurns(ctx context.Context, limit int32) ([]NextTurnsRow, e
 	var items []NextTurnsRow
 	for rows.Next() {
 		var i NextTurnsRow
-		if err := rows.Scan(&i.TurnID, &i.Harness, &i.Waited); err != nil {
+		if err := rows.Scan(
+			&i.TurnID,
+			&i.SessionID,
+			&i.Harness,
+			&i.Sandbox,
+			&i.SandboxState,
+			&i.Waited,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -2827,7 +2875,7 @@ func (q *Queries) SetRole(ctx context.Context, arg SetRoleParams) error {
 
 const setSandbox = `-- name: SetSandbox :exec
 update sessions
-set sandbox_state = if(? is null, null, 'awake'),
+set sandbox_state = if(? is null, null, 'asleep'),
     sandbox = ?
 where id = ?
 `
@@ -2837,7 +2885,7 @@ type SetSandboxParams struct {
 	ID      key.ID
 }
 
-// A sandbox that is set is awake.
+// A sandbox that is set is asleep, as sandboxes are created.
 func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) error {
 	_, err := q.db.ExecContext(ctx, setSandbox, arg.Sandbox, arg.Sandbox, arg.ID)
 	return err

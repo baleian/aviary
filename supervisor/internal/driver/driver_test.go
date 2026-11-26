@@ -37,12 +37,11 @@ func install(t *testing.T, changes ...func(*Config)) *installation {
 	log := memorylog.New()
 	i := &installation{t: t, store: memorystore.New(), log: log, events: events.New(log), service: sandboxtest.New(t)}
 	i.config = Config{
-		Harnesses:          map[string]sandbox.Harness{"opencode": {Image: "registry.example.com/opencode@sha256:0123"}},
-		Hosts:              []sandbox.Host{{TLS: true, Name: "*", Port: 443}},
-		MaxConcurrentTurns: 50,
-		MaxStartup:         time.Minute,
-		MaxTurn:            time.Hour,
-		Sweep:              50 * time.Millisecond,
+		Harnesses:  map[string]sandbox.Harness{"opencode": {Image: "registry.example.com/opencode@sha256:0123"}},
+		Hosts:      []sandbox.Host{{TLS: true, Name: "*", Port: 443}},
+		MaxStartup: time.Minute,
+		MaxTurn:    time.Hour,
+		Sweep:      50 * time.Millisecond,
 	}
 	for _, change := range changes {
 		change(&i.config)
@@ -705,7 +704,7 @@ func TestTwoSupervisorsMakeOneSandboxForASession(t *testing.T) {
 	driver := New(i.config, i.service, i.store, i.events, metrics.New(nil, nil))
 	session := i.session(store.Agent{})
 	turn := i.send(driver, session, "hello")
-	if _, err := i.store.DispatchTurns(ctx, 1); err != nil {
+	if _, err := i.store.DispatchTurn(ctx, turn.ID); err != nil {
 		t.Fatal(err)
 	}
 	followed, err := i.store.FollowTurn(ctx, turn.ID)
@@ -922,7 +921,7 @@ func TestASessionRecordsWhetherItsSandboxIsAsleep(t *testing.T) {
 
 	// A turn wakes the sandbox, and giving the turn up puts it to sleep.
 	turn := i.send(driver, session, "hello")
-	if _, err := i.store.DispatchTurns(ctx, 1); err != nil {
+	if _, err := i.store.DispatchTurn(ctx, turn.ID); err != nil {
 		t.Fatal(err)
 	}
 	followed, err := i.store.FollowTurn(ctx, turn.ID)
@@ -981,13 +980,13 @@ func TestASessionRecordsThatItsSandboxIsLost(t *testing.T) {
 
 	// The sandbox was created after this Supervisor listed the sandboxes.
 	New(i.config, earlier{i.service, nil}, i.store, i.events, metrics.New(nil, nil)).look(ctx)
-	recorded("a look at sandboxes that were listed before the session's was created", store.SandboxAwake)
+	recorded("a look at sandboxes that were listed before the session's was created", store.SandboxAsleep)
 
 	// A queued turn has not ended.
 	turn := i.send(driver, session, "hello")
 	i.service.Lose(name)
 	driver.look(ctx)
-	recorded("the sandbox was deleted while a turn had not ended", store.SandboxAwake)
+	recorded("the sandbox was deleted while a turn had not ended", store.SandboxAsleep)
 	i.cancel(turn.ID, false)
 	driver.look(ctx)
 	recorded("the sandbox was deleted", store.SandboxLost)
@@ -1003,7 +1002,7 @@ func TestASessionRecordsThatItsSandboxIsLost(t *testing.T) {
 
 	// A turn is given up for another reason when its sandbox is gone.
 	turn = i.send(driver, session, "and then")
-	if _, err := i.store.DispatchTurns(ctx, 1); err != nil {
+	if _, err := i.store.DispatchTurn(ctx, turn.ID); err != nil {
 		t.Fatal(err)
 	}
 	followed, err := i.store.FollowTurn(ctx, turn.ID)

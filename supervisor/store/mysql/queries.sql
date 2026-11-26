@@ -62,9 +62,9 @@ select * from sessions where id = ?;
 update sessions set title = sqlc.arg(title) where id = sqlc.arg(id);
 
 -- name: SetSandbox :exec
--- A sandbox that is set is awake.
+-- A sandbox that is set is asleep, as sandboxes are created.
 update sessions
-set sandbox_state = if(sqlc.narg(sandbox) is null, null, 'awake'),
+set sandbox_state = if(sqlc.narg(sandbox) is null, null, 'asleep'),
     sandbox = sqlc.narg(sandbox)
 where id = sqlc.arg(id);
 
@@ -289,20 +289,36 @@ where turns.id = ?;
 -- name: CountQueuedTurns :one
 select count(*) from turns where state = 'queued';
 
--- name: CountRunningTurns :one
--- Counts the dispatching and running turns, which both take room to run.
-select count(*) from turns where state in ('dispatching', 'running');
-
 -- name: QueuedTurns :many
 select id from turns where state = 'queued' order by created_at, id;
 
 -- name: NextTurns :many
-select turns.id as turn_id, agents.harness, cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
+-- Lists the oldest queued turns, with the sandboxes of their sessions.
+select turns.id as turn_id, turns.session_id, agents.harness, coalesce(sessions.sandbox, '') as sandbox,
+       coalesce(sessions.sandbox_state, '') as sandbox_state,
+       cast(timestampdiff(microsecond, turns.created_at, now(6)) as signed) as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
+limit ?;
+
+-- name: IdleSandboxes :many
+-- Lists the sessions whose sandboxes are recorded awake and that have no
+-- unfinished turn, the longest idle first: idle is the microseconds since
+-- the session's last turn ended.
+select sessions.id, coalesce(sessions.sandbox, '') as sandbox,
+       cast(timestampdiff(microsecond,
+                          coalesce((select last.ended_at from turns as last
+                                    where last.session_id = sessions.id order by last.seq desc limit 1),
+                                   sessions.created_at),
+                          now(6)) as signed) as idle
+from sessions
+where sessions.sandbox is not null and sessions.sandbox_state = 'awake'
+  and not exists (select 1 from turns
+                  where turns.session_id = sessions.id and turns.state in ('queued', 'dispatching', 'running'))
+order by idle desc, sessions.id
 limit ?;
 
 -- name: DispatchTurn :execrows

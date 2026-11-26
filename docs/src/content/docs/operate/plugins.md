@@ -48,8 +48,8 @@ Aviary to a product that it has no plugin for, write one.
 
 1. **Implement the interface.** Its doc comments state what each operation
    guarantees, including when several Supervisors call it at once. The
-   interface works at the level of operations, such as "dispatch the oldest
-   queued turns within the limit", not of SQL statements or commands, so a
+   interface works at the level of operations, such as "dispatch the turn
+   if it is still queued", not of SQL statements or commands, so a
    plugin implements each one in the way that suits its product. A database
    plugin also manages its schema, with `Migrate` and `MigrateTo`. The
    in-memory implementations, `store/memory` and `events/memory`, are the

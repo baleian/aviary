@@ -268,6 +268,17 @@ func (q *Queries) ClearSessionMcpServers(ctx context.Context, sessionID uuid.UUI
 	return err
 }
 
+const countQueuedTurns = `-- name: CountQueuedTurns :one
+select count(*) from turns where state = 'queued'
+`
+
+func (q *Queries) CountQueuedTurns(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countQueuedTurns)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countSandboxes = `-- name: CountSandboxes :many
 select sandbox_state as state, count(*) as sandboxes from sessions
 where sandbox is not null and ended_at is null
@@ -298,24 +309,6 @@ func (q *Queries) CountSandboxes(ctx context.Context) ([]CountSandboxesRow, erro
 		return nil, err
 	}
 	return items, nil
-}
-
-const countWaitingTurns = `-- name: CountWaitingTurns :one
-select ((select count(*) from turns where state = 'queued')
-        - greatest(0, $1::bigint
-                      - (select count(*) from turns
-                         where ended_at is null and state in ('dispatching', 'running'))))::bigint as waiting
-`
-
-// Counts the queued turns that have no room to run among @max_running. The
-// count is negative if room is left. The dispatching and running turns are
-// found by ended_at, as wherever they are read: the unfinished turns have an
-// index, and the states alone would read every turn.
-func (q *Queries) CountWaitingTurns(ctx context.Context, maxRunning int64) (int64, error) {
-	row := q.db.QueryRow(ctx, countWaitingTurns, maxRunning)
-	var waiting int64
-	err := row.Scan(&waiting)
-	return waiting, err
 }
 
 const createAgent = `-- name: CreateAgent :one
@@ -1357,6 +1350,47 @@ func (q *Queries) HoldSession(ctx context.Context, id uuid.UUID) (uuid.UUID, err
 	return id_2, err
 }
 
+const idleSandboxes = `-- name: IdleSandboxes :many
+select sessions.id, coalesce(sessions.sandbox, '') as sandbox,
+       extract(epoch from now() - coalesce(last.ended_at, sessions.created_at))::float8 as idle
+from sessions
+left join lateral (select turns.ended_at from turns
+                   where turns.session_id = sessions.id order by turns.seq desc limit 1) as last on true
+where sessions.sandbox is not null and sessions.sandbox_state = 'awake'
+  and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
+order by idle desc, sessions.id
+limit $1
+`
+
+type IdleSandboxesRow struct {
+	ID      uuid.UUID
+	Sandbox string
+	Idle    float64
+}
+
+// Lists the sessions whose sandboxes are recorded awake and that have no
+// unfinished turn, the longest idle first: idle is the seconds since the
+// session's last turn ended.
+func (q *Queries) IdleSandboxes(ctx context.Context, max int32) ([]IdleSandboxesRow, error) {
+	rows, err := q.db.Query(ctx, idleSandboxes, max)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []IdleSandboxesRow
+	for rows.Next() {
+		var i IdleSandboxesRow
+		if err := rows.Scan(&i.ID, &i.Sandbox, &i.Idle); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const isAgentBusy = `-- name: IsAgentBusy :one
 select exists (select 1 from turns join sessions on sessions.id = turns.session_id
                where sessions.agent_id = $1 and turns.ended_at is null)
@@ -2355,26 +2389,29 @@ func (q *Queries) LockUnsentAttachments(ctx context.Context, arg LockUnsentAttac
 }
 
 const nextTurns = `-- name: NextTurns :many
-select turns.id as turn_id, agents.harness, extract(epoch from now() - turns.created_at)::float8 as waited
+select turns.id as turn_id, turns.session_id, agents.harness, coalesce(sessions.sandbox, '') as sandbox,
+       coalesce(sessions.sandbox_state, '') as sandbox_state,
+       extract(epoch from now() - turns.created_at)::float8 as waited
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
 where turns.state = 'queued'
 order by turns.created_at, turns.id
-limit greatest($1::bigint
-               - (select count(*) from turns as running
-                  where running.ended_at is null and running.state in ('dispatching', 'running')), 0)
+limit $1
 `
 
 type NextTurnsRow struct {
-	TurnID  uuid.UUID
-	Harness string
-	Waited  float64
+	TurnID       uuid.UUID
+	SessionID    uuid.UUID
+	Harness      string
+	Sandbox      string
+	SandboxState string
+	Waited       float64
 }
 
-// Lists the oldest queued turns that have room to run among @max_running.
-func (q *Queries) NextTurns(ctx context.Context, maxRunning int64) ([]NextTurnsRow, error) {
-	rows, err := q.db.Query(ctx, nextTurns, maxRunning)
+// Lists the oldest queued turns, with the sandboxes of their sessions.
+func (q *Queries) NextTurns(ctx context.Context, max int32) ([]NextTurnsRow, error) {
+	rows, err := q.db.Query(ctx, nextTurns, max)
 	if err != nil {
 		return nil, err
 	}
@@ -2382,7 +2419,14 @@ func (q *Queries) NextTurns(ctx context.Context, maxRunning int64) ([]NextTurnsR
 	var items []NextTurnsRow
 	for rows.Next() {
 		var i NextTurnsRow
-		if err := rows.Scan(&i.TurnID, &i.Harness, &i.Waited); err != nil {
+		if err := rows.Scan(
+			&i.TurnID,
+			&i.SessionID,
+			&i.Harness,
+			&i.Sandbox,
+			&i.SandboxState,
+			&i.Waited,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -2839,7 +2883,7 @@ func (q *Queries) SetRole(ctx context.Context, arg SetRoleParams) (Role, error) 
 const setSandbox = `-- name: SetSandbox :execrows
 update sessions
 set sandbox = nullif($1::text, ''),
-    sandbox_state = case when $1::text <> '' then 'awake' end
+    sandbox_state = case when $1::text <> '' then 'asleep' end
 where id = $2 and coalesce(sandbox, '') = $3::text
 `
 
@@ -2850,7 +2894,7 @@ type SetSandboxParams struct {
 }
 
 // Changes the session's sandbox only if it is still @was. An empty string
-// means none. A sandbox that is set is awake.
+// means none. A sandbox that is set is asleep, as sandboxes are created.
 func (q *Queries) SetSandbox(ctx context.Context, arg SetSandboxParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setSandbox, arg.Sandbox, arg.ID, arg.Was)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"sync"
@@ -80,7 +81,7 @@ func (s supervisor) sessionOf(harness string) uuid.UUID {
 // queue queues a message to the session, with no queue limit.
 func (s supervisor) queue(session uuid.UUID) store.Turn {
 	s.t.Helper()
-	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", nil, 0, 50)
+	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", nil, 0)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -88,21 +89,24 @@ func (s supervisor) queue(session uuid.UUID) store.Turn {
 }
 
 // dispatch dispatches the only queued turn.
-func (s supervisor) dispatch() store.Dispatch {
+func (s supervisor) dispatch() store.QueuedTurn {
 	s.t.Helper()
-	dispatches, err := s.DispatchTurns(ctx, 50)
+	next, err := s.NextTurns(ctx, 50)
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	if len(dispatches) != 1 {
-		s.t.Fatalf("dispatched %d turns, want 1", len(dispatches))
+	if len(next) != 1 {
+		s.t.Fatalf("%d turns are queued, want 1", len(next))
 	}
-	return dispatches[0]
+	if dispatched, err := s.DispatchTurn(ctx, next[0].TurnID); err != nil || !dispatched {
+		s.t.Fatalf("DispatchTurn = %t, %v", dispatched, err)
+	}
+	return next[0]
 }
 
 // running queues a message to the session, and dispatches and follows its
 // turn, which then runs.
-func (s supervisor) running(session uuid.UUID) store.Dispatch {
+func (s supervisor) running(session uuid.UUID) store.QueuedTurn {
 	s.t.Helper()
 	s.queue(session)
 	dispatch := s.dispatch()
@@ -142,7 +146,7 @@ func (suite suite) testCreateTurn(t *testing.T) {
 	if first.Seq != 1 || first.State != store.TurnQueued || first.Text != "hello" {
 		t.Errorf("first turn = %+v", first)
 	}
-	if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "again", nil, 0, 50); !errors.Is(err, store.ErrSessionBusy) {
+	if _, _, err := st.CreateTurn(ctx, session, uuid.Nil, "again", nil, 0); !errors.Is(err, store.ErrSessionBusy) {
 		t.Errorf("CreateTurn with an unfinished turn = %v, want ErrSessionBusy", err)
 	}
 	if _, _, err := st.CancelTurn(ctx, first.ID); err != nil {
@@ -151,7 +155,7 @@ func (suite suite) testCreateTurn(t *testing.T) {
 	if second := st.queue(session); second.Seq != 2 {
 		t.Errorf("second turn Seq = %d, want 2", second.Seq)
 	}
-	if _, _, err := st.CreateTurn(ctx, uuid.New(), uuid.Nil, "hello", nil, 0, 50); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := st.CreateTurn(ctx, uuid.New(), uuid.Nil, "hello", nil, 0); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("CreateTurn on a nonexistent session = %v, want ErrNotFound", err)
 	}
 }
@@ -187,7 +191,7 @@ func (suite suite) testConcurrentCreateTurn(t *testing.T) {
 	session := st.session()
 	var accepted, busy atomic.Int32
 	atOnce(20, func(int) {
-		_, _, err := st.CreateTurn(ctx, session, uuid.Nil, "hello", nil, 0, 50)
+		_, _, err := st.CreateTurn(ctx, session, uuid.Nil, "hello", nil, 0)
 		switch {
 		case err == nil:
 			accepted.Add(1)
@@ -205,13 +209,12 @@ func (suite suite) testConcurrentCreateTurn(t *testing.T) {
 func (suite suite) testCreateTurnQueueLimit(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	const maxWaiting, maxRunning = 2, 2
+	const maxWaiting = 2
 	send := func(session uuid.UUID) (int, error) {
-		_, waiting, err := st.CreateTurn(ctx, session, uuid.Nil, "hello", nil, maxWaiting, maxRunning)
+		_, waiting, err := st.CreateTurn(ctx, session, uuid.Nil, "hello", nil, maxWaiting)
 		return waiting, err
 	}
-	// The first two have room to run, so they do not wait.
-	for _, expected := range []int{0, 0, 1, 2} {
+	for _, expected := range []int{1, 2} {
 		if waiting, err := send(st.session()); err != nil || waiting != expected {
 			t.Fatalf("waiting = %d, want %d: %v", waiting, expected, err)
 		}
@@ -223,18 +226,16 @@ func (suite suite) testCreateTurnQueueLimit(t *testing.T) {
 	if turns, err := st.Turns(ctx, refused, math.MaxInt32, 10); err != nil || len(turns) != 0 {
 		t.Errorf("refused message left turns %v: %v", turns, err)
 	}
-
-	// Dispatched turns make no room in the queue until one of them ends.
-	dispatches, err := st.DispatchTurns(ctx, maxRunning)
-	if err != nil || len(dispatches) != maxRunning {
-		t.Fatalf("dispatched %d turns: %v", len(dispatches), err)
+	// A dispatched turn leaves room in the queue.
+	next, err := st.NextTurns(ctx, 1)
+	if err != nil || len(next) != 1 {
+		t.Fatalf("NextTurns = %+v, %v", next, err)
 	}
-	if _, err := send(refused); !errors.Is(err, store.ErrQueueFull) {
-		t.Errorf("CreateTurn beyond the queue limit = %v, want ErrQueueFull", err)
+	if dispatched, err := st.DispatchTurn(ctx, next[0].TurnID); err != nil || !dispatched {
+		t.Fatalf("DispatchTurn = %t, %v", dispatched, err)
 	}
-	st.end(dispatches[0].TurnID, false, store.Failure{Reason: store.FailureSandboxLost})
 	if waiting, err := send(refused); err != nil || waiting != 2 {
-		t.Errorf("waiting after a turn ended = %d, want 2: %v", waiting, err)
+		t.Errorf("waiting after a turn left the queue = %d, want 2: %v", waiting, err)
 	}
 }
 
@@ -247,8 +248,8 @@ func (suite suite) testConcurrentCreateTurnQueueLimit(t *testing.T) {
 	}
 	var accepted, refused atomic.Int32
 	atOnce(12, func(i int) {
-		// One turn has room to run and three may wait.
-		_, _, err := supervisors[i].CreateTurn(ctx, sessions[i], uuid.Nil, "hello", nil, 3, 1)
+		// Three may wait.
+		_, _, err := supervisors[i].CreateTurn(ctx, sessions[i], uuid.Nil, "hello", nil, 3)
 		switch {
 		case err == nil:
 			accepted.Add(1)
@@ -258,143 +259,92 @@ func (suite suite) testConcurrentCreateTurnQueueLimit(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if accepted.Load() != 4 || refused.Load() != 8 {
-		t.Errorf("of 12 concurrent messages, %d accepted and %d refused, want 4 and 8", accepted.Load(), refused.Load())
+	if accepted.Load() != 3 || refused.Load() != 9 {
+		t.Errorf("of 12 concurrent messages, %d accepted and %d refused, want 3 and 9", accepted.Load(), refused.Load())
 	}
 }
 
-// Concurrent messages that all have room to run do not count as waiting.
-func (suite suite) testConcurrentCreateTurnWithRoomToRun(t *testing.T) {
-	t.Parallel()
-	st := suite.open(t)
-	sessions := make([]uuid.UUID, 12)
-	for i := range sessions {
-		sessions[i] = st.session()
-	}
-	atOnce(len(sessions), func(i int) {
-		if _, waiting, err := st.CreateTurn(ctx, sessions[i], uuid.Nil, "hello", nil, 2, 50); err != nil || waiting != 0 {
-			t.Errorf("waiting = %d, want 0: %v", waiting, err)
-		}
-	})
-}
-
-func (suite suite) testDispatchTurns(t *testing.T) {
+// NextTurns lists the queue, oldest first, with the sandboxes of the
+// sessions. DispatchTurn takes a turn out of it once.
+func (suite suite) testNextTurns(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	var queued []store.Turn
 	for range 3 {
 		queued = append(queued, st.queue(st.session()))
 	}
-	dispatches, err := st.DispatchTurns(ctx, 2)
+	if _, err := st.SetSandbox(ctx, queued[1].SessionID, "", "sandbox-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSandboxState(ctx, queued[1].SessionID, "sandbox-1", store.SandboxAwake); err != nil {
+		t.Fatal(err)
+	}
+	next, err := st.NextTurns(ctx, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dispatches) != 2 || dispatches[0].TurnID != queued[0].ID || dispatches[1].TurnID != queued[1].ID {
-		t.Fatalf("DispatchTurns = %v, want the two oldest of %v", dispatches, queued)
+	if len(next) != 2 || next[0].TurnID != queued[0].ID || next[1].TurnID != queued[1].ID {
+		t.Fatalf("NextTurns = %+v, want the two oldest of %v", next, queued)
 	}
-	first := dispatches[0]
-	if first.Harness != "opencode" {
-		t.Errorf("dispatch = %+v, want harness opencode", first)
+	if first := next[0]; first.SessionID != queued[0].SessionID || first.Harness != "opencode" ||
+		first.Sandbox != "" || first.SandboxState != "" || first.Waited < 0 || first.Waited > time.Minute {
+		t.Errorf("first queued turn = %+v", first)
 	}
-	if state := st.turn(first.TurnID).State; state != store.TurnDispatching {
-		t.Errorf("dispatched turn state = %s, want dispatching", state)
+	if second := next[1]; second.Sandbox != "sandbox-1" || second.SandboxState != store.SandboxAwake {
+		t.Errorf("queued turn of a session with a sandbox = %+v", second)
 	}
 
-	// A turn counts against the limit from its dispatch to its end.
-	if _, err := st.FollowTurn(ctx, first.TurnID); err != nil {
+	for _, expected := range []bool{true, false} {
+		if dispatched, err := st.DispatchTurn(ctx, queued[0].ID); err != nil || dispatched != expected {
+			t.Errorf("DispatchTurn = %t, %v; want %t", dispatched, err, expected)
+		}
+	}
+	if state := st.turn(queued[0].ID).State; state != store.TurnDispatching {
+		t.Errorf("dispatched turn state = %s, want dispatching", state)
+	}
+	if _, _, err := st.CancelTurn(ctx, queued[1].ID); err != nil {
 		t.Fatal(err)
 	}
-	if more, err := st.DispatchTurns(ctx, 2); err != nil || len(more) != 0 {
-		t.Fatalf("dispatched %d turns beyond the limit: %v", len(more), err)
+	if dispatched, err := st.DispatchTurn(ctx, queued[1].ID); err != nil || dispatched {
+		t.Errorf("DispatchTurn of a cancelled turn = %t, %v; want false", dispatched, err)
 	}
-	st.end(first.TurnID, true, store.Failure{})
-	if last := st.dispatch(); last.TurnID != queued[2].ID {
-		t.Errorf("dispatched turn %s, want the queued one", last.TurnID)
+	if next, err := st.NextTurns(ctx, 50); err != nil || len(next) != 1 || next[0].TurnID != queued[2].ID {
+		t.Errorf("NextTurns after a dispatch and a cancellation = %+v, %v; want the last turn", next, err)
 	}
 }
 
-func (suite suite) testConcurrentDispatchTurns(t *testing.T) {
+// Supervisors that dispatch the same turns at once dispatch each of them
+// once.
+func (suite suite) testConcurrentDispatchTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	for range 20 {
 		st.queue(st.session())
 	}
 	supervisors := st.supervisors(8)
-	var mu sync.Mutex
-	var dispatched []uuid.UUID
+	var dispatched atomic.Int32
 	atOnce(len(supervisors), func(i int) {
-		dispatches, err := supervisors[i].DispatchTurns(ctx, 5)
+		next, err := supervisors[i].NextTurns(ctx, 50)
 		if err != nil {
 			t.Error(err)
+			return
 		}
-		mu.Lock()
-		defer mu.Unlock()
-		for _, dispatch := range dispatches {
-			dispatched = append(dispatched, dispatch.TurnID)
+		for _, turn := range next {
+			if taken, err := supervisors[i].DispatchTurn(ctx, turn.TurnID); err != nil {
+				t.Error(err)
+			} else if taken {
+				dispatched.Add(1)
+			}
 		}
 	})
-	slices.SortFunc(dispatched, func(a, b uuid.UUID) int { return slices.Compare(a[:], b[:]) })
-	if len(dispatched) != 5 || len(slices.Compact(dispatched)) != 5 {
-		t.Errorf("8 Supervisors with a limit of 5 dispatched %v", dispatched)
+	if dispatched.Load() != 20 {
+		t.Errorf("8 Supervisors dispatched %d of 20 turns", dispatched.Load())
 	}
 }
 
-// The limit also holds while messages arrive, when Supervisors that count the
-// running turns at the same time could pick different turns.
-func (suite suite) testConcurrentDispatchTurnsAndCreateTurn(t *testing.T) {
-	t.Parallel()
-	st := suite.open(t)
-	supervisors := st.supervisors(4)
-	sessions := make([]uuid.UUID, 8)
-	for i := range sessions {
-		sessions[i] = st.session()
-	}
-	for range 20 {
-		var coming atomic.Bool
-		coming.Store(true)
-		var dispatching sync.WaitGroup
-		for _, supervisor := range supervisors {
-			dispatching.Go(func() {
-				for coming.Load() {
-					if _, err := supervisor.DispatchTurns(ctx, 1); err != nil {
-						t.Error(err)
-						return
-					}
-				}
-			})
-		}
-		turns := make([]uuid.UUID, len(sessions))
-		atOnce(len(sessions), func(i int) {
-			turn, _, err := st.CreateTurn(ctx, sessions[i], uuid.Nil, "hello", nil, 0, 1)
-			if err != nil {
-				t.Error(err)
-			}
-			turns[i] = turn.ID
-		})
-		coming.Store(false)
-		dispatching.Wait()
-		dispatched, err := st.DispatchedTurns(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(dispatched) > 1 {
-			t.Fatalf("4 Supervisors with a limit of 1 dispatched %d turns", len(dispatched))
-		}
-		// End the turns so that each session can take the next message.
-		for _, turn := range turns {
-			if _, _, err := st.CancelTurn(ctx, turn); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, turn := range dispatched {
-			st.end(turn.ID, false, store.Failure{Reason: store.FailureSandboxLost})
-		}
-	}
-}
-
-// A turn cancelled during a dispatch either ends without being dispatched, or
-// is dispatched with its cancellation requested, never both.
-func (suite suite) testConcurrentDispatchTurnsAndCancelTurn(t *testing.T) {
+// A turn cancelled during its dispatch either ends without being dispatched,
+// or is dispatched with its cancellation requested, never both.
+func (suite suite) testConcurrentDispatchTurnAndCancelTurn(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	dispatcher := st.another()
@@ -402,60 +352,75 @@ func (suite suite) testConcurrentDispatchTurnsAndCancelTurn(t *testing.T) {
 	for i := range turns {
 		turns[i] = st.queue(st.session())
 	}
-	var dispatches []store.Dispatch
-	atOnce(len(turns)+1, func(i int) {
-		if i == len(turns) {
+	dispatched := make([]bool, len(turns))
+	atOnce(2*len(turns), func(i int) {
+		if i < len(turns) {
 			var err error
-			if dispatches, err = dispatcher.DispatchTurns(ctx, len(turns)); err != nil {
+			if dispatched[i], err = dispatcher.DispatchTurn(ctx, turns[i].ID); err != nil {
 				t.Error(err)
 			}
 			return
 		}
-		if _, _, err := st.CancelTurn(ctx, turns[i].ID); err != nil {
+		if _, _, err := st.CancelTurn(ctx, turns[i-len(turns)].ID); err != nil {
 			t.Error(err)
 		}
 	})
-	dispatched := map[uuid.UUID]bool{}
-	for _, dispatch := range dispatches {
-		dispatched[dispatch.TurnID] = true
-	}
-	for _, queued := range turns {
+	for i, queued := range turns {
 		turn := st.turn(queued.ID)
 		ended := turn.State == store.TurnCancelled && turn.EndedAt != nil
 		asked := turn.State == store.TurnDispatching && turn.EndedAt == nil && turn.CancelRequestedAt != nil
-		if (dispatched[turn.ID] && !asked) || (!dispatched[turn.ID] && !ended) {
-			t.Errorf("turn cancelled during DispatchTurns = %+v, dispatched %t", turn, dispatched[turn.ID])
+		if (dispatched[i] && !asked) || (!dispatched[i] && !ended) {
+			t.Errorf("turn cancelled during DispatchTurn = %+v, dispatched %t", turn, dispatched[i])
 		}
 	}
 }
 
-// A turn that waits for approval counts against the limit, since its sandbox
-// keeps running.
-func (suite suite) testDispatchTurnsCountsAwaitingApproval(t *testing.T) {
+// IdleSandboxes lists the awake sandboxes of the sessions that have no
+// unfinished turn, the longest idle first.
+func (suite suite) testIdleSandboxes(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
-	// One turn has room to run.
-	send := func() (uuid.UUID, int) {
+	sandboxOf := func(session uuid.UUID, name, state string) {
 		t.Helper()
-		turn, waiting, err := st.CreateTurn(ctx, st.session(), uuid.Nil, "hello", nil, 0, 1)
-		if err != nil {
+		if _, err := st.SetSandbox(ctx, session, "", name); err != nil {
 			t.Fatal(err)
 		}
-		return turn.ID, waiting
+		if err := st.SetSandboxState(ctx, session, name, state); err != nil {
+			t.Fatal(err)
+		}
 	}
-	first, _ := send()
-	dispatches, err := st.DispatchTurns(ctx, 1)
-	if err != nil || len(dispatches) != 1 || dispatches[0].TurnID != first {
-		t.Fatalf("DispatchTurns = %+v, want the first turn: %v", dispatches, err)
+	// Two sessions whose turns ended, one after the other.
+	var ended []uuid.UUID
+	for i := range 2 {
+		session := st.session()
+		st.queue(session)
+		st.end(st.dispatch().TurnID, true, store.Failure{})
+		sandboxOf(session, fmt.Sprintf("idle-%d", i), store.SandboxAwake)
+		ended = append(ended, session)
 	}
-	if err := st.AddApproval(ctx, first, "1", []byte(`{}`)); err != nil {
+	busy := st.session()
+	sandboxOf(busy, "busy", store.SandboxAwake)
+	st.queue(busy)
+	asleep := st.session()
+	sandboxOf(asleep, "asleep", store.SandboxAsleep)
+
+	idle, err := st.IdleSandboxes(ctx, 50)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, waiting := send(); waiting != 1 {
-		t.Errorf("waiting = %d while the running turn awaits approval, want 1", waiting)
+	// The stores of the other tests have idle sandboxes too.
+	var mine []store.IdleSandbox
+	for _, each := range idle {
+		if slices.Contains(ended, each.SessionID) || each.SessionID == busy || each.SessionID == asleep {
+			mine = append(mine, each)
+		}
 	}
-	if dispatches, err := st.DispatchTurns(ctx, 1); err != nil || len(dispatches) != 0 {
-		t.Errorf("DispatchTurns while the running turn awaits approval = %+v, want none: %v", dispatches, err)
+	if len(mine) != 2 || mine[0].SessionID != ended[0] || mine[0].Sandbox != "idle-0" || mine[1].SessionID != ended[1] ||
+		mine[0].Idle < mine[1].Idle || mine[1].Idle < 0 {
+		t.Errorf("IdleSandboxes = %+v, want the two sessions whose turns ended, the earlier first", mine)
+	}
+	if one, err := st.IdleSandboxes(ctx, 1); err != nil || len(one) != 1 {
+		t.Errorf("IdleSandboxes up to 1 = %+v, %v", one, err)
 	}
 }
 
@@ -585,8 +550,8 @@ func (suite suite) testCancelTurn(t *testing.T) {
 	if again, unended, err := st.CancelTurn(ctx, queued.ID); err != nil || unended || again.State != store.TurnCancelled {
 		t.Errorf("second CancelTurn of a queued turn = %+v, %t: %v", again, unended, err)
 	}
-	if dispatches, err := st.DispatchTurns(ctx, 50); err != nil || len(dispatches) != 0 {
-		t.Errorf("DispatchTurns after CancelTurn = %v, want none: %v", dispatches, err)
+	if next, err := st.NextTurns(ctx, 50); err != nil || len(next) != 0 {
+		t.Errorf("NextTurns after CancelTurn = %v, want none: %v", next, err)
 	}
 
 	// A dispatched turn is only marked, and ends when its harness has stopped.
@@ -997,7 +962,7 @@ func (suite suite) testCancelledContext(t *testing.T) {
 	session := st.session()
 	gone, leave := context.WithCancel(ctx)
 	leave()
-	if _, _, err := st.CreateTurn(gone, session, uuid.Nil, "hello", nil, 0, 50); err == nil {
+	if _, _, err := st.CreateTurn(gone, session, uuid.Nil, "hello", nil, 0); err == nil {
 		t.Error("CreateTurn succeeded with a cancelled context")
 	}
 	if turns, err := st.Turns(ctx, session, math.MaxInt32, 10); err != nil || len(turns) != 0 {

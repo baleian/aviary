@@ -1198,7 +1198,7 @@ func (s *records) ReplaceSecretStore(ctx context.Context, secrets store.SecretSt
 	return s.SecretStore(ctx, secrets.ID)
 }
 
-func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting, maxRunning int) (store.Turn, int, error) {
+func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting int) (store.Turn, int, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return store.Turn{}, 0, err
@@ -1239,16 +1239,9 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 		if err := attach(ctx, queries, sessionID, id, attachments); err != nil {
 			return err
 		}
-		queued, err := queries.CountQueuedTurns(ctx)
-		if err != nil {
+		if waiting, err = queries.CountQueuedTurns(ctx); err != nil {
 			return err
 		}
-		running, err := queries.CountRunningTurns(ctx)
-		if err != nil {
-			return err
-		}
-		// Queued turns that have room to run do not wait.
-		waiting = queued - max(0, int64(maxRunning)-running)
 		if maxWaiting > 0 && waiting > int64(maxWaiting) {
 			return store.ErrQueueFull
 		}
@@ -1259,7 +1252,7 @@ func (s *records) CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text 
 	if err != nil {
 		return store.Turn{}, 0, err
 	}
-	return turn, int(max(waiting, 0)), nil
+	return turn, int(waiting), nil
 }
 
 func (s *records) AnnounceQueue(ctx context.Context, announce func(queued []uuid.UUID) error) error {
@@ -1332,39 +1325,36 @@ func (s *records) TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.
 	return items, nil
 }
 
-func (s *records) DispatchTurns(ctx context.Context, limit int) ([]store.Dispatch, error) {
-	var dispatches []store.Dispatch
-	err := s.within(ctx, func(queries *db.Queries) error {
-		dispatches = []store.Dispatch{}
-		// Dispatch on one Supervisor at a time, so that together they keep to
-		// the limit.
-		if _, err := queries.Lock(ctx, dispatchLock); err != nil {
-			return err
-		}
-		running, err := queries.CountRunningTurns(ctx)
-		if err != nil {
-			return err
-		}
-		room := int64(limit) - running
-		if room <= 0 {
-			return nil
-		}
-		rows, err := queries.NextTurns(ctx, int32(room))
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			taken, err := queries.DispatchTurn(ctx, row.TurnID)
-			if err != nil {
-				return err
-			}
-			if taken == 1 {
-				dispatches = append(dispatches, store.Dispatch{TurnID: uuid.UUID(row.TurnID), Harness: row.Harness, Waited: since(row.Waited)})
-			}
-		}
-		return nil
-	})
-	return dispatches, err
+func (s *records) NextTurns(ctx context.Context, limit int) ([]store.QueuedTurn, error) {
+	rows, err := s.queries.NextTurns(ctx, int32(limit))
+	if err != nil {
+		return nil, err
+	}
+	next := make([]store.QueuedTurn, 0, len(rows))
+	for _, row := range rows {
+		next = append(next, store.QueuedTurn{
+			TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), Harness: row.Harness,
+			Sandbox: row.Sandbox, SandboxState: row.SandboxState, Waited: since(row.Waited),
+		})
+	}
+	return next, nil
+}
+
+func (s *records) DispatchTurn(ctx context.Context, turnID uuid.UUID) (bool, error) {
+	taken, err := s.queries.DispatchTurn(ctx, key.ID(turnID))
+	return taken == 1, err
+}
+
+func (s *records) IdleSandboxes(ctx context.Context, limit int) ([]store.IdleSandbox, error) {
+	rows, err := s.queries.IdleSandboxes(ctx, int32(limit))
+	if err != nil {
+		return nil, err
+	}
+	idle := make([]store.IdleSandbox, 0, len(rows))
+	for _, row := range rows {
+		idle = append(idle, store.IdleSandbox{SessionID: uuid.UUID(row.ID), Sandbox: row.Sandbox, Idle: since(row.Idle)})
+	}
+	return idle, nil
 }
 
 func (s *records) CancelTurn(ctx context.Context, id uuid.UUID) (store.Turn, bool, error) {

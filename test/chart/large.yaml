@@ -7,7 +7,6 @@ sandboxes:
   idleSeconds: 1000002
   retentionSeconds: 31536000
 runtime:
-  maxConcurrentTurns: 1000003
   maxQueuedTurns: 1000004
   maxQueueWaitSeconds: 1000005
   maxStartupSeconds: 1000006

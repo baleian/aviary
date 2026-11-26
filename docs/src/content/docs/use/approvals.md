@@ -27,7 +27,7 @@ project says that an agent is waiting for you.
   them asks before its own tool reads a file that a message carries.
 - **A request waits as long as its turn may run.** The time spent waiting
   counts toward `runtime.maxTurnSeconds`, because the sandbox keeps running
-  and the turn keeps its place among the running turns. A turn whose time
+  and keeps its room on its worker. A turn whose time
   runs out while it waits fails as `timed_out`, and the session's next
   message continues the conversation. Cancelling the turn ends its requests
   as `cancelled`.

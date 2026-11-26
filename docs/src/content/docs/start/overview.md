@@ -27,8 +27,8 @@ own:
   any worker that has room.
 - **A bounded pool.** The workers that hold the awake sandboxes are of the
   number and the size that the installation gives them.
-- **A queue.** The number of turns that run at once is a setting. Further
-  turns wait in order.
+- **A queue.** A turn whose sandbox finds no worker with room waits in
+  order, and sessions that are not in use make room for it.
 - **Approval.** An agent can be made to ask a person before it acts.
 - **Access control.** With an identity provider, callers are authenticated
   and limited to what they may do in each project.

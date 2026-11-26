@@ -412,7 +412,7 @@ func (suite suite) testDeleteAgent(t *testing.T) {
 	if read, err := st.Session(ctx, theirs); err != nil || read.EndedAt != nil {
 		t.Errorf("session of another agent ended at %v: %v", read.EndedAt, err)
 	}
-	if _, _, err := st.CreateTurn(ctx, idle, uuid.Nil, "hello", nil, 0, 50); !errors.Is(err, store.ErrSessionEnded) {
+	if _, _, err := st.CreateTurn(ctx, idle, uuid.Nil, "hello", nil, 0); !errors.Is(err, store.ErrSessionEnded) {
 		t.Errorf("CreateTurn in a session of the deleted agent = %v, want ErrSessionEnded", err)
 	}
 
@@ -474,7 +474,7 @@ func (suite suite) testConcurrentDeleteAgent(t *testing.T) {
 					t.Error(err)
 				}
 			default:
-				switch _, _, err := supervisors[i].CreateTurn(ctx, id, uuid.Nil, "hello", nil, 0, 50); {
+				switch _, _, err := supervisors[i].CreateTurn(ctx, id, uuid.Nil, "hello", nil, 0); {
 				case err == nil:
 					accepted.Add(1)
 				case !errors.Is(err, store.ErrSessionBusy) && !errors.Is(err, store.ErrSessionEnded):
@@ -514,12 +514,12 @@ func (suite suite) testSetSandbox(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)
 	id := st.session()
-	// A sandbox that is set is awake.
+	// A sandbox that is set is asleep.
 	has := func(sandbox string) {
 		t.Helper()
 		state := ""
 		if sandbox != "" {
-			state = store.SandboxAwake
+			state = store.SandboxAsleep
 		}
 		if session, err := st.another().Session(ctx, id); err != nil || session.Sandbox != sandbox || session.SandboxState != state {
 			t.Errorf("sandbox = %q %q, want %q %q: %v", session.Sandbox, session.SandboxState, sandbox, state, err)
@@ -592,18 +592,17 @@ func (suite suite) testSetSandboxState(t *testing.T) {
 		// A session without a sandbox has no state.
 		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: ""},
 		{sandbox: "", state: store.SandboxAsleep, then: ""},
-		{from: "", to: "sandbox-1", then: store.SandboxAwake},
-		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: store.SandboxAsleep},
-		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: store.SandboxAsleep},
-		// A sandbox that the session does not have, such as an earlier one.
-		{sandbox: "sandbox-0", state: store.SandboxAwake, then: store.SandboxAsleep},
+		{from: "", to: "sandbox-1", then: store.SandboxAsleep},
 		{sandbox: "sandbox-1", state: store.SandboxAwake, then: store.SandboxAwake},
+		{sandbox: "sandbox-1", state: store.SandboxAwake, then: store.SandboxAwake},
+		// A sandbox that the session does not have, such as an earlier one.
+		{sandbox: "sandbox-0", state: store.SandboxAsleep, then: store.SandboxAwake},
+		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: store.SandboxAsleep},
 		{sandbox: "sandbox-1", state: store.SandboxLost, then: store.SandboxLost},
-		// The next sandbox is awake, whatever the one before it was.
+		// The next sandbox is asleep, whatever the one before it was.
 		{from: "sandbox-1", to: "", then: ""},
-		{sandbox: "sandbox-1", state: store.SandboxAsleep, then: ""},
-		{from: "", to: "sandbox-2", then: store.SandboxAwake},
-		{sandbox: "sandbox-2", state: store.SandboxAsleep, then: store.SandboxAsleep},
+		{sandbox: "sandbox-1", state: store.SandboxAwake, then: ""},
+		{from: "", to: "sandbox-2", then: store.SandboxAsleep},
 	} {
 		if step.from != step.to {
 			if set, err := st.SetSandbox(ctx, id, step.from, step.to); err != nil || !set {
@@ -651,10 +650,10 @@ func (suite suite) testSessionsWithSandbox(t *testing.T) {
 	awake, asleep, ended, deleted := st.session(), st.session(), st.session(), st.session()
 	st.session()
 	set(awake, "", "sandbox-1")
-	set(asleep, "", "sandbox-2")
-	if err := st.SetSandboxState(ctx, asleep, "sandbox-2", store.SandboxAsleep); err != nil {
+	if err := st.SetSandboxState(ctx, awake, "sandbox-1", store.SandboxAwake); err != nil {
 		t.Fatal(err)
 	}
+	set(asleep, "", "sandbox-2")
 	set(ended, "", "sandbox-3")
 	if _, err := st.EndSession(ctx, ended, ""); err != nil {
 		t.Fatal(err)
@@ -678,7 +677,7 @@ func (suite suite) testSessionsWithSandbox(t *testing.T) {
 		case asleep:
 			sandbox, state = "sandbox-2", store.SandboxAsleep
 		case ended:
-			sandbox, state = "sandbox-3", store.SandboxAwake
+			sandbox, state = "sandbox-3", store.SandboxAsleep
 		}
 		if session.Sandbox != sandbox || session.SandboxState != state || (session.EndedAt != nil) != (session.ID == ended) ||
 			session.AgentID != read.AgentID || !session.CreatedAt.Equal(read.CreatedAt) {
@@ -943,11 +942,11 @@ func (suite suite) testEndSession(t *testing.T) {
 	}
 
 	// It refuses messages with ErrSessionEnded, even when the queue is full.
-	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", nil, 0, 50); !errors.Is(err, store.ErrSessionEnded) {
+	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", nil, 0); !errors.Is(err, store.ErrSessionEnded) {
 		t.Errorf("CreateTurn on an ended session = %v, want ErrSessionEnded", err)
 	}
 	st.queue(st.session())
-	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", nil, 1, 0); !errors.Is(err, store.ErrSessionEnded) {
+	if _, _, err := st.CreateTurn(ctx, id, uuid.Nil, "again", nil, 1); !errors.Is(err, store.ErrSessionEnded) {
 		t.Errorf("CreateTurn on an ended session with a full queue = %v, want ErrSessionEnded", err)
 	}
 	if turns, err := st.Turns(ctx, id, math.MaxInt32, 10); err != nil || len(turns) != 1 || turns[0].ID != dispatch.TurnID {
@@ -990,7 +989,7 @@ func (suite suite) testConcurrentEndSessionAndCreateTurn(t *testing.T) {
 				}
 				return
 			}
-			switch _, _, err := supervisors[i].CreateTurn(ctx, id, uuid.Nil, "hello", nil, 0, 50); {
+			switch _, _, err := supervisors[i].CreateTurn(ctx, id, uuid.Nil, "hello", nil, 0); {
 			case err == nil:
 				accepted.Add(1)
 			case !errors.Is(err, store.ErrSessionBusy) && !errors.Is(err, store.ErrSessionEnded):
@@ -1218,7 +1217,7 @@ func (suite suite) testSessionTurn(t *testing.T) {
 		}
 	}
 
-	turn, _, err := st.CreateTurn(ctx, session.ID, sender.ID, "hello", nil, 0, 50)
+	turn, _, err := st.CreateTurn(ctx, session.ID, sender.ID, "hello", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -246,6 +246,9 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 		// reported lost by the runner otherwise.
 		switch err := d.sandboxes.Resume(following, id); {
 		case errors.Is(err, sandbox.ErrNoWorker):
+			// The sandbox lost its place after its turn was dispatched, as to
+			// another turn that made room. The next attempt has it again.
+			d.makeRoom(following)
 			return nil, errors.New("no worker has room for the session's sandbox yet")
 		case errors.Is(err, sandbox.ErrCrashed):
 			return nil, errors.New("the session's sandbox crashed while it woke up")
@@ -264,9 +267,9 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	if given {
 		return runner, nil
 	}
-	// The sandbox runs although the session records it as asleep, as when it
-	// was woken up by a request to it.
-	if turn.SandboxState == store.SandboxAsleep {
+	// The sandbox runs although the session does not record it as awake, as
+	// when the dispatcher or a request to it woke it up.
+	if turn.SandboxState != store.SandboxAwake {
 		d.awaken(ctx, r, id)
 	}
 	// The turn's provider or servers may differ from the last turn's.
@@ -328,22 +331,31 @@ func (d *Driver) awaken(ctx context.Context, r *run, id string) {
 // provide creates the session's sandbox, which may reach what egress
 // allows, and returns its name.
 func (d *Driver) provide(ctx context.Context, r *run, egress sandbox.Egress) (string, error) {
-	turn := r.turn
-	if !d.HasHarness(turn.Harness) {
-		return "", fmt.Errorf("harness %s is not configured", turn.Harness)
+	name, err := d.create(ctx, r.turn.SessionID, r.turn.Harness, egress)
+	if err != nil {
+		return "", err
 	}
-	err := d.sandboxes.Create(ctx, sandbox.Request{Session: turn.SessionID, Harness: turn.Harness, Egress: egress})
+	r.keep(name)
+	return name, nil
+}
+
+// create creates the session's sandbox for the harness, which may reach what
+// egress allows, records it as the session's, and returns its name.
+func (d *Driver) create(ctx context.Context, sessionID uuid.UUID, harness string, egress sandbox.Egress) (string, error) {
+	if !d.HasHarness(harness) {
+		return "", fmt.Errorf("harness %s is not configured", harness)
+	}
+	err := d.sandboxes.Create(ctx, sandbox.Request{Session: sessionID, Harness: harness, Egress: egress})
 	if err != nil {
 		return "", err
 	}
 	// The name derives from the session, so Supervisors that create the
 	// sandbox at the same time create the same one.
-	name := sandbox.Name(turn.SessionID)
-	if _, err := d.store.SetSandbox(ctx, turn.SessionID, "", name); err != nil {
+	name := sandbox.Name(sessionID)
+	if _, err := d.store.SetSandbox(ctx, sessionID, "", name); err != nil {
 		return "", err
 	}
-	slog.InfoContext(ctx, "sandbox created", "session", turn.SessionID, "sandbox", name)
-	r.keep(name)
+	slog.InfoContext(ctx, "sandbox created", "session", sessionID, "sandbox", name)
 	return name, nil
 }
 

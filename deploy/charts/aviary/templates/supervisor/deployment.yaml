@@ -100,8 +100,6 @@ spec:
             {{- include "aviary.objectStorageEnv" . | nindent 12 }}
             - name: AVIARY_HARNESSES
               value: {{ .Values.runtime.harnesses | toJson | quote }}
-            - name: AVIARY_MAX_CONCURRENT_TURNS
-              value: {{ .Values.runtime.maxConcurrentTurns | int64 | quote }}
             - name: AVIARY_MAX_QUEUED_TURNS
               value: {{ .Values.runtime.maxQueuedTurns | int64 | quote }}
             - name: AVIARY_MAX_QUEUE_WAIT_SECONDS

@@ -36,7 +36,6 @@ var settings = map[string]string{
 	objectStorage:      "s3://aviary/",
 	harnesses: `{"opencode": {"image": "registry.example/opencode@sha256:0123",
 		"resources": {"limits": {"cpu": "2", "memory": "4Gi"}}}}`,
-	maxConcurrentTurns: "50",
 	maxQueuedTurns:     "500",
 	maxQueueWait:       "120",
 	maxStartup:         "90",
@@ -68,7 +67,7 @@ func TestDriverConfig(t *testing.T) {
 			!opencode.Resources.Limits.Cpu().Equal(resource.MustParse("2")) || !opencode.Resources.Limits.Memory().Equal(resource.MustParse("4Gi")) {
 			t.Errorf("unexpected harnesses in config %+v", config)
 		}
-		if config.MaxConcurrentTurns != 50 || config.MaxQueuedTurns != 500 || config.MaxQueueWait != 2*time.Minute ||
+		if config.MaxQueuedTurns != 500 || config.MaxQueueWait != 2*time.Minute ||
 			config.MaxStartup != 90*time.Second || config.MaxTurn != 30*time.Minute || config.Idle != 5*time.Minute || config.Retention != 0 {
 			t.Errorf("unexpected limits in config %+v", config)
 		}
@@ -106,7 +105,6 @@ func TestDriverConfig(t *testing.T) {
 		{sandboxIdle, ""}, {sandboxIdle, "-1"}, {sandboxIdle, "5m"},
 		{objectStorage, "aviary"}, {objectStorage, "gs://aviary/"},
 		{sandboxRetention, ""}, {sandboxRetention, "-1"},
-		{maxConcurrentTurns, ""}, {maxConcurrentTurns, "0"}, {maxConcurrentTurns, "many"},
 		{maxQueuedTurns, ""}, {maxQueuedTurns, "-1"},
 		{maxQueueWait, ""}, {maxQueueWait, "-1"}, {maxQueueWait, "2m"},
 		{maxStartup, ""}, {maxStartup, "-1"},

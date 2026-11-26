@@ -447,12 +447,23 @@ type FollowedTurn struct {
 	Dispatched time.Duration
 }
 
-// Dispatch is a turn that DispatchTurns dispatched.
-type Dispatch struct {
-	TurnID  uuid.UUID
-	Harness string
-	// Waited is how long the turn was queued.
+// QueuedTurn is a turn of the queue, with the sandbox of its session.
+type QueuedTurn struct {
+	TurnID, SessionID uuid.UUID
+	Harness           string
+	// Sandbox and SandboxState are those of the turn's session, empty if it
+	// has no sandbox.
+	Sandbox, SandboxState string
+	// Waited is how long the turn has been queued.
 	Waited time.Duration
+}
+
+// IdleSandbox is the awake sandbox of a session that has no unfinished turn.
+type IdleSandbox struct {
+	SessionID uuid.UUID
+	Sandbox   string
+	// Idle is how long ago the session's last turn ended.
+	Idle time.Duration
 }
 
 // Origin identifies the source of a request from a sandbox: the turn that
@@ -633,7 +644,8 @@ type Store interface {
 	SetSessionTitle(ctx context.Context, id uuid.UUID, title string) (Session, error)
 
 	// SetSandbox changes the session's sandbox from from to to, where ""
-	// means none. A sandbox that is set is awake. It is a compare-and-swap: it reports false and changes nothing if the
+	// means none. A sandbox that is set is asleep, as sandboxes are created.
+	// It is a compare-and-swap: it reports false and changes nothing if the
 	// session's sandbox is not from, as when another Supervisor has changed
 	// it meanwhile. It returns ErrNotFound if there is no such session.
 	SetSandbox(ctx context.Context, sessionID uuid.UUID, from, to string) (bool, error)
@@ -759,15 +771,14 @@ type Store interface {
 
 	// CreateTurn queues text as the session's next turn. Its message carries
 	// the attachments, in their order, and gives those with the name of an
-	// earlier one another name. It also returns how many turns then wait to
-	// run, including the new one; queued turns that have room among
-	// maxRunning do not wait. It returns ErrNotFound if the session does not
-	// exist, ErrSessionEnded if it has ended, ErrSessionBusy if it has an
-	// unfinished turn, ErrUnknownAttachment if one of the attachments is not
-	// of the session, is named twice or is carried by another message, and
-	// ErrQueueFull if more than maxWaiting turns would wait. A maxWaiting of
-	// 0 means no limit.
-	CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting, maxRunning int) (Turn, int, error)
+	// earlier one another name. It also returns how many turns are then
+	// queued, including the new one. It returns ErrNotFound if the session
+	// does not exist, ErrSessionEnded if it has ended, ErrSessionBusy if it
+	// has an unfinished turn, ErrUnknownAttachment if one of the attachments
+	// is not of the session, is named twice or is carried by another message,
+	// and ErrQueueFull if more than maxWaiting turns would wait. A maxWaiting
+	// of 0 means no limit.
+	CreateTurn(ctx context.Context, sessionID, by uuid.UUID, text string, attachments []uuid.UUID, maxWaiting int) (Turn, int, error)
 
 	// AnnounceQueue calls announce with the queued turns in the order in which
 	// they will run. Calls are serialized across Supervisors, so that queue
@@ -789,10 +800,17 @@ type Store interface {
 	// turns without items are absent from the map.
 	TurnItems(ctx context.Context, turnIDs []uuid.UUID) (map[uuid.UUID][]json.RawMessage, error)
 
-	// DispatchTurns dispatches queued turns, oldest first, while fewer than
-	// limit turns are dispatched or running. It returns the turns that it
-	// dispatched.
-	DispatchTurns(ctx context.Context, limit int) ([]Dispatch, error)
+	// NextTurns returns up to limit queued turns, oldest first.
+	NextTurns(ctx context.Context, limit int) ([]QueuedTurn, error)
+
+	// DispatchTurn dispatches the turn if it is still queued, and reports
+	// whether it did.
+	DispatchTurn(ctx context.Context, turnID uuid.UUID) (bool, error)
+
+	// IdleSandboxes returns up to limit sessions whose sandboxes are
+	// recorded awake and that have no unfinished turn, the longest idle
+	// first.
+	IdleSandboxes(ctx context.Context, limit int) ([]IdleSandbox, error)
 
 	// CancelTurn cancels the turn. A queued turn ends at once; a dispatched
 	// turn is marked, and ends when its harness has stopped. CancelTurn returns

@@ -32,6 +32,17 @@ const (
 	// recheck is how often queued turns are dispatched without a Wake, which
 	// retries a failed dispatch.
 	recheck = 5 * time.Second
+	// nextTurns is the number of queued turns that a dispatch looks at.
+	nextTurns = 1000
+	// placing is how long a dispatch waits to learn whether a worker took a
+	// sandbox that wakes up. A worker that takes it books its place before
+	// the sandbox is restored on it, and no worker having room is told at
+	// once, so a sandbox that is still asleep by then is left to its turn's
+	// follower.
+	placing = time.Second
+	// booking is how often a dispatch looks whether a worker took a sandbox
+	// that wakes up.
+	booking = 50 * time.Millisecond
 	// Sweep is the default interval between sweeps.
 	Sweep = 10 * time.Second
 	// CancelGrace is the default time that a cancelled turn has to stop by
@@ -86,8 +97,8 @@ type Config struct {
 	// the session is ended.
 	Retention time.Duration
 	// MaxStartup limits the time from dispatch until the harness has the
-	// message, which includes creating or waking the sandbox, and waiting for
-	// a worker with room for it. Zero means no limit.
+	// message, which includes waking the sandbox on its worker. Zero means no
+	// limit.
 	MaxStartup time.Duration
 	// MaxTurn limits the time a turn runs after it is dispatched.
 	MaxTurn time.Duration
@@ -97,9 +108,6 @@ type Config struct {
 	// MaxQueuedTurns limits the number of queued turns. Further messages are
 	// refused. Zero means no limit.
 	MaxQueuedTurns int
-	// MaxConcurrentTurns limits the number of running turns. Further turns
-	// are queued in the order in which they are accepted.
-	MaxConcurrentTurns int
 	// Objects keeps the files that messages carry. Without it, messages
 	// carry none.
 	Objects Objects
@@ -190,10 +198,10 @@ func (d *Driver) Accept(ctx context.Context, sessionID, by uuid.UUID, text strin
 	if len(attachments) > d.config.MaxAttachments {
 		return store.Turn{}, ErrTooManyAttachments
 	}
-	turn, waiting, err := d.store.CreateTurn(ctx, sessionID, by, text, attachments, d.config.MaxQueuedTurns, d.config.MaxConcurrentTurns)
+	turn, queued, err := d.store.CreateTurn(ctx, sessionID, by, text, attachments, d.config.MaxQueuedTurns)
 	switch {
 	case err == nil:
-		d.metrics.Accepted(waiting)
+		d.metrics.Accepted(queued)
 	case errors.Is(err, store.ErrQueueFull):
 		d.metrics.Refused(metrics.QueueFull)
 	case errors.Is(err, store.ErrSessionBusy):
@@ -270,15 +278,13 @@ func (d *Driver) Run(ctx context.Context) {
 	go d.events.WatchAnswers(ctx, func(turnID uuid.UUID) {
 		d.tell(turnID, func(told *orders) chan struct{} { return told.answers })
 	})
-	ticker := time.NewTicker(recheck)
-	defer ticker.Stop()
+	// Dispatching waits for sandboxes to wake up, which must not hold up
+	// the sweeps that renew the leases of the turns.
+	go d.dispatching(ctx)
 	sweeping := time.NewTicker(d.config.Sweep)
 	defer sweeping.Stop()
 	for {
-		d.dispatch(ctx)
 		select {
-		case <-d.wake:
-		case <-ticker.C:
 		case <-sweeping.C:
 			d.sweep(ctx)
 		case <-ctx.Done():
@@ -287,21 +293,133 @@ func (d *Driver) Run(ctx context.Context) {
 	}
 }
 
+// dispatching dispatches queued turns whenever it is woken, and at least
+// every recheck, until ctx is done.
+func (d *Driver) dispatching(ctx context.Context) {
+	ticker := time.NewTicker(recheck)
+	defer ticker.Stop()
+	for {
+		d.dispatch(ctx)
+		select {
+		case <-d.wake:
+		case <-ticker.C:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// dispatch dispatches the queued turns whose sandboxes have a place on a
+// worker. The turn of a session whose sandbox is awake has one. Any other
+// turn gets one before it leaves the queue, in the order of the queue: once
+// a turn finds no worker with room, even after the idle sandboxes were put
+// to sleep, the turns behind it that need room wait too.
 func (d *Driver) dispatch(ctx context.Context) {
 	expired := d.expire(ctx)
-	dispatches, err := d.store.DispatchTurns(ctx, d.config.MaxConcurrentTurns)
+	next, err := d.store.NextTurns(ctx, nextTurns)
 	if err != nil {
-		slog.ErrorContext(ctx, "dispatch turns", "error", err)
+		slog.ErrorContext(ctx, "read queued turns", "error", err)
 		return
 	}
-	for _, dispatch := range dispatches {
-		d.metrics.Dispatched(dispatch.Harness, dispatch.Waited)
+	full, dispatched := false, false
+	for _, turn := range next {
+		if turn.SandboxState != store.SandboxAwake {
+			if full = full || !d.place(ctx, turn); full {
+				continue
+			}
+		}
+		taken, err := d.store.DispatchTurn(ctx, turn.TurnID)
+		if err != nil {
+			slog.ErrorContext(ctx, "dispatch turn", "turn", turn.TurnID, "error", err)
+			continue
+		}
+		if !taken {
+			continue
+		}
+		dispatched = true
+		d.metrics.Dispatched(turn.Harness, turn.Waited)
 		// If following fails here, a sweep takes the turn over.
-		d.follow(ctx, dispatch.TurnID)
+		d.follow(ctx, turn.TurnID)
 	}
-	if d.moved.Swap(false) || expired || len(dispatches) > 0 {
+	if d.moved.Swap(false) || expired || dispatched {
 		d.announcePositions(ctx)
 	}
+}
+
+// place wakes the sandbox of the queued turn's session on a worker, or
+// creates it if the session has none, and reports whether a worker had room
+// for it. Idle sandboxes are put to sleep, the longest idle first, until one
+// has. A sandbox that fails to wake up for another reason, as one that
+// crashed, is left to the turn's follower.
+func (d *Driver) place(ctx context.Context, turn store.QueuedTurn) bool {
+	id := turn.Sandbox
+	if id == "" {
+		created, err := d.create(ctx, turn.SessionID, turn.Harness, sandbox.Egress{})
+		if err != nil {
+			slog.WarnContext(ctx, "create sandbox", "session", turn.SessionID, "error", err)
+			return true
+		}
+		id = created
+	}
+	err := d.wakeUp(ctx, id)
+	for errors.Is(err, sandbox.ErrNoWorker) && d.makeRoom(ctx) {
+		err = d.wakeUp(ctx, id)
+	}
+	switch {
+	case errors.Is(err, sandbox.ErrNoWorker):
+		return false
+	case err == nil:
+		// The sandbox has its place even if its turn does not leave the
+		// queue, as when it is cancelled meanwhile, and can make room then.
+		if err := d.store.SetSandboxState(ctx, turn.SessionID, id, store.SandboxAwake); err != nil {
+			slog.ErrorContext(ctx, "record sandbox state", "session", turn.SessionID, "sandbox", id, "error", err)
+		}
+	}
+	return true
+}
+
+// wakeUp wakes the sandbox up, and returns once a worker has taken it, or the
+// error of the attempt. The sandbox goes on waking up on the worker.
+func (d *Driver) wakeUp(ctx context.Context, id string) error {
+	woken := make(chan error, 1)
+	go func() { woken <- d.sandboxes.Resume(ctx, id) }()
+	deadline := time.NewTimer(placing)
+	defer deadline.Stop()
+	look := time.NewTicker(booking)
+	defer look.Stop()
+	for {
+		select {
+		case err := <-woken:
+			return err
+		case <-look.C:
+			if seen, err := d.sandboxes.Sandbox(ctx, id); err == nil && seen.State != sandbox.Asleep {
+				return nil
+			}
+		case <-deadline.C:
+			return nil
+		}
+	}
+}
+
+// makeRoom puts to sleep the sandbox that has been idle the longest, so that
+// a turn that needs room gets it, and reports whether there was one.
+func (d *Driver) makeRoom(ctx context.Context) bool {
+	idle, err := d.store.IdleSandboxes(ctx, 1)
+	if err != nil {
+		slog.ErrorContext(ctx, "list idle sandboxes", "error", err)
+		return false
+	}
+	if len(idle) == 0 {
+		return false
+	}
+	switch err := d.suspend(ctx, idle[0].SessionID, idle[0].Sandbox); {
+	case err == nil:
+		slog.InfoContext(ctx, "idle sandbox put to sleep to make room", "session", idle[0].SessionID, "sandbox", idle[0].Sandbox, "idle", idle[0].Idle)
+		return true
+	case !errors.Is(err, sandbox.ErrNotFound):
+		slog.ErrorContext(ctx, "put idle sandbox to sleep to make room", "session", idle[0].SessionID, "sandbox", idle[0].Sandbox, "error", err)
+	}
+	return false
 }
 
 // expire ends the turns that have been queued for longer than MaxQueueWait,
@@ -735,7 +853,7 @@ func (d *Driver) end(ctx context.Context, turnID uuid.UUID, succeeded bool, fail
 	}
 	if changed {
 		d.Ended(ctx, turn)
-		// The ended turn frees a slot under MaxConcurrentTurns.
+		// The session's sandbox can make room for a queued turn now.
 		d.Wake()
 	}
 	return true

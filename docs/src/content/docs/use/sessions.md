@@ -20,12 +20,13 @@ can be changed at any time, also after the session has ended.
 A message is a text, files, or both. A session runs one turn at a time: it
 takes the next message when its last turn has ended.
 
-A turn runs at once if fewer turns are running than the installation
-allows. Otherwise it is queued, and queued turns run in the order in which
-they were sent. A turn that waits for too long expires, and if too many
-turns are queued, new messages are refused for the moment. The limits are
-`runtime.maxConcurrentTurns`, `runtime.maxQueueWaitSeconds` and
-`runtime.maxQueuedTurns` in the
+A turn runs as soon as a worker has room for the session's sandbox, at once
+if the sandbox is awake. Until then it is queued, and queued turns run in
+the order in which they were sent: the turn's
+[events](../reference/api/events.md) tell its place in the queue. A turn
+that waits for too long expires, and if too many turns are queued, new
+messages are refused for the moment. The limits are
+`runtime.maxQueueWaitSeconds` and `runtime.maxQueuedTurns` in the
 [configuration](../reference/configuration.md#runtime).
 
 ## Files

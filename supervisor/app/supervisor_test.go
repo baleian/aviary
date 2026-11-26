@@ -99,11 +99,10 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 			"opencode": {Image: "registry.example.com/harness-opencode:1.0"},
 			"codex":    {Image: "registry.example.com/harness-codex:1.0"},
 		},
-		MaxStartup:         90 * time.Second,
-		MaxTurn:            30 * time.Minute,
-		MaxQueueWait:       2 * time.Minute,
-		MaxQueuedTurns:     500,
-		MaxConcurrentTurns: 50,
+		MaxStartup:     90 * time.Second,
+		MaxTurn:        30 * time.Minute,
+		MaxQueueWait:   2 * time.Minute,
+		MaxQueuedTurns: 500,
 	}
 	for _, change := range changes {
 		change(&config)
@@ -493,7 +492,7 @@ type runner struct {
 }
 
 // given waits for the turn to be dispatched to a runner, and returns the
-// runner. A turn with a free slot is dispatched immediately.
+// runner.
 func (i *installation) given(turn string) *runner {
 	i.t.Helper()
 	return &runner{Turn: i.service.TurnWith(i.t, turn), installation: i}

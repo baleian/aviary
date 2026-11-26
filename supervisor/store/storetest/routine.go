@@ -32,7 +32,7 @@ func Routine(t *testing.T, st store.Store) {
 	must("CreateAttachment", err)
 	unsent, err := s.CreateAttachment(ctx, store.Attachment{ID: uuid.New(), SessionID: session, Name: "unsent.txt", MediaType: "text/plain", Size: 1})
 	must("CreateAttachment", err)
-	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", []uuid.UUID{file.ID}, 500, 50)
+	turn, _, err := s.CreateTurn(ctx, session, uuid.Nil, "hello", []uuid.UUID{file.ID}, 500)
 	must("CreateTurn", err)
 	_, err = s.Attachment(ctx, file.ID)
 	must("Attachment", err)
@@ -57,6 +57,8 @@ func Routine(t *testing.T, st store.Store) {
 	must("StartTurn", err)
 	_, err = s.SessionTurn(ctx, session)
 	must("SessionTurn", err)
+	_, err = s.IdleSandboxes(ctx, 10)
+	must("IdleSandboxes", err)
 
 	must("AddApproval", s.AddApproval(ctx, turn.ID, "1", []byte(`{"options": [{"id": "once", "kind": "allow_once"}]}`)))
 	_, err = s.WaitingApprovals(ctx, turn.ID)
