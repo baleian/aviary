@@ -6,9 +6,8 @@
 //!   GET  /turns/{turn}/events                streams the turn's events
 //!   POST /turns/{turn}/cancel                cancels the turn
 //!   PUT  /turns/{turn}/approvals/{request}   answers an approval request
-//!   GET  /home                               packs the home as an archive
-//!   PUT  /home                               unpacks an archive into the home
 //!   PUT  /files/{path}                       writes a file that a message carries
+//!   GET  /healthz                            answers once the runner serves
 //!
 //! The prompt of a turn is the text of its message, and after it a link to
 //! each of the files that the message carries.
@@ -42,7 +41,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -76,7 +74,6 @@ use tokio::sync::watch;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 mod files;
-mod home;
 
 const HARNESS_COMMAND: &str = "AVIARY_HARNESS_COMMAND";
 const MAX_TOOL_OUTPUT: &str = "AVIARY_MAX_TOOL_OUTPUT_BYTES";
@@ -114,40 +111,39 @@ fn main() -> Result<(), Box<dyn Error>> {
         .block_on(serve())
 }
 
-/// Serves the HTTP API and runs turns until SIGTERM.
+/// Serves the HTTP API and runs turns until the process is killed.
 async fn serve() -> Result<(), Box<dyn Error>> {
     let address = env::var(ADDRESS).unwrap_or_else(|_| LISTENS.to_owned());
     let listener = TcpListener::bind(&address).await?;
     // Whoever starts the runner on port 0 reads the address from this line.
     let listens = listener.local_addr()?;
     println!("listening on {listens}");
-    // As PID 1 of its container, the runner must handle SIGTERM itself to
-    // stop when its pod is deleted.
+    // SIGTERM means that the worker of the sandbox is going away. The runner
+    // keeps serving, so that the sandbox can still be suspended, with the
+    // session in it, before the worker goes.
     let mut ended = signal(SignalKind::terminate())?;
+    tokio::spawn(async move {
+        while ended.recv().await.is_some() {
+            eprintln!("SIGTERM received; serving until the sandbox is suspended or deleted");
+        }
+    });
     let (orders, ordered) = mpsc::unbounded();
     let runner = Arc::new(Runner {
         turn: Mutex::new(None),
         changed: watch::Sender::new(()),
         orders,
-        unpacking: AtomicBool::new(false),
     });
     let mut routes = Router::new()
         .route("/turns/{turn}", put(start))
         .route("/turns/{turn}/events", get(events))
         .route("/turns/{turn}/cancel", post(cancel))
         .route("/turns/{turn}/approvals/{request}", put(answer))
-        // An archive of a home is as large as the home, and a file as large
-        // as the installation lets a message carry.
-        .route(
-            "/home",
-            get(home::send)
-                .put(home::receive)
-                .layer(DefaultBodyLimit::disable()),
-        )
+        // A file is as large as the installation lets a message carry.
         .route(
             "/files/{*path}",
             put(files::receive).layer(DefaultBodyLimit::disable()),
         )
+        .route("/healthz", get(healthy))
         .with_state(runner.clone());
     // On a loopback address, as in the tests, every caller is local.
     if !listens.ip().is_loopback() {
@@ -155,11 +151,13 @@ async fn serve() -> Result<(), Box<dyn Error>> {
     }
     let served = routes.into_make_service_with_connect_info::<Ours>();
     tokio::spawn(async move { axum::serve(listener, served).await });
-    tokio::select! {
-        () = run_turns(&runner, ordered) => {}
-        _ = ended.recv() => {}
-    }
+    run_turns(&runner, ordered).await;
     Ok(())
+}
+
+/// Answers once the runner serves. The sandbox is woken up when it does.
+async fn healthy() -> &'static str {
+    "ok\n"
 }
 
 /// Whether a connection comes from the runner's own pod, that is, from a
@@ -202,9 +200,6 @@ struct Runner {
     changed: watch::Sender<()>,
     /// Sends started turns to the harness loop.
     orders: mpsc::UnboundedSender<Order>,
-    /// Whether an archive is being unpacked into the home. No turn starts
-    /// meanwhile.
-    unpacking: AtomicBool,
 }
 
 struct Turn {
@@ -283,12 +278,6 @@ enum Told {
 }
 
 impl Runner {
-    /// Reports whether a turn is running.
-    fn running(&self) -> bool {
-        let turn = self.turn.lock().expect("turn lock poisoned");
-        turn.as_ref().is_some_and(|turn| !turn.ended)
-    }
-
     /// Appends an event to the running turn, if there is one.
     fn emit(&self, name: &'static str, data: &Value) {
         let mut turn = self.turn.lock().expect("turn lock poisoned");
@@ -356,10 +345,6 @@ async fn start(
         Some(turn) if turn.id == id => return StatusCode::NO_CONTENT,
         Some(turn) if !turn.ended => return StatusCode::CONFLICT,
         _ => {}
-    }
-    // Checked under the lock, as the unpacking checks the turn.
-    if runner.unpacking.load(Ordering::SeqCst) {
-        return StatusCode::CONFLICT;
     }
     let (tell, told) = mpsc::unbounded();
     *turn = Some(Turn {

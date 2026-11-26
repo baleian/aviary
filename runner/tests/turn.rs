@@ -293,24 +293,28 @@ async fn new_runner_resumes_the_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn runner_exits_on_sigterm() {
+async fn turn_runs_on_after_sigterm() {
     let home = Home::new();
     let mut runner = start(runner(&home)).await;
     runner.turn("t1", "say on ; sleep 60000").await;
     let mut events = runner.follow("t1", 0).await;
     assert_eq!(events.next().await.unwrap().name, "started");
-    // As when a sandbox is put to sleep and its pod is deleted.
+    // As when the worker of the sandbox goes away: the sandbox is to be
+    // suspended before it does, with the turn in it.
     let pid = runner.child.id().unwrap().to_string();
     let told = std::process::Command::new("kill")
         .args(["-TERM", &pid])
         .status()
         .unwrap();
     assert!(told.success());
-    let ended = time::timeout(Duration::from_secs(5), runner.child.wait())
-        .await
-        .expect("timed out waiting for the runner to exit")
-        .unwrap();
-    assert!(ended.success(), "{ended}");
+    // The runner would have exited by now if it took SIGTERM for its end.
+    time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        runner.child.try_wait().unwrap().is_none(),
+        "runner exited on SIGTERM"
+    );
+    assert_eq!(runner.healthy().await, StatusCode::OK);
+    assert_eq!(runner.turn("t1", "say on").await, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test(flavor = "multi_thread")]
