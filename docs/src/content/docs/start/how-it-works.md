@@ -11,7 +11,9 @@ Clients call the API of the **Supervisor**. The Supervisor has
 gVisor with a home of its own, on one of the **workers** of the
 installation, and gives the turns of the session to the **runner** in the
 sandbox through the router of Substrate. It keeps the files that messages
-carry in the **depot**.
+carry in the **depot**. When a session sleeps, a snapshot of its sandbox
+and its home is kept in the **store of the snapshots**, a volume or an S3
+bucket, and the session can wake from it on any worker that has room.
 
 A sandbox reaches the outside only through the **egress gateway** of
 Substrate, and only the hosts of its turn: the gateway asks a Supervisor for
