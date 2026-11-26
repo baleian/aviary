@@ -34,14 +34,40 @@ metadata:
   name: prometheus
   namespace: monitoring
 data:
-  # Scrapes only the Supervisors, the state metrics, the depots and the
-  # Egress Proxies, and keeps only the metrics that deploy/grafana/aviary.json
-  # charts.
+  # Scrapes only the Supervisors, the state metrics and the depots, and the
+  # components of Agent Substrate, and keeps only the metrics that
+  # deploy/grafana/aviary.json and deploy/grafana/substrate.json chart.
   # Prometheus reads the file when it starts.
   prometheus.yml: |
     global:
       scrape_interval: 15s
     scrape_configs:
+      # The API server, atelet, the router, the egress gateway and the
+      # controller, at their ports of metrics. The proxies of the router and
+      # of the gateway have their own, of other metrics.
+      - job_name: substrate
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: {names: [ate-system]}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            regex: prometheus|metrics
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_phase]
+            regex: Pending|Succeeded|Failed
+            action: drop
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: component
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: "\
+              (ate|atelet|atenet|rpc)_.+|\
+              process_(cpu_seconds_total|resident_memory_bytes)|go_goroutines"
+            action: keep
       - job_name: aviary-supervisor
         kubernetes_sd_configs:
           - role: pod

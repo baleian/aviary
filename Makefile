@@ -421,12 +421,13 @@ headlamp:
 	$(KUBECTL) --namespace headlamp rollout status deployment/headlamp --timeout 300s
 	@echo "Headlamp is at http://localhost:4466"
 
-# Installs Prometheus, which scrapes the metrics of Aviary, and Grafana with
-# the dashboard in deploy/grafana, at http://localhost:3000.
+# Installs Prometheus, which scrapes the metrics of Aviary and of Agent
+# Substrate, and Grafana with the dashboards in deploy/grafana, at
+# http://localhost:3000.
 grafana:
 	$(KUBECTL) create namespace monitoring --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) create configmap grafana-dashboards --namespace monitoring \
-		--from-file deploy/grafana/aviary.json --dry-run=client --output yaml | \
+		--from-file deploy/grafana/aviary.json --from-file deploy/grafana/substrate.json --dry-run=client --output yaml | \
 		$(KUBECTL) apply --server-side -f -
 	$(KUBECTL) apply -f hack/kind/prometheus.yaml -f hack/kind/grafana.yaml
 	$(KUBECTL) --namespace monitoring rollout status deployment/prometheus --timeout 300s

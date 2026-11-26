@@ -64,4 +64,5 @@ share:
 
 The Grafana dashboard in `deploy/grafana/aviary.json` charts the metrics of
 the Supervisors, of the state and of the depots, and can be imported into any
-Grafana with a Prometheus data source.
+Grafana with a Prometheus data source. `deploy/grafana/substrate.json`
+charts those of Agent Substrate.

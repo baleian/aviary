@@ -1,0 +1,1833 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Workers, placement, actors, snapshots and their store, sandbox resources, caches, routing and calls of the Agent Substrate that runs the sandboxes of Aviary, from the metrics that its components serve.",
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "type": "row",
+      "title": "Overview",
+      "id": 1,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Components up",
+      "description": "Pods of Substrate's components that the last scrape reached, of those that it found: the API servers, atelet on each node, the router, the egress gateway and the controller.",
+      "id": 2,
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(up{namespace=\"$namespace\", job=\"substrate\"})",
+          "legendFormat": "up",
+          "refId": "A",
+          "instant": true
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "count(up{namespace=\"$namespace\", job=\"substrate\"})",
+          "legendFormat": "found",
+          "refId": "B",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "text"}},
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {"titleSize": 13, "valueSize": 30},
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Workers",
+      "description": "Workers of the pools that are ready, and the number that their WorkerPools ask for. Fewer ready than desired for minutes means that the capacity did not arrive: no node, a quota, or a worker pod that cannot start.",
+      "id": 3,
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(ate_workerpool_ready_workers{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\"})",
+          "legendFormat": "ready",
+          "refId": "A",
+          "instant": true
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(ate_workerpool_desired_workers{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\"})",
+          "legendFormat": "desired",
+          "refId": "B",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "text"}},
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {"titleSize": 13, "valueSize": 30},
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Resume p95",
+      "description": "95th percentile of the time that the API server took to wake an actor in the selected range, from the request to a running actor.",
+      "id": 4,
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le) (increase(ate_actor_lifecycle_operation_duration_seconds_bucket{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\", ate_actor_operation_name=\"resume\"}[$__range])))",
+          "legendFormat": "resume",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "s", "color": {"mode": "fixed", "fixedColor": "text"}},
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {"titleSize": 13, "valueSize": 30},
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "No room",
+      "description": "Attempts in the selected range to place an actor that found no worker with room for it. A turn waits for room, and fails if none comes in time.",
+      "id": 5,
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(increase(ate_scheduler_assignment_duration_seconds_count{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_scheduler_outcome=\"no_capacity\"}[$__range])) or vector(0)",
+          "legendFormat": "attempts",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "text"}},
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {"titleSize": 13, "valueSize": 30},
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Crashes",
+      "description": "Actors that crashed in the selected range. A crashed sandbox is reverted to its last snapshot, and the turn that it ran fails.",
+      "id": 6,
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(increase(ate_actor_crashes_total{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\"}[$__range])) or vector(0)",
+          "legendFormat": "crashes",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "text", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {"titleSize": 13, "valueSize": 30},
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Oldest snapshot not stored",
+      "description": "Age of the oldest snapshot on a node that is not in the store yet. A healthy node stays below the upload delay plus one upload: until then, a sandbox whose node goes away loses its state since its last stored snapshot.",
+      "id": 7,
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "max(atelet_snapshot_undurable_age_max_seconds{namespace=\"$namespace\"})",
+          "legendFormat": "age",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "s", "color": {"mode": "fixed", "fixedColor": "text"}},
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {"titleSize": 13, "valueSize": 30},
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "row",
+      "title": "Workers and scheduling",
+      "id": 8,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Workers by state",
+      "description": "Workers of the pools by how full they are: idle, partial, at capacity, or unschedulable. Every API server reports the whole fleet, so the replicas are averaged before the sum.",
+      "id": 9,
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_worker_state) (avg by (ate_workerpool_namespace, ate_workerpool_name, ate_worker_state, ate_sandbox_class) (ate_workerpool_workers{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\"}))",
+          "legendFormat": "{{ate_worker_state}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "gradientMode": "opacity",
+            "lineWidth": 0,
+            "stacking": {"mode": "normal", "group": "A"}
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Desired and ready workers",
+      "description": "The workers that each WorkerPool asks for, and those that are ready.",
+      "id": 10,
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_workerpool_name) (ate_workerpool_desired_workers{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\"})",
+          "legendFormat": "{{ate_workerpool_name}} desired",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_workerpool_name) (ate_workerpool_ready_workers{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\"})",
+          "legendFormat": "{{ate_workerpool_name}} ready",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Placements per minute",
+      "description": "Attempts of the scheduler to place an actor on a worker, by outcome: assigned, no capacity, or error.",
+      "id": 11,
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_scheduler_outcome)(rate(ate_scheduler_assignment_duration_seconds_count{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{ate_scheduler_outcome}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Placement time",
+      "description": "Time of one attempt of the scheduler to place an actor, by percentile.",
+      "id": 12,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(ate_scheduler_assignment_duration_seconds_bucket{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\"}[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(ate_scheduler_assignment_duration_seconds_bucket{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\"}[$__rate_interval])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Placement errors per minute",
+      "description": "Attempts to place an actor that failed, by error.",
+      "id": 13,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (error_type)(rate(ate_scheduler_assignment_duration_seconds_count{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_scheduler_outcome=\"error\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{error_type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "row",
+      "title": "Actors",
+      "id": 14,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Operations per minute",
+      "description": "Operations of the API server on actors: create, resume, suspend, delete and the others.",
+      "id": 15,
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 23},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_actor_operation_name)(rate(ate_actor_lifecycle_operation_duration_seconds_count{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{ate_actor_operation_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Failed operations per minute",
+      "description": "Operations on actors that failed, by operation and error. ResourceExhausted on resume means that no worker had room.",
+      "id": 16,
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 23},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_actor_operation_name, error_type)(rate(ate_actor_lifecycle_operation_duration_seconds_count{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\", error_type!=\"\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{ate_actor_operation_name}} {{error_type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Crashes per minute",
+      "description": "Actors that crashed, by template.",
+      "id": 17,
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 23},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_template_name)(rate(ate_actor_crashes_total{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{ate_template_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Operation time p95",
+      "description": "95th percentile of the time of each operation on actors.",
+      "id": 18,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le, ate_actor_operation_name) (rate(ate_actor_lifecycle_operation_duration_seconds_bucket{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\"}[$__rate_interval])))",
+          "legendFormat": "{{ate_actor_operation_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Resume time p95 by snapshot",
+      "description": "95th percentile of the time to wake an actor, by the snapshot that it woke from: boot for a new actor, latest for its last snapshot.",
+      "id": 19,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 31},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le, ate_snapshot_kind, ate_snapshot_fidelity) (rate(ate_actor_lifecycle_operation_duration_seconds_bucket{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\", ate_actor_operation_name=\"resume\"}[$__rate_interval])))",
+          "legendFormat": "{{ate_snapshot_kind}} {{ate_snapshot_fidelity}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "row",
+      "title": "Snapshots on the nodes",
+      "id": 20,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Restore time p95 by phase",
+      "description": "95th percentile of each phase of a restore on a node: fetching the manifest, downloading the snapshot, unpacking the image, mounting volumes, and restoring the worker.",
+      "id": 21,
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 40},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le, ate_snapshot_phase) (rate(ate_actor_restore_duration_seconds_bucket{namespace=\"$namespace\", ate_template_name=~\"$template\"}[$__rate_interval])))",
+          "legendFormat": "{{ate_snapshot_phase}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Checkpoint time p95 by phase",
+      "description": "95th percentile of each phase of taking a snapshot on a node.",
+      "id": 22,
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 40},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le, ate_snapshot_phase) (rate(ate_actor_checkpoint_duration_seconds_bucket{namespace=\"$namespace\", ate_template_name=~\"$template\"}[$__rate_interval])))",
+          "legendFormat": "{{ate_snapshot_phase}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Restores and checkpoints per minute",
+      "description": "Restores and checkpoints on the nodes, by the kind of snapshot.",
+      "id": 23,
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 40},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_snapshot_kind)(rate(ate_actor_restore_duration_seconds_count{namespace=\"$namespace\", ate_template_name=~\"$template\", ate_snapshot_phase=\"total\"}[$__rate_interval])) * 60",
+          "legendFormat": "restore {{ate_snapshot_kind}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_snapshot_kind)(rate(ate_actor_checkpoint_duration_seconds_count{namespace=\"$namespace\", ate_template_name=~\"$template\", ate_snapshot_phase=\"total\"}[$__rate_interval])) * 60",
+          "legendFormat": "checkpoint {{ate_snapshot_kind}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Snapshot size p95 by file",
+      "description": "95th percentile of the size of each file of a snapshot, such as the memory pages and the archives of the file systems.",
+      "id": 24,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 48},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le, file_name) (rate(atelet_snapshot_size_bytes_bucket{namespace=\"$namespace\", ate_template_name=~\"$template\"}[$__rate_interval])))",
+          "legendFormat": "{{file_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Snapshot size p95 by template",
+      "description": "95th percentile of the size of the files of the snapshots of each template.",
+      "id": 25,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 48},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le, ate_template_name) (rate(atelet_snapshot_size_bytes_bucket{namespace=\"$namespace\", ate_template_name=~\"$template\"}[$__rate_interval])))",
+          "legendFormat": "{{ate_template_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "row",
+      "title": "Snapshots in the store",
+      "id": 26,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 56},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Uploads and detaches per minute",
+      "description": "Snapshots that the nodes uploaded to the store, and sandboxes whose snapshots left their nodes, with those that failed.",
+      "id": 27,
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 57},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(atelet_snapshot_upload_duration_seconds_count{namespace=\"$namespace\", error_type=\"\"}[$__rate_interval])) * 60",
+          "legendFormat": "uploaded",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(atelet_snapshot_upload_duration_seconds_count{namespace=\"$namespace\", error_type!=\"\"}[$__rate_interval])) * 60",
+          "legendFormat": "upload failed",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(atelet_snapshot_detach_duration_seconds_count{namespace=\"$namespace\", error_type=\"\"}[$__rate_interval])) * 60",
+          "legendFormat": "detached",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(atelet_snapshot_detach_duration_seconds_count{namespace=\"$namespace\", error_type!=\"\"}[$__rate_interval])) * 60",
+          "legendFormat": "detach failed",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Upload and detach time p95",
+      "description": "95th percentile of the time of an upload to the store, and of a detach, which deletes the files of a snapshot from its node.",
+      "id": 28,
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 57},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(atelet_snapshot_upload_duration_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "upload",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(atelet_snapshot_detach_duration_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "detach",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Overdue p95",
+      "description": "95th percentile of how long after it came due an upload or a detach started: near zero while the node keeps up.",
+      "id": 29,
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 57},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(atelet_snapshot_upload_overdue_duration_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "upload",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(atelet_snapshot_detach_overdue_duration_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "detach",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Actors waiting for an upload",
+      "description": "Actors on the nodes whose snapshot is past its upload delay and not in the store yet, by how overdue.",
+      "id": 30,
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 65},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_snapshot_upload_overdue_band) (atelet_snapshot_upload_overdue_actors{namespace=\"$namespace\"})",
+          "legendFormat": "{{ate_snapshot_upload_overdue_band}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "gradientMode": "opacity",
+            "lineWidth": 0,
+            "stacking": {"mode": "normal", "group": "A"}
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Oldest snapshot not stored, by node",
+      "description": "Age of the oldest snapshot of each node that is not in the store yet.",
+      "id": 31,
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 65},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "max by (pod) (atelet_snapshot_undurable_age_max_seconds{namespace=\"$namespace\"})",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "row",
+      "title": "Sandbox resources",
+      "id": 32,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 73},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU by template",
+      "description": "CPU that the awake sandboxes of each template use, as atelet samples them.",
+      "id": 33,
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 74},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_template_name) (rate(ate_actor_stats_cpu_time_seconds_total{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\"}[$__rate_interval]))",
+          "legendFormat": "{{ate_template_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:cores",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory by template",
+      "description": "Memory that the awake sandboxes of each template use, and their working set.",
+      "id": 34,
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 74},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_template_name) (ate_actor_stats_memory_usage_bytes{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\"})",
+          "legendFormat": "{{ate_template_name}} usage",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_template_name) (ate_actor_stats_memory_working_set_bytes{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\"})",
+          "legendFormat": "{{ate_template_name}} working set",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Sampled sandboxes",
+      "description": "Awake sandboxes of each template that the last sample measured.",
+      "id": 35,
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 74},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_template_name) (ate_actor_stats_sampled_actors{namespace=\"$namespace\", ate_workerpool_name=~\"$pool\", ate_template_name=~\"$template\"})",
+          "legendFormat": "{{ate_template_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "gradientMode": "opacity",
+            "lineWidth": 0,
+            "stacking": {"mode": "normal", "group": "A"}
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "row",
+      "title": "Node caches",
+      "id": 36,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 82},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Image cache per minute",
+      "description": "Lookups of images in the cache of the nodes, by outcome. A miss pulls and unpacks the image, which a wake on that node waits for.",
+      "id": 37,
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 83},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_imagecache_outcome)(rate(ate_imagecache_requests_total{namespace=\"$namespace\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{ate_imagecache_outcome}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "File cache size",
+      "description": "Disk that the file caches of the nodes take, by cache: the snapshots and the assets of the sandboxes.",
+      "id": 38,
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 83},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_filecache_name) (ate_filecache_size_bytes{namespace=\"$namespace\"})",
+          "legendFormat": "{{ate_filecache_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "File cache evictions per minute",
+      "description": "Entries that the file caches evicted. A steady rate at the budget means that the cache thrashes.",
+      "id": 39,
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 83},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_filecache_name)(rate(ate_filecache_evictions_total{namespace=\"$namespace\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{ate_filecache_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "File cache cleanups per minute",
+      "description": "Eviction passes over the file caches that had work to do, by outcome.",
+      "id": 40,
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 83},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (ate_filecache_name, ate_filecache_gc_outcome)(rate(ate_filecache_gc_passes_total{namespace=\"$namespace\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{ate_filecache_name}} {{ate_filecache_gc_outcome}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "row",
+      "title": "Router and egress gateway",
+      "id": 41,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 91},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Routed requests per minute",
+      "description": "Requests that the router, to the runners of the sandboxes, and the egress gateway, out of them, routed, by outcome.",
+      "id": 42,
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 92},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (component, ate_router_outcome)(rate(atenet_router_route_duration_seconds_count{namespace=\"$namespace\", ate_template_name=~\"$template\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{component}} {{ate_router_outcome}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:/min",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Routing time p95",
+      "description": "95th percentile of the time to route a request, by component and by whether it woke its sandbox.",
+      "id": 43,
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 92},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le, component, ate_router_resume) (rate(atenet_router_route_duration_seconds_bucket{namespace=\"$namespace\", ate_template_name=~\"$template\"}[$__rate_interval])))",
+          "legendFormat": "{{component}} {{ate_router_resume}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Parked requests",
+      "description": "Requests that the router holds while their sandbox wakes, those that it refused, and the time that they waited.",
+      "id": 44,
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 92},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(atenet_router_parking_active{namespace=\"$namespace\"})",
+          "legendFormat": "parked now",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum(rate(atenet_router_parking_rejected_total{namespace=\"$namespace\"}[$__rate_interval])) * 60",
+          "legendFormat": "refused /min",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(atenet_router_parking_wait_duration_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "wait p95 (s)",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "row",
+      "title": "Calls between components",
+      "id": 45,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 100},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Calls served per second",
+      "description": "gRPC calls that each component served.",
+      "id": 46,
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 101},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (component) (rate(rpc_server_call_duration_seconds_count{namespace=\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{component}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Calls served that failed",
+      "description": "gRPC calls that the components served with a status other than OK, by method and status, per second.",
+      "id": 47,
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 101},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (rpc_method, rpc_response_status_code) (rate(rpc_server_call_duration_seconds_count{namespace=\"$namespace\", rpc_response_status_code!=\"OK\"}[$__rate_interval]))",
+          "legendFormat": "{{rpc_method}} {{rpc_response_status_code}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Time to serve p95",
+      "description": "95th percentile of the time of the gRPC calls that the components served, by method.",
+      "id": 48,
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 101},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le, rpc_method) (rate(rpc_server_call_duration_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "{{rpc_method}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Calls made per second",
+      "description": "gRPC calls that each component made.",
+      "id": 49,
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 109},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (component) (rate(rpc_client_call_duration_seconds_count{namespace=\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{component}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Calls made that failed",
+      "description": "gRPC calls that the components made that ended with a status other than OK, by method and status, per second.",
+      "id": 50,
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 109},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (rpc_method, rpc_response_status_code) (rate(rpc_client_call_duration_seconds_count{namespace=\"$namespace\", rpc_response_status_code!=\"OK\"}[$__rate_interval]))",
+          "legendFormat": "{{rpc_method}} {{rpc_response_status_code}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Time of calls made p95",
+      "description": "95th percentile of the time of the gRPC calls that the components made, by method.",
+      "id": 51,
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 109},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "histogram_quantile(0.95, sum by (le, rpc_method) (rate(rpc_client_call_duration_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "{{rpc_method}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "row",
+      "title": "Processes",
+      "id": 52,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 117},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU by pod",
+      "description": "CPU that the processes of the components use.",
+      "id": 53,
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 118},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (pod) (rate(process_cpu_seconds_total{namespace=\"$namespace\", job=\"substrate\"}[$__rate_interval]))",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:cores",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory by pod",
+      "description": "Resident memory of the processes of the components.",
+      "id": 54,
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 118},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (pod) (process_resident_memory_bytes{namespace=\"$namespace\", job=\"substrate\"})",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Goroutines by pod",
+      "description": "Goroutines of the processes of the components.",
+      "id": 55,
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 118},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "sum by (pod) (go_goroutines{namespace=\"$namespace\", job=\"substrate\"})",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "lineWidth": 1}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["aviary", "substrate"],
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Data source",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "options": [],
+        "refresh": 1,
+        "regex": ""
+      },
+      {
+        "type": "query",
+        "name": "namespace",
+        "label": "Namespace",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "definition": "label_values(ate_workerpool_workers, namespace)",
+        "query": "label_values(ate_workerpool_workers, namespace)",
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "options": [],
+        "refresh": 2,
+        "regex": "",
+        "sort": 1
+      },
+      {
+        "type": "query",
+        "name": "pool",
+        "label": "Worker pool",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "definition": "label_values(ate_workerpool_workers{namespace=\"$namespace\"}, ate_workerpool_name)",
+        "query": "label_values(ate_workerpool_workers{namespace=\"$namespace\"}, ate_workerpool_name)",
+        "current": {
+          "text": ["All"],
+          "value": ["$__all"]
+        },
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "options": [],
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "allValue": ".*"
+      },
+      {
+        "type": "query",
+        "name": "template",
+        "label": "Template",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "definition": "label_values(ate_actor_lifecycle_operation_duration_seconds_count{namespace=\"$namespace\"}, ate_template_name)",
+        "query": "label_values(ate_actor_lifecycle_operation_duration_seconds_count{namespace=\"$namespace\"}, ate_template_name)",
+        "current": {
+          "text": ["All"],
+          "value": ["$__all"]
+        },
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "options": [],
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "allValue": ".*"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Agent Substrate",
+  "uid": "substrate",
+  "version": 1
+}
