@@ -4,10 +4,14 @@
 # server on the machine that runs the cluster, at the name that make deploy
 # gives that machine. Substrate keeps its records in the PostgreSQL that make
 # substrate installs, whose passwords make substrate writes in a values file
-# of its own, and its snapshots in the store of the chart.
+# of its own, and its snapshots in the store of the chart. atelet downloads
+# the releases of gVisor from the store as well, where make deploy copies
+# them, under the names that they have at storage.googleapis.com.
 substrate:
   atelet:
     localhostRegistry: kind-registry.aviary-data.svc.cluster.local:5000
+  gvisor:
+    location: s3://aviary/gvisor
 sandboxes:
   localhost: host.aviary-system.svc.cluster.local
 workers:

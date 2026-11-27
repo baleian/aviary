@@ -5,6 +5,7 @@
 #	                        substrate.<name> renders, at its indentation
 #	ko://go.ate.dev/substrate/cmd/<image>, ${ENVOY_DATAPLANE_IMAGE}
 #	                        the image of the release
+#	gs://gvisor/<path>      <path> under substrate.gvisor.location
 #
 # Braces in the manifests stay text.
 BEGIN {
@@ -33,5 +34,6 @@ BEGIN {
 		line = substr(line, 1, RSTART - 1) "{{ include \"substrate.image\" (list $ \"" name "\") }}" substr(line, RSTART + RLENGTH)
 	}
 	gsub(/[$][{]ENVOY_DATAPLANE_IMAGE[}]/, "{{ include \"substrate.image\" (list $ \"envoy-dataplane\") }}", line)
+	gsub(/gs:\/\/gvisor\//, "{{ include \"substrate.gvisor\" . }}/", line)
 	print line
 }

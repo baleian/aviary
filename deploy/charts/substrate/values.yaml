@@ -86,6 +86,16 @@ store:
     # one that the chart makes. accessMode says how it can be mounted.
     existingClaim: ""
 
+# The releases of gVisor that the sandboxes run in, which atelet downloads
+# for the workers of its node and checks against the sha256 that the chart
+# pins: from the public bucket gs://gvisor by default. In a network that
+# does not reach it, copy the releases to the object storage, each at the
+# path that it has under gs://gvisor, and give their location, such as
+# s3://bucket/gvisor. atelet reads them with the access of the object
+# storage.
+gvisor:
+  location: gs://gvisor
+
 # Annotations of the service accounts of the API server and of atelet, which
 # move the snapshots: for example, the role that IRSA gives them.
 serviceAccountAnnotations: {}

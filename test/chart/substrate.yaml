@@ -17,6 +17,8 @@ substrate:
     endpoint: http://s3.example.com:9000
     pathStyle: true
     secret: object-storage
+  gvisor:
+    location: s3://bucket/gvisor/
   serviceAccountAnnotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::111111111111:role/substrate
   atelet:

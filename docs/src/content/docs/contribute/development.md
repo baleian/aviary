@@ -38,7 +38,9 @@ Kubernetes 1.37.
 `make deploy` installs [Agent Substrate](../operate/installation.md#agent-substrate)
 with the chart, from the manifests of the release, which `make` takes from
 the source of the release and renders with the patches in
-`deploy/charts/substrate/kustomize`, with its object storage in a volume. `make substrate` installs what Substrate needs in the cluster: a
+`deploy/charts/substrate/kustomize`, with its object storage in a volume,
+into which it copies the releases of gVisor that the sandboxes run in.
+`make substrate` installs what Substrate needs in the cluster: a
 PostgreSQL of its own, with the users and the schema that the script of the
 release makes, and a registry. `make images` puts the harness images and
 the runner image in the registry, and names them by their digests for

@@ -43,17 +43,17 @@ func variables(container any) map[string]string {
 // values of the installation.
 func TestSubstrate(t *testing.T) {
 	for _, test := range []struct {
-		values, registry, location, upload, detach, database, storageSecret string
-		storage                                                             map[string]string
-		registryReplacement, credentialProvider                             bool
+		values, registry, location, upload, detach, database, storageSecret, gvisor string
+		storage                                                                     map[string]string
+		registryReplacement, credentialProvider                                     bool
 	}{
 		// The store of the chart.
 		{values: "default", registry: "ghcr.io/agent-substrate/substrate", location: "s3://aviary/", upload: "5m", detach: "30m",
-			database: "substrate-database", storageSecret: "substrate-store",
+			database: "substrate-database", storageSecret: "substrate-store", gvisor: "gs://gvisor/",
 			storage: map[string]string{"AWS_REGION": "us-east-1", "AWS_ENDPOINT_URL": "http://substrate-store.aviary-system.svc:7070", "AWS_S3_USE_PATH_STYLE": "true",
 				"AWS_ACCESS_KEY_ID": "secret substrate-store accessKeyId", "AWS_SECRET_ACCESS_KEY": "secret substrate-store secretAccessKey"}},
 		{values: "substrate", registry: "mirror.example.com/substrate", location: "s3://bucket/aviary/", upload: "1m", detach: "2h",
-			database: "substrate-database", storageSecret: "object-storage",
+			database: "substrate-database", storageSecret: "object-storage", gvisor: "s3://bucket/gvisor/",
 			storage: map[string]string{"AWS_REGION": "eu-west-1", "AWS_ENDPOINT_URL": "http://s3.example.com:9000", "AWS_S3_USE_PATH_STYLE": "true",
 				"AWS_ACCESS_KEY_ID": "secret object-storage accessKeyId", "AWS_SECRET_ACCESS_KEY": "secret object-storage secretAccessKey"},
 			registryReplacement: true, credentialProvider: true},
@@ -81,6 +81,20 @@ func TestSubstrate(t *testing.T) {
 
 		if location := at(find(objects, "ConfigMap", "ate-api-server-envvars"), "data", "ATE_API_SNAPSHOT_LOCATION"); location != test.location {
 			t.Errorf("%s: snapshot location = %v, want %s", test.values, location, test.location)
+		}
+		// atelet downloads the releases of gVisor from the location of the
+		// values, at their paths in gs://gvisor.
+		releases := 0
+		for _, version := range at(find(objects, "SandboxConfig", "gvisor-default"), "spec", "versions").([]any) {
+			for arch, assets := range at(version, "assets").(map[string]any) {
+				releases++
+				if url := at(assets, "gvisor", "url").(string); !strings.HasPrefix(url, test.gvisor+"releases/release/") {
+					t.Errorf("%s: gVisor release of %s for %s at %s, want one under %s", test.values, at(version, "name"), arch, url, test.gvisor)
+				}
+			}
+		}
+		if releases == 0 {
+			t.Errorf("%s: SandboxConfig gvisor-default names no release of gVisor", test.values)
 		}
 		atelet := find(objects, "DaemonSet", "atelet")
 		flags := args(container(atelet, "atelet"))

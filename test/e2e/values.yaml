@@ -21,6 +21,9 @@ substrate:
   # any request.
   store:
     replicas: 2
+  # The releases of gVisor in the store, where make e2e-up copies them.
+  gvisor:
+    location: s3://aviary/gvisor
 workers:
   replicas: 2
   resources:

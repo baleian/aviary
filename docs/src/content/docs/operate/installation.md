@@ -52,6 +52,9 @@ needs:
 - **Nodes and a Kubernetes that it runs on**: nodes on which atelet, which
   runs privileged, runs the sandboxes in gVisor, and a Kubernetes with pod
   certificates and cluster trust bundles. Its own documentation says more.
+  atelet downloads the releases of gVisor from the public bucket
+  `gs://gvisor`, or from the object storage: see
+  [Mirrors](./mirrors.md#the-releases-of-gvisor).
 - **The image `substrate.keys.image`** of the Job that makes the signing
   keys and certificate authorities of Substrate, each the first time:
   `kubectl-ate` of the release. `make build` builds it as

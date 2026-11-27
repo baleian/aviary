@@ -19,6 +19,10 @@ export DOCKER_IO GCR_IO
 # The repository of Agent Substrate, whose source has the manifests of its
 # releases, or a mirror of it.
 SUBSTRATE_REPO ?= https://github.com/agent-substrate/substrate
+# The host of the public bucket of gVisor, gs://gvisor, from which the local
+# cluster takes the releases that its sandboxes run in, or a mirror of it
+# that serves the bucket.
+STORAGE_GOOGLEAPIS_COM ?= https://storage.googleapis.com
 
 CLUSTER := aviary
 KIND_CONFIG ?= hack/kind/cluster.yaml
@@ -126,7 +130,7 @@ IN_SERVICES := --network aviary-test-supervisor_default \
 	--env AVIARY_TEST_REDIS_URL=redis://default:test@events-redis:6379 \
 	--env AVIARY_TEST_SECRET_STORE_URL=http://secret-store:8200
 
-.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-docs test-harness chart cluster-up cluster-down substrate postgres mysql valkey redis openbao vault keycloak headlamp grafana web web-dev docs docs-dev build images secrets deploy e2e e2e-up e2e-run e2e-down
+.PHONY: sqlc lint test test-supervisor test-plugin test-runner test-mock-llm test-web test-web-server test-chart test-docs test-harness chart cluster-up cluster-down substrate postgres mysql valkey redis openbao vault keycloak headlamp grafana web web-dev docs docs-dev build images secrets deploy gvisor e2e e2e-up e2e-run e2e-down
 
 # Generates the Go code of the SQL queries. Run it after changing a query or
 # a migration.
@@ -197,6 +201,7 @@ test-chart: $(SUBSTRATE_CHART)
 	! $(RENDER) --set runtime.harnesses.opencode.image=aviary-harness-opencode:dev > /dev/null 2>&1
 	! $(RENDER) --set runtime.harnesses.opencode.image=registry.example.com/opencode@sha256:5555555555555555555555555555555555555555555555555555555555555555 > /dev/null 2>&1
 	! $(RENDER) --set substrate.objectStorage.location=gs://bucket/ > /dev/null 2>&1
+	! $(RENDER) --set substrate.gvisor.location=https://mirror.example.com/gvisor > /dev/null 2>&1
 	$(call GO,test,--env AVIARY_TEST_RENDERED=/src/.out/chart) $(GO_TEST) $(TESTS)
 
 # Runs the server of the web UI's image with the configuration of the image,
@@ -502,9 +507,10 @@ secrets:
 	$(call KEEP_SECRET,aviary-encryption,aviary-system)
 
 # Installs Aviary with Agent Substrate in the cluster, after make substrate
-# and make images. The image ID restarts the pods that run the Supervisor
-# image when the image changes. A model provider at localhost is a model
-# server on the machine that runs the cluster: the name
+# and make images, and copies the releases of gVisor into the store of the
+# chart with make gvisor. The image ID restarts the pods that run the
+# Supervisor image when the image changes. A model provider at localhost is
+# a model server on the machine that runs the cluster: the name
 # host.aviary-system.svc.cluster.local, which hack/kind/aviary-values.yaml
 # gives the sandboxes for it, has the address that Docker gives containers
 # for their host. VALUES adds values files, for example
@@ -523,7 +529,44 @@ deploy: secrets $(SUBSTRATE_CHART)
 		$(addprefix --values ,$(VALUES)) \
 		--wait --timeout 10m
 	$(KUBECTL) apply --filename hack/kind/api.yaml
+	$(MAKE) gvisor
 	@echo "The API is at http://localhost:8080"
+
+# Copies into the store of the chart the releases of gVisor that the
+# SandboxConfig of the cluster locates there, for the architectures of its
+# nodes, from the same names under STORAGE_GOOGLEAPIS_COM. atelet downloads
+# them from the store, and tries again until they are there. A release is
+# downloaded once, into .out/gvisor, and checked against its sha256. It is
+# sent from the node of a gateway: the policy of the store lets in no other
+# pods, but a node always reaches its own pods.
+gvisor:
+	mkdir -p .out/gvisor
+	config=$$($(KUBECTL) get sandboxconfig gvisor-default --output json) && \
+	archs=$$($(KUBECTL) get nodes --output json | jq -c '[.items[].status.nodeInfo.architecture] | unique') && \
+	releases=$$(printf '%s\n' "$$config" | \
+		jq -r --argjson archs "$$archs" '.spec.versions[].assets | to_entries[] | select(.key | IN($$archs[])) | .value.gvisor | select(.url | startswith("s3://aviary/")) | .url + "@" + .sha256') || exit 1; \
+	[ -n "$$releases" ] || exit 0; \
+	store=$$($(KUBECTL) --namespace aviary-system get pods --selector app.kubernetes.io/name=substrate-store \
+		--field-selector status.phase=Running --output jsonpath='{.items[0].spec.nodeName} {.items[0].status.podIP}') && \
+	[ -n "$$store" ] || { echo "The cluster has no store of the chart to copy the releases of gVisor into." >&2; exit 1; }; \
+	node=$${store% *} && ip=$${store#* } && \
+	user=$$($(KUBECTL) --namespace aviary-system get secret substrate-store --output json | \
+		jq -r '(.data.accessKeyId | @base64d) + ":" + (.data.secretAccessKey | @base64d)') && \
+	for release in $$releases; do \
+		url=$${release%@*} && sum=$${release##*@} && name=$${url#s3://aviary/} && \
+		file=.out/gvisor/$$sum; \
+		if [ ! -e $$file ]; then \
+			curl --fail --silent --show-error --location --output $$file.$$$$ $(STORAGE_GOOGLEAPIS_COM)/$$name || \
+				{ rm -f $$file.$$$$; exit 1; }; \
+			openssl dgst -sha256 -r $$file.$$$$ | grep -q "^$$sum " || \
+				{ rm -f $$file.$$$$; echo "The checksum of $(STORAGE_GOOGLEAPIS_COM)/$$name is not $$sum." >&2; exit 1; }; \
+			mv $$file.$$$$ $$file; \
+		fi; \
+		docker exec --interactive $$node sh -c 'cat > /tmp/gvisor.tar.zstd' < $$file && \
+		docker exec $$node curl --fail --silent --show-error --aws-sigv4 aws:amz:us-east-1:s3 --user "$$user" \
+			--upload-file /tmp/gvisor.tar.zstd http://$$ip:7070/aviary/$$name && \
+		docker exec $$node rm /tmp/gvisor.tar.zstd || exit 1; \
+	done
 
 # Runs the e2e in a new cluster of its own, which is deleted if the tests
 # pass. After a failure the cluster stays, with its logs and kubeconfig in
@@ -554,6 +597,7 @@ endif
 	$(HELM) upgrade --install aviary deploy/charts/aviary \
 		--namespace aviary-system --values test/e2e/values.yaml --values $(SUBSTRATE_VALUES) --values $(HARNESS_VALUES) \
 		$${keycloak:+--values hack/kind/aviary-keycloak-values.yaml} --wait --timeout 10m
+	$(MAKE) gvisor CLUSTER=$(CLUSTER) DATA=
 	$(KUBECTL) --namespace aviary-e2e rollout status deployment/mock-llm --timeout 120s
 
 # The tests run on the kind network and reach the API at the node port that

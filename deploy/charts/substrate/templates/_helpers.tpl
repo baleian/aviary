@@ -63,6 +63,15 @@ AVIARY_INCLUDE_<name>.
 {{- .Values.objectStorage.location | default "s3://aviary/" -}}
 {{- end }}
 
+{{/* The location of the releases of gVisor, in place of gs://gvisor. */}}
+{{- define "substrate.gvisor" -}}
+{{- $location := .Values.gvisor.location | trimSuffix "/" -}}
+{{- if not (regexMatch "^(gs|s3)://[^/]+" $location) -}}
+{{- fail "substrate.gvisor.location must be a gs:// or s3:// location, such as s3://bucket/gvisor" -}}
+{{- end -}}
+{{- $location -}}
+{{- end }}
+
 {{/* The Secret of the access key of the object storage, if any. */}}
 {{- define "substrate.objectStorageSecret" -}}
 {{- if not .Values.objectStorage.location -}}
