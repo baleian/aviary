@@ -149,6 +149,13 @@ func TestWhoMayDoWhat(t *testing.T) {
 		{"POST", "/v1/sessions/" + session + "/attachments?name=a.txt", `a`, "pffpfffffh"},
 		{"GET", "/v1/attachments/" + file, ``, reading},
 		{"GET", "/v1/attachments/" + none, ``, "hhhhhhhhhh"},
+		// The files of the session's workspace are read by those who may read
+		// the session, and written by its creator.
+		{"PUT", "/v1/sessions/" + session + "/files/content?path=a.txt", `a`, "pffpfffffh"},
+		{"GET", "/v1/sessions/" + session + "/files", ``, reading},
+		{"GET", "/v1/sessions/" + session + "/files/search?query=a", ``, reading},
+		{"GET", "/v1/sessions/" + session + "/files/content?path=a.txt", ``, reading},
+		{"GET", "/v1/sessions/" + session + "/files/archive", ``, reading},
 		{"DELETE", "/v1/sessions/" + session + "/mcp-servers", ``, "pffpfffffh"},
 		// The request does not exist, so those who may answer get 404.
 		{"POST", "/v1/turns/" + turn + "/approvals/none", `{"option_id": "allow"}`, "hhfhfffhfh"},

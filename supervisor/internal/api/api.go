@@ -141,6 +141,13 @@ func New(ctx context.Context, st store.Store, ev *events.Streams, dr *driver.Dri
 	mux.Handle("POST /v1/sessions/{sid}/messages", a.withSession(sends, a.createMessage))
 	mux.Handle("POST /v1/sessions/{sid}/attachments", a.withSession(sends, a.uploadAttachment))
 	mux.Handle("GET /v1/attachments/{attachment}", a.withAttachment(reads, a.downloadAttachment))
+	// The files of a session's workspace are read by those who may read the
+	// session, and written by those who may send it messages.
+	mux.Handle("GET /v1/sessions/{sid}/files", a.withSession(reads, a.listFiles))
+	mux.Handle("GET /v1/sessions/{sid}/files/search", a.withSession(reads, a.searchFiles))
+	mux.Handle("GET /v1/sessions/{sid}/files/content", a.withSession(reads, a.readFile))
+	mux.Handle("PUT /v1/sessions/{sid}/files/content", a.withSession(sends, a.writeFile))
+	mux.Handle("GET /v1/sessions/{sid}/files/archive", a.withSession(reads, a.archiveFiles))
 	mux.Handle("PUT /v1/sessions/{sid}/mcp-servers/{server}", a.withSession(sends, a.setSessionMcpServer))
 	mux.Handle("DELETE /v1/sessions/{sid}/mcp-servers", a.withSession(sends, a.resetSessionMcpServers))
 	mux.Handle("GET /v1/sessions/{sid}/turns", a.withSession(reads, a.listTurns))

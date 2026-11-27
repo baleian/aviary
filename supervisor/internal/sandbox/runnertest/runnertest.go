@@ -48,8 +48,14 @@ type Home struct {
 	// attachments of the home. full makes the home refuse more.
 	files map[string]string
 	full  bool
-	// workspace are the files of the workspace, by their paths in it.
+	// workspace are the files of the workspace, by their paths in it, and
+	// links what the links at the top of it name. The runner may not access
+	// the files at the denied paths, and cut makes it break off the archives
+	// that it sends.
 	workspace map[string]string
+	links     map[string]string
+	denied    map[string]bool
+	cut       bool
 }
 
 // Files returns the files that messages carried into the home, by their

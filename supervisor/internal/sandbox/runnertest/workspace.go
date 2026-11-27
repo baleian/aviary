@@ -36,12 +36,62 @@ func (h *Home) Workspace() map[string]string {
 	return maps.Clone(h.workspace)
 }
 
+// Link puts a link into the workspace of the home, at the top of it. The
+// target is the path of a file in the workspace, or anything else for a link
+// that names nothing there.
+func (h *Home) Link(name, target string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.links == nil {
+		h.links = map[string]string{}
+	}
+	h.links[name] = target
+}
+
+func (h *Home) linked() map[string]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return maps.Clone(h.links)
+}
+
+// Deny keeps the runner from the file at the path, as the permissions of a
+// file do: it may neither read it nor write it.
+func (h *Home) Deny(path string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.denied == nil {
+		h.denied = map[string]bool{}
+	}
+	h.denied[path] = true
+}
+
+func (h *Home) denies(path string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.denied[path]
+}
+
+// Cut has the runner break off the archives of the workspace that it sends,
+// as one whose sandbox goes away meanwhile.
+func (h *Home) Cut() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cut = true
+}
+
+func (h *Home) cuts() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cut
+}
+
 // entry is an entry as a runner tells it.
 type entry struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
 	Size     *int   `json:"size,omitempty"`
 	Modified int64  `json:"modified"`
+	Target   string `json:"target,omitempty"`
 	Path     string `json:"path,omitempty"`
 }
 
@@ -99,6 +149,8 @@ func (rn *Runner) at(w http.ResponseWriter, r *http.Request, kind string) (map[s
 		refuse(w, http.StatusBadRequest, "invalid_path")
 	case found == "":
 		refuse(w, http.StatusNotFound, "not_found")
+	case rn.home.denies(path):
+		refuse(w, http.StatusForbidden, "not_permitted")
 	case found != kind && kind == "file":
 		refuse(w, http.StatusConflict, "is_a_directory")
 	case found != kind:
@@ -138,9 +190,25 @@ func (rn *Runner) list(w http.ResponseWriter, r *http.Request) {
 	for name := range names {
 		entries = append(entries, described(files, strings.TrimPrefix(path+"/"+name, "/"), name))
 	}
+	// A link is listed as the file that it names, or as a link that names
+	// nothing.
+	if path == "" {
+		for name, target := range rn.home.linked() {
+			named := described(files, target, name)
+			if named.Type != "file" {
+				named = entry{Name: name, Type: "symlink", Modified: Modified.UnixMilli()}
+			}
+			named.Target = target
+			entries = append(entries, named)
+		}
+	}
 	slices.SortFunc(entries, func(a, b entry) int { return cmp.Compare(place(a), place(b)) })
 	if after := r.URL.Query().Get("after"); after != "" {
 		kind, name, _ := strings.Cut(after, "/")
+		if kind != "d" && kind != "f" {
+			refuse(w, http.StatusBadRequest, "invalid_path")
+			return
+		}
 		from := kind + "/" + strings.ToLower(name) + "/" + name
 		entries = slices.DeleteFunc(entries, func(e entry) bool { return place(e) <= from })
 	}
@@ -181,6 +249,8 @@ func (rn *Runner) write(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "" || !inside(path):
 		refuse(w, http.StatusBadRequest, "invalid_path")
+	case home.denied[path]:
+		refuse(w, http.StatusForbidden, "not_permitted")
 	case home.full:
 		refuse(w, http.StatusInsufficientStorage, "no_room")
 	case !had && kindOf(home.workspace, path) == "directory":
@@ -260,6 +330,11 @@ func (rn *Runner) archive(w http.ResponseWriter, r *http.Request) {
 		name = path[strings.LastIndex(path, "/")+1:]
 	}
 	w.Header().Set("Content-Type", "application/zip")
+	if rn.home.cuts() {
+		io.WriteString(w, "PK")
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler)
+	}
 	archive := zip.NewWriter(w)
 	for _, file := range slices.Sorted(maps.Keys(files)) {
 		below, is := strings.CutPrefix(file, path+"/")

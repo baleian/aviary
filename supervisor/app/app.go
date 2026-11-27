@@ -65,6 +65,7 @@ const (
 	maxToolOutput      = "AVIARY_MAX_TOOL_OUTPUT_BYTES"
 	maxAttachmentBytes = "AVIARY_MAX_ATTACHMENT_BYTES"
 	maxAttachments     = "AVIARY_MAX_ATTACHMENTS"
+	maxFileBytes       = "AVIARY_MAX_FILE_BYTES"
 	maxTurn            = "AVIARY_MAX_TURN_SECONDS"
 	sandboxAtespace    = "AVIARY_SANDBOX_ATESPACE"
 	sandboxPool        = "AVIARY_SANDBOX_POOL"
@@ -649,6 +650,13 @@ func driverConfig(ctx context.Context) (driver.Config, error) {
 	}
 	if config.MaxAttachments, err = strconv.Atoi(files); err != nil || config.MaxAttachments < 0 {
 		return config, fmt.Errorf("%s must be a number, or 0 to take no attachments", maxAttachments)
+	}
+	written, err := env(maxFileBytes)
+	if err != nil {
+		return config, err
+	}
+	if config.MaxFileBytes, err = strconv.ParseInt(written, 10, 64); err != nil || config.MaxFileBytes < 1 {
+		return config, fmt.Errorf("%s must be a positive number of bytes", maxFileBytes)
 	}
 	longest, err := env(maxTurn)
 	if err != nil {

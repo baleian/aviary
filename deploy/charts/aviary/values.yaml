@@ -117,11 +117,12 @@ workers:
 # Each session runs in its own sandbox: an actor of Substrate that runs the
 # harness of its agent in gVisor, with a home of its own at /home.
 sandboxes:
-  # Seconds without a running turn after which a session is put to sleep:
-  # its sandbox leaves its worker, and a snapshot keeps it. The next turn
-  # wakes it on a worker that has room. With memory snapshots, a turn that
-  # has waited this long for a person to answer it sleeps too, until the
-  # answer. 0 disables sleeping.
+  # Seconds without a running turn, and without a request for the files of
+  # its workspace, after which a session is put to sleep: its sandbox leaves
+  # its worker, and a snapshot keeps it. The next turn, or the next request
+  # for its files, wakes it on a worker that has room. With memory snapshots,
+  # a turn that has waited this long for a person to answer it sleeps too,
+  # until the answer. 0 disables sleeping.
   idleSeconds: 300
   # Seconds after its last turn after which a session ends: its sandbox is
   # deleted with its snapshot, and its conversation stays in the database.
@@ -173,6 +174,10 @@ runtime:
   # files of one message. 0 files means that messages carry none.
   maxAttachmentBytes: 67108864
   maxAttachments: 10
+  # Maximum bytes of a file that is written into the workspace of a session
+  # through the API. The workspace is part of the snapshots of its sandbox,
+  # which grow with it.
+  maxFileBytes: 268435456
   # Harnesses that agents can use, by name. The image contains the harness,
   # and Substrate takes it only by its digest. The limits of CPU and memory
   # are the size of a sandbox of the harness on its worker. A change applies

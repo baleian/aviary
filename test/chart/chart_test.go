@@ -77,6 +77,7 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "65536",
 		"AVIARY_MAX_ATTACHMENT_BYTES":      "67108864",
 		"AVIARY_MAX_ATTACHMENTS":           "10",
+		"AVIARY_MAX_FILE_BYTES":            "268435456",
 	} {
 		if settings[name] != value {
 			t.Errorf("Supervisor env %s = %q, want %q", name, settings[name], value)
@@ -115,6 +116,7 @@ func TestSupervisorSettings(t *testing.T) {
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "23",
 		"AVIARY_MAX_ATTACHMENT_BYTES":      "29",
 		"AVIARY_MAX_ATTACHMENTS":           "0",
+		"AVIARY_MAX_FILE_BYTES":            "31",
 		"AVIARY_RUNNER_IMAGE":              "registry.example.com/aviary-runner@sha256:4444444444444444444444444444444444444444444444444444444444444444",
 	} {
 		if settings[name] != value {
@@ -160,6 +162,7 @@ func TestNumbersOfAMillionOrMore(t *testing.T) {
 		"AVIARY_MAX_TOOL_OUTPUT_BYTES":     "1048576",
 		"AVIARY_MAX_ATTACHMENT_BYTES":      "1073741824",
 		"AVIARY_MAX_ATTACHMENTS":           "1000009",
+		"AVIARY_MAX_FILE_BYTES":            "4294967296",
 	} {
 		if settings[name] != value {
 			t.Errorf("Supervisor env %s = %q, want %q", name, settings[name], value)

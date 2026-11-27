@@ -29,13 +29,15 @@ var (
 const maxFileName = 200
 
 // getLimits tells what the installation sets for the files that messages
-// carry, so that a client can refuse a file before it uploads it.
+// carry and for those that are written into a workspace, so that a client
+// can refuse a file before it uploads it.
 func (a *api) getLimits(w http.ResponseWriter, _ *http.Request) error {
 	size, files := a.driver.AttachmentLimits()
 	respond(w, http.StatusOK, struct {
 		MaxAttachmentBytes int64 `json:"max_attachment_bytes"`
 		MaxAttachments     int   `json:"max_attachments"`
-	}{size, files})
+		MaxFileBytes       int64 `json:"max_file_bytes"`
+	}{size, files, a.driver.MaxFileBytes()})
 	return nil
 }
 

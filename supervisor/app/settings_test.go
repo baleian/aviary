@@ -43,6 +43,7 @@ var settings = map[string]string{
 	maxToolOutput:      "65536",
 	maxAttachmentBytes: "67108864",
 	maxAttachments:     "10",
+	maxFileBytes:       "268435456",
 	maxTurn:            "1800",
 }
 
@@ -78,8 +79,8 @@ func TestDriverConfig(t *testing.T) {
 		if config.Objects == nil || config.Localhost != "" {
 			t.Errorf("unexpected object storage or local host in config %+v", config)
 		}
-		if config.MaxAttachmentBytes != 64<<20 || config.MaxAttachments != 10 {
-			t.Errorf("unexpected limits of attachments in config %+v", config)
+		if config.MaxAttachmentBytes != 64<<20 || config.MaxAttachments != 10 || config.MaxFileBytes != 256<<20 {
+			t.Errorf("unexpected limits of files in config %+v", config)
 		}
 	})
 
@@ -111,6 +112,7 @@ func TestDriverConfig(t *testing.T) {
 		{maxStartup, ""}, {maxStartup, "-1"},
 		{maxAttachmentBytes, ""}, {maxAttachmentBytes, "0"}, {maxAttachmentBytes, "64Mi"},
 		{maxAttachments, ""}, {maxAttachments, "-1"},
+		{maxFileBytes, ""}, {maxFileBytes, "0"}, {maxFileBytes, "256Mi"},
 		{maxTurn, ""}, {maxTurn, "0"},
 		{modelsLocalhost, "host.example.com:8000"},
 	} {

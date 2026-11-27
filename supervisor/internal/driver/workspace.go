@@ -21,6 +21,12 @@ import (
 // ErrNoSandbox means that the session has no sandbox, and so no files.
 var ErrNoSandbox = errors.New("the session has no sandbox")
 
+// MaxFileBytes returns the largest size of a file that is written into the
+// workspace of a session, in bytes.
+func (d *Driver) MaxFileBytes() int64 {
+	return d.config.MaxFileBytes
+}
+
 // Workspace is the workspace of a session: the runner of its sandbox, which
 // is awake, and is not idle until Close.
 type Workspace struct {

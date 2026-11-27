@@ -152,7 +152,8 @@ creates, as pods of Substrate.
 The Supervisors serve the API on the Service `aviary-supervisor` of the
 release namespace, on port 80. What exposes it outside the cluster must not
 buffer its responses, which include event streams, and must take the files
-that messages carry: request bodies of up to `runtime.maxAttachmentBytes`.
+that are uploaded: request bodies of up to `runtime.maxAttachmentBytes` and
+`runtime.maxFileBytes`.
 
 ## Then
 

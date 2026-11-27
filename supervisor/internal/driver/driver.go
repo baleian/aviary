@@ -120,6 +120,9 @@ type Config struct {
 	// MaxAttachments limits the number of files that a message carries.
 	// Zero means that the installation takes none.
 	MaxAttachments int
+	// MaxFileBytes limits the size of a file that is written into the
+	// workspace of a session.
+	MaxFileBytes int64
 	// Sweep, CancelGrace and UnsentFor default to the constants of the same
 	// name.
 	Sweep       time.Duration
