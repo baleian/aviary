@@ -71,6 +71,15 @@
   --n100: #edf1f5;
   --n-ink: #475467;
 
+  /* Code: its keywords, strings, numbers, comments, calls, types, names */
+  --hl-key: #6a3fd0;
+  --hl-str: #0a7350;
+  --hl-num: #a85400;
+  --hl-dim: #8492a6;
+  --hl-call: #0a56b8;
+  --hl-type: #0b7285;
+  --hl-name: #a81f52;
+
   /* Badges that invert the page */
   --badge: #0d1b2e;
   --on-badge: #ffffff;
@@ -174,6 +183,14 @@
   --d-ink: #c0baff;
   --n100: #1a2840;
   --n-ink: #afbcd1;
+
+  --hl-key: #b9a8ff;
+  --hl-str: #74e2b0;
+  --hl-num: #ffb86b;
+  --hl-dim: #64748f;
+  --hl-call: #7cb6ff;
+  --hl-type: #6fd8e6;
+  --hl-name: #ffa3c1;
 
   --badge: #22314c;
   --on-badge: #e9eff8;

@@ -34,15 +34,18 @@ export interface Transport {
     options: { token: string; body?: unknown },
   ): Promise<Reply>;
 
-  // upload returns the answer to a POST whose body is the file, of the type
-  // that the file says it is. onProgress is called with the bytes of the
-  // file that have gone, as they go.
+  // upload returns the answer to a request whose body is the file, of the
+  // type that the file says it is: a POST, unless it is told to PUT.
+  // onProgress is called with the bytes of the file that have gone, as they
+  // go. The signal gives the upload up: it then fails with an AbortError.
   upload(
     path: string,
     options: {
       token: string;
       file: Blob;
+      method?: "POST" | "PUT";
       onProgress?: (sent: number) => void;
+      signal?: AbortSignal;
     },
   ): Promise<Reply>;
 

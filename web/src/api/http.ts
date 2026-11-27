@@ -29,10 +29,17 @@ export const http: Transport = {
 
   // fetch does not tell how much of a body has gone, so the file goes with
   // an XMLHttpRequest.
-  upload(path, { token, file, onProgress }) {
+  upload(path, { token, file, method = "POST", onProgress, signal }) {
     return new Promise((resolve, reject) => {
       const request = new XMLHttpRequest();
-      request.open("POST", address + path);
+      request.open(method, address + path);
+      const given = () =>
+        reject(new DOMException("the upload was given up", "AbortError"));
+      if (signal?.aborted) return given();
+      signal?.addEventListener("abort", () => {
+        request.onabort = given;
+        request.abort();
+      });
       if (token) request.setRequestHeader("Authorization", "Bearer " + token);
       request.setRequestHeader(
         "Content-Type",

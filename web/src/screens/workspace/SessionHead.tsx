@@ -97,13 +97,14 @@ function EndSession({
 
 // SessionHead is the head of a conversation: the title of the session, how
 // it stands and when it began, and what can be done with it. A caller who
-// may renames the session by its title, and ends it from the menu. actions
-// are the buttons before the menu.
+// may renames the session by its title, and ends it from the menu. lead is
+// what the head begins with, and actions are the buttons before the menu.
 export function SessionHead({
   context,
   me,
   session,
   newest,
+  lead,
   actions,
 }: {
   context: ProjectContext;
@@ -111,6 +112,7 @@ export function SessionHead({
   session: Session;
   // The newest turn of the session, if it has one.
   newest?: Turn;
+  lead?: ReactNode;
   actions: ReactNode;
 }) {
   const { pathname } = useLocation();
@@ -125,6 +127,7 @@ export function SessionHead({
   const ended = session.end_reason === "expired" ? "Expired" : "Ended";
   return (
     <div className="conv-h">
+      {lead}
       <div className="tx">
         <h1>
           {renaming ? (

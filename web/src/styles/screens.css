@@ -658,17 +658,90 @@ a:hover .top > .go {
   opacity: 0.6;
 }
 
-/* The workspace of an agent: its sessions, a conversation, the details. */
+/* The workspace of an agent: its sessions, and a conversation with the pane
+   that shows beside it. */
 .sess {
   display: grid;
-  grid-template-columns: 292px minmax(0, 1fr) 316px;
+  grid-template-columns: 292px minmax(0, 1fr);
   gap: 16px;
   padding: 16px;
   height: calc(100vh - var(--nav-h));
   min-height: 520px;
 }
-.sess.no-details {
-  grid-template-columns: 292px minmax(0, 1fr);
+.sess.no-list {
+  grid-template-columns: minmax(0, 1fr);
+}
+/* The conversation and the pane beside it share what is left: the line
+   between them is dragged. */
+.work {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+.work .conv,
+.work .pane {
+  height: 100%;
+}
+.grip {
+  flex: none;
+  width: 16px;
+  display: grid;
+  place-items: center;
+  outline: none;
+}
+.grip i {
+  width: 4px;
+  height: 40px;
+  border-radius: 4px;
+  background: var(--line2);
+  transition:
+    background 0.15s,
+    height 0.15s;
+}
+.grip[data-separator="hover"] i,
+.grip[data-separator="active"] i,
+.grip:focus-visible i {
+  height: 72px;
+  background: var(--king);
+}
+/* A conversation that has little room names its panes by their pictures
+   alone. */
+.work .conv {
+  container: conv / inline-size;
+}
+@container conv (max-width: 520px) {
+  .conv-h .btn.sm {
+    width: 30px;
+    padding: 0;
+  }
+  .conv-h .btn.sm span {
+    display: none;
+  }
+}
+/* In a narrow window the files lie over the conversation, below its head. */
+.over-pane {
+  position: absolute;
+  inset: 62px 0 0 auto;
+  width: min(100%, 860px);
+  z-index: 30;
+}
+.over-pane .pane {
+  box-shadow: var(--sh3);
+}
+.conv-h .lst {
+  flex: none;
+  margin: 0 -6px 0 -4px;
+}
+.i.flip {
+  transform: scaleX(-1);
+}
+.ib.tog {
+  background: var(--k50);
+  color: var(--link);
+}
+.ib.xs {
+  width: 22px;
+  height: 22px;
 }
 .pane {
   background: var(--surface);
@@ -3141,4 +3214,551 @@ td .none-found {
   .nav .me .nm {
     display: none;
   }
+}
+
+/* The files of a session: the tree of its workspace, and beside it the
+   files that are open. */
+.pane.files.wide {
+  position: fixed;
+  inset: calc(var(--nav-h) + 16px) 16px 16px;
+  z-index: 40;
+  height: auto;
+  box-shadow: var(--sh3);
+}
+.fp-sep {
+  flex: none;
+  width: 1px;
+  background: var(--line);
+  outline: none;
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
+}
+.fp-sep[data-separator="hover"],
+.fp-sep[data-separator="active"],
+.fp-sep:focus-visible {
+  background: var(--king);
+  box-shadow: 0 0 0 1px var(--king);
+}
+.ft {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.ft.drop {
+  box-shadow: inset 0 0 0 2px var(--king);
+  background: var(--k50);
+  border-radius: 20px;
+}
+.ft-acts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.ft-find {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 32px;
+  margin: 10px 10px 6px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--mist);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.ft-find:focus-within {
+  border-color: var(--king);
+  box-shadow: var(--ring);
+}
+.ft-find input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  font: 500 13px/20px var(--sans);
+  color: var(--ink);
+}
+.ft-find input::-webkit-search-cancel-button {
+  appearance: none;
+}
+.ft-find .ib.sm {
+  width: 24px;
+  height: 24px;
+}
+.ft-s {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 6px 10px;
+  outline: none;
+}
+.ft-pad {
+  padding: 12px 16px;
+}
+.ft-note {
+  padding: 12px 14px;
+  font: 500 13px/20px var(--sans);
+  color: var(--slate);
+}
+.ft-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 4px;
+  border-radius: 8px;
+  font: 500 13px/20px var(--sans);
+  color: var(--ink2);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.ft-row:hover {
+  background: var(--surface-3);
+}
+.ft-row.on {
+  background: var(--k50);
+  color: var(--k-ink);
+  font-weight: 600;
+}
+.ft-s:focus-visible .ft-row.cur {
+  box-shadow: inset 0 0 0 1.5px var(--king);
+}
+.ft-row.drop {
+  background: var(--k100);
+  box-shadow: inset 0 0 0 1.5px var(--king);
+}
+.ft-row.dim .nm {
+  color: var(--slate);
+}
+.ft-row .tw {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--mist);
+  transition: transform 0.12s;
+}
+.ft-row .tw.open {
+  transform: rotate(90deg);
+}
+.mk {
+  flex: none;
+  color: var(--ctl);
+}
+.mk.dir {
+  color: var(--king);
+}
+.mk.image,
+.mk.media {
+  color: var(--dusk);
+}
+.mk.pdf {
+  color: var(--coral);
+}
+.mk.sheet {
+  color: var(--green);
+}
+.mk.archive {
+  color: var(--c-icon);
+}
+.ft-row .nm {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ft-row .lk {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--mist);
+}
+.ft-do {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  opacity: 0;
+}
+.ft-row:hover .ft-do,
+.ft-do:has([aria-expanded="true"]),
+.ft-do:has(.ring) {
+  opacity: 1;
+}
+.ft-do .ring {
+  width: 13px;
+  height: 13px;
+}
+.ft-more {
+  color: var(--link);
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.ft-more::before,
+.ft-none::before,
+.ft-fail::before {
+  content: "";
+  flex: none;
+  width: 14px;
+}
+.ft-none {
+  color: var(--mist);
+  font-style: italic;
+  cursor: default;
+}
+.ft-none:hover,
+.ft-wait:hover {
+  background: none;
+}
+.ft-wait {
+  cursor: default;
+}
+.ft-wait .skel {
+  width: 46%;
+  height: 10px;
+  margin-left: 20px;
+}
+.ft-fail {
+  color: var(--r-ink);
+}
+.ft-found {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ft-found button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  font: 500 13px/20px var(--sans);
+  color: var(--ink2);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ft-found button:hover {
+  background: var(--surface-3);
+}
+.ft-found .nm {
+  flex: none;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ft-found small {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--mist);
+}
+.ft-up {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  margin: 0 10px 10px;
+  padding: 8px 6px 9px 12px;
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--sh2);
+  overflow: hidden;
+}
+.ft-up.bad {
+  border-color: var(--coral);
+  background: var(--r100);
+}
+.ft-up .tx {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.ft-up b {
+  font: 600 13px/18px var(--sans);
+  color: var(--ink);
+}
+.ft-up small {
+  font: 500 12px/16px var(--sans);
+  color: var(--slate);
+}
+.ft-up .gone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--king);
+  transition: width 0.2s;
+}
+
+/* The files that are open: their tabs, what there is to say of the one in
+   view, and the file. */
+.fv {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  container-type: inline-size;
+}
+.fv-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  flex: none;
+  min-height: 45px;
+  padding: 8px 8px 0 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.fv-tabs .ft-acts {
+  align-self: center;
+  padding-bottom: 8px;
+}
+.fv-tabs .tabs {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  max-width: 240px;
+  height: 36px;
+  margin-bottom: -1px;
+  padding: 0 4px 0 10px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  font: 500 13px/20px var(--sans);
+  color: var(--slate);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.tab:hover {
+  color: var(--ink2);
+  background: var(--surface-3);
+}
+.tab.on {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+}
+.tab .nm {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab small {
+  font: 500 12px/18px var(--sans);
+  color: var(--mist);
+}
+.tab .ib {
+  opacity: 0;
+}
+.tab:hover .ib,
+.tab.on .ib,
+.tab .ib:focus-visible {
+  opacity: 1;
+}
+.fv-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  min-height: 42px;
+  padding: 6px 8px 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.crumbs {
+  display: flex;
+  justify-content: flex-end;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font: 500 12.5px/18px var(--sans);
+  color: var(--slate);
+  white-space: nowrap;
+  /* A path that lost its beginning fades in. */
+  mask-image: linear-gradient(90deg, transparent, #000 14px);
+}
+/* The path stands at the beginning while it fits, and keeps its end when
+   it does not. */
+.crumbs .in {
+  flex: none;
+  margin-right: auto;
+  padding-left: 14px;
+}
+.crumbs span {
+  display: flex;
+  align-items: center;
+}
+.crumbs button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.crumbs button:hover {
+  color: var(--link);
+}
+.crumbs .i {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin: 0 2px;
+  color: var(--mist);
+}
+.crumbs b {
+  font-weight: 600;
+  color: var(--ink);
+}
+.fv-bar .meta {
+  flex: none;
+  font: 500 12px/18px var(--sans);
+  color: var(--mist);
+  white-space: nowrap;
+}
+@container (max-width: 560px) {
+  .fv-bar .meta {
+    display: none;
+  }
+}
+.fv-b {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.fv-b > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.fv-b.mid > .ring,
+.fv-b.mid > .fv-no,
+.fv-b.mid > .fv-none {
+  flex: none;
+  margin: auto;
+}
+.fv-b > .ring {
+  width: 24px;
+  height: 24px;
+  border-width: 3px;
+}
+.fv-code {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.fv-scroll {
+  overflow: auto;
+}
+.fv-scroll.dark {
+  padding: 16px;
+  background: var(--surface-3);
+}
+.fv-scroll .vw-pages {
+  margin: 0 auto;
+}
+.fv-doc {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 32px 48px;
+}
+.fv-doc img {
+  max-width: 100%;
+  border-radius: 10px;
+}
+.fv-page {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+.fv-pic {
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  overflow: auto;
+  background: var(--surface-2);
+}
+.fv-pic img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 6px;
+  background: repeating-conic-gradient(var(--paper-2) 0 25%, var(--paper) 0 50%)
+    0 0 / 16px 16px;
+  box-shadow:
+    0 0 0 1px var(--line2),
+    var(--sh2);
+}
+.fv-pic img.shrunk {
+  cursor: zoom-in;
+}
+.fv-pic img.whole {
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
+}
+.fv-none {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  color: var(--mist);
+}
+.fv-none b {
+  font: 600 14px/20px var(--sans);
+  color: var(--ink2);
+}
+.fv-no {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: 500 14px/20px var(--sans);
+  color: var(--ink2);
+}
+.fv-no .i {
+  color: var(--c-icon);
+}
+.fv-cut {
+  flex: none;
+  padding: 7px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+  font: 500 12.5px/18px var(--sans);
+  color: var(--slate);
 }

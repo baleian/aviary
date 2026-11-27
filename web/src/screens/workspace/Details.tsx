@@ -2,7 +2,6 @@ import { Link } from "react-router";
 import type { ProjectContext } from "../../api/project.ts";
 import type { Tinted } from "../../api/queries.ts";
 import type { Agent, Me, Session, Turn } from "../../api/types.ts";
-import { cls } from "../../lib/cls.ts";
 import { label, num } from "../../lib/format.ts";
 import { AgentTile, Avatar } from "../../ui/Avatar.tsx";
 import { CopyButton } from "../../ui/CopyButton.tsx";
@@ -12,27 +11,6 @@ import { person } from "../../ui/who.ts";
 import { SandboxBadge } from "./marks.tsx";
 import { McpSummary } from "./Mcp.tsx";
 import type { McpChoice } from "./servers.ts";
-
-// DetailsButton shows and hides the details beside a conversation.
-export function DetailsButton({
-  shown,
-  onToggle,
-}: {
-  shown: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      className={cls("btn sec sm dtl", shown && "tog")}
-      type="button"
-      aria-pressed={shown}
-      onClick={onToggle}
-    >
-      <Icon name="panel" />
-      Details
-    </button>
-  );
-}
 
 // Facts is what the details say of a session: whose it is, how long it has
 // been, and what its turns took. turns are those that were read, which may

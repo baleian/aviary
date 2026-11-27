@@ -1,6 +1,6 @@
 ---
 title: Sessions and turns
-description: How a conversation with an agent runs, with its messages, its files and the queue, and how a session sleeps and ends.
+description: How a conversation with an agent runs, with its messages, its files, its workspace and the queue, and how a session sleeps and ends.
 ---
 
 A session is one conversation with an agent. It belongs to the user who
@@ -48,6 +48,31 @@ into it: by default up to 10 files of up to 64 MiB each.
 - **The files are kept until the session ends.** Until then, those who may
   read the session can download them. The web UI shows the pictures, PDFs
   and texts among them over the page.
+
+## The workspace
+
+The agent of a session works in `/home/workspace` of its sandbox, and what
+it leaves there stays for the turns that follow. **Files** in the web UI
+shows that directory beside the conversation, and follows what the agent
+does there.
+
+- **Looking.** The tree opens the directories in place, and finds files by
+  their names. A file opens in a tab: a text as it is written, and a
+  Markdown file, a web page, a picture and a PDF as what they make. Of a
+  long text, the first mebibyte shows.
+- **Taking files out.** A file is downloaded as it is, and a directory, or
+  the whole workspace, as a ZIP file.
+- **Putting files in.** Those who may send the session messages upload
+  files and folders, from the menu of the tree or by dropping them on it:
+  by default up to 256 MiB each, which is `runtime.maxFileBytes` in the
+  [configuration](../reference/configuration.md#runtime). A file replaces
+  one of its name only after you agree.
+- **While the session sleeps.** Looking at its files wakes its sandbox, as
+  a message does, if a worker has room for it.
+- **When the session ends**, its files are deleted with its sandbox.
+
+The API has the same: see
+[Workspace](../reference/api/sessions.md#workspace).
 
 ## Following a turn
 

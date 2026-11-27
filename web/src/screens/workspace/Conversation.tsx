@@ -1,4 +1,5 @@
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -32,9 +33,12 @@ import { oops, toast } from "../../ui/toast.ts";
 import { person } from "../../ui/who.ts";
 import { barred, type Compose } from "./compose.ts";
 import { Composer, Gate } from "./Composer.tsx";
-import { Details, DetailsButton } from "./Details.tsx";
+import { Details } from "./Details.tsx";
+import { FilesPane } from "./files/Pane.tsx";
+import { useShown } from "./files/state.ts";
 import { mcpOf } from "./servers.ts";
 import { SessionHead } from "./SessionHead.tsx";
+import { type Beside, type Pane, PaneButtons, Split } from "./Split.tsx";
 import { TurnView } from "./TurnView.tsx";
 
 // How near its end the conversation has to be scrolled towards it to stay
@@ -47,29 +51,34 @@ const AT = 2;
 const NONE: Turn[] = [];
 
 // Conversation is a session: its head, its turns from the oldest that was
-// read to the newest, and the box for the next message, with the details of
-// the session beside them if they are shown. It opens at the newest turn,
-// and follows the turn that has not ended.
+// read to the newest, and the box for the next message, with the files of
+// the session or its details beside them if they are shown. It opens at the
+// newest turn, and follows the turn that has not ended.
 export function Conversation({
   context,
   agent,
   me,
   id,
   compose,
-  details,
-  onDetails,
+  pane,
+  onPane,
+  lead,
 }: {
   context: ProjectContext;
   agent: Tinted<Agent>;
   me: Me;
   id: string;
   compose: Compose;
-  // Whether the details show, and what shows and hides them.
-  details: boolean;
-  onDetails: () => void;
+  // The pane that shows beside the conversation, and what shows another or
+  // none.
+  pane: Pane;
+  onPane: (pane: Pane) => void;
+  // What the head of the conversation begins with.
+  lead?: ReactNode;
 }) {
   const session = useSession(id);
   const turns = useTurns(id);
+  const files = useShown(id);
   const scroller = useRef<HTMLDivElement>(null);
   // How tall the turns were before older ones were added above them.
   const before = useRef<number | null>(null);
@@ -134,8 +143,24 @@ export function Conversation({
   const mcp = (of?: Session) =>
     of &&
     mcpOf({ context, agent, me, compose, session: of, running: !!unfinished });
+  // What the agent has done in its newest turn, by which the files of the
+  // session may have changed.
+  const done = (newest?.items ?? []).filter(
+    (item) =>
+      item.type === "tool_call" &&
+      (item.status === "completed" || item.status === "failed"),
+  ).length;
+  const pulse = newest ? `${newest.id}:${done}:${newest.ended_at ?? ""}` : "";
+  // The files take more room once one of them is open.
+  const beside: Beside | undefined =
+    pane === "files"
+      ? files.tabs.length
+        ? "files"
+        : "tree"
+      : (pane ?? undefined);
+  const close = () => onPane(null);
   const side = (of?: Session) =>
-    details && (
+    pane === "details" ? (
       <Details
         context={context}
         agent={agent}
@@ -144,14 +169,24 @@ export function Conversation({
         turns={list}
         mcp={mcp(of)}
         empty={!of}
-        onClose={onDetails}
+        onClose={close}
       />
+    ) : pane === "files" && of ? (
+      <FilesPane
+        context={context}
+        me={me}
+        session={of}
+        pulse={pulse}
+        onClose={close}
+      />
+    ) : (
+      pane && <aside className="pane files" />
     );
   if (error || foreign) {
     const missing =
       foreign || (error instanceof ApiError && error.status === 404);
     return (
-      <>
+      <Split beside={beside} side={side()}>
         <main className="conv">
           <Blank
             glyph={missing ? "search" : "warn"}
@@ -168,13 +203,12 @@ export function Conversation({
             }
           />
         </main>
-        {side()}
-      </>
+      </Split>
     );
   }
   if (!session.data || !turns.data) {
     return (
-      <>
+      <Split beside={beside} side={side()}>
         <main className="conv">
           <div className="welcome">
             <div style={{ width: "420px" }}>
@@ -182,8 +216,7 @@ export function Conversation({
             </div>
           </div>
         </main>
-        {side()}
-      </>
+      </Split>
     );
   }
 
@@ -241,14 +274,15 @@ export function Conversation({
   const why = barred(context, me, session.data);
 
   return (
-    <>
+    <Split beside={beside} side={side(session.data)}>
       <main className="conv">
         <SessionHead
           context={context}
           me={me}
           session={session.data}
           newest={newest}
-          actions={<DetailsButton shown={details} onToggle={onDetails} />}
+          lead={lead}
+          actions={<PaneButtons pane={pane} files onPane={onPane} />}
         />
         <div className="conv-s" ref={scroller} onScroll={scrolled}>
           <div className="thread">
@@ -317,7 +351,6 @@ export function Conversation({
           />
         )}
       </main>
-      {side(session.data)}
-    </>
+    </Split>
   );
 }

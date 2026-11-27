@@ -127,6 +127,19 @@ export const api = {
     return reply.body as T;
   },
 
+  // store sends a file as the body of a PUT, which puts it at the path, and
+  // returns the body of the answer. The signal gives the upload up.
+  async store<T>(
+    path: string,
+    file: Blob,
+    options: { onProgress?: (sent: number) => void; signal?: AbortSignal } = {},
+  ): Promise<T> {
+    const reply = await answered((carrier, token) =>
+      carrier.upload(path, { token, file, method: "PUT", ...options }),
+    );
+    return reply.body as T;
+  },
+
   // download returns the file that a GET answers with, or no more than its
   // first bytes if it is told how many.
   async download(path: string, first?: number): Promise<Blob> {

@@ -7,6 +7,7 @@ import { backend } from "./api/fake.ts";
 import { App } from "./App.tsx";
 import { prefs } from "./lib/prefs.ts";
 import { queryClient } from "./query.ts";
+import { forget } from "./screens/workspace/files/state.ts";
 import { signIn, signInWith, signOut } from "./session/auth.ts";
 import { setTheme } from "./theme.ts";
 
@@ -21,6 +22,16 @@ import { setTheme } from "./theme.ts";
 export function fast() {
   prefs.set("mock.speed", "0");
 }
+
+// sized gives the window a width in pixels: that of a desktop, until a test
+// gives it another.
+export function sized(width = 1440) {
+  const page = window as unknown as {
+    happyDOM: { setViewport(to: { width: number; height: number }): void };
+  };
+  page.happyDOM.setViewport({ width, height: 900 });
+}
+sized();
 
 // open shows the console at a path, to the account that is signed in, and
 // returns the person who uses it.
@@ -49,7 +60,19 @@ export async function leave() {
   signOut();
   await signInWith(undefined);
   setTheme("system");
-  prefs.set("project", null);
-  prefs.set("details", null);
+  sized();
+  for (const kept of [
+    "project",
+    "list",
+    "pane",
+    "pane.details",
+    "pane.tree",
+    "pane.files",
+    "files.tree",
+    "files.width",
+  ]) {
+    prefs.set(kept, null);
+  }
+  forget();
   (await backend()).reset();
 }

@@ -810,7 +810,7 @@ it("takes no more and no larger files than a message may carry, and says so", as
   open(closed.path, "alice");
   await screen.findByRole("heading", { name: "No files" });
   await waitFor(() => expect(said()).toContain("Enter to send"));
-  expect(queryClient.getQueryData(["limits"])).toEqual({
+  expect(queryClient.getQueryData(["limits"])).toMatchObject({
     max_attachment_bytes: 0,
     max_attachments: 0,
   });
@@ -1564,13 +1564,11 @@ it("hides the details, and keeps them so", async () => {
     expect(document.querySelectorAll(".turn").length).toBe(2),
   );
   const button = () => screen.getByRole("button", { name: "Details" });
-  const frame = () => document.querySelector(".sess")!;
   expect(button().getAttribute("aria-pressed")).toBe("true");
-  expect(frame().className).toBe("sess");
+  expect(document.querySelector(".pane.details")).not.toBeNull();
   await user.click(button());
   expect(document.querySelector(".pane.details")).toBeNull();
   expect(button().getAttribute("aria-pressed")).toBe("false");
-  expect(frame().className).toBe("sess no-details");
   // Also at the start of a new session, and when the console is opened
   // again.
   await user.click(screen.getByRole("link", { name: /New session/ }));

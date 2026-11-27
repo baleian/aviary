@@ -188,13 +188,13 @@ export function Viewer({
 
 // Picture shows a picture as large as fits, and at its own size after a
 // click on it, if that is larger.
-function Picture({
+export function Picture({
   file,
   data,
   onFact,
   onBroken,
 }: {
-  file: Shown;
+  file: Pick<Shown, "name" | "kind">;
   data: Blob;
   onFact: (says: string) => void;
   onBroken: () => void;
@@ -229,7 +229,7 @@ function Picture({
 
 // Document shows the pages of a PDF below one another, each drawn when it
 // comes near.
-function Document({
+export function Document({
   data,
   onFact,
   onBroken,

@@ -156,6 +156,7 @@ describe("api", () => {
     expect(await api.get<Limits>("/v1/limits")).toEqual({
       max_attachment_bytes: 64 * 1024 * 1024,
       max_attachments: 10,
+      max_file_bytes: 256 * 1024 * 1024,
     });
 
     await expect(upload(files + "?name=..")).rejects.toMatchObject({
@@ -163,7 +164,7 @@ describe("api", () => {
       code: "invalid_request",
     });
     mock.setLimits(4, 2);
-    expect(await api.get<Limits>("/v1/limits")).toEqual({
+    expect(await api.get<Limits>("/v1/limits")).toMatchObject({
       max_attachment_bytes: 4,
       max_attachments: 2,
     });
@@ -207,7 +208,7 @@ describe("api", () => {
 
     // An installation that takes no files says so.
     mock.setLimits(4, 0);
-    expect(await api.get<Limits>("/v1/limits")).toEqual({
+    expect(await api.get<Limits>("/v1/limits")).toMatchObject({
       max_attachment_bytes: 0,
       max_attachments: 0,
     });
