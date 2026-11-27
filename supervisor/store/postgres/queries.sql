@@ -383,7 +383,7 @@ where turns.id = @id;
 -- Returns the origin of the session's running turn, with the current
 -- provider of its agent and the secret store of the provider's key.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
-       coalesce(users.subject, '')::text as subject,
+       coalesce(users.subject, '')::text as subject, coalesce(users.username, '')::text as username,
        agents.provider_id, providers.url as provider_url, providers.headers as provider_headers,
        providers.api_key as provider_api_key,
        providers.api_key_store_id, providers.api_key_path, providers.api_key_name,
@@ -402,7 +402,7 @@ where turns.session_id = @session_id and turns.state = 'running';
 -- Returns the origin of the session's dispatched turn with the highest
 -- number, which the unique key of the session's turns finds.
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
-       coalesce(users.subject, '')::text as subject
+       coalesce(users.subject, '')::text as subject, coalesce(users.username, '')::text as username
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id

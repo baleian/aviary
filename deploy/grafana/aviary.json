@@ -1518,14 +1518,14 @@
     {
       "type": "table",
       "title": "Requests that leave the sandboxes",
-      "description": "What the sandboxes sent out, from the log of the egress gateway: each connection that it passed on unread, to its host, and each request that it read, to its host and path. The user is the identity provider's subject of who sent the turn's message.",
+      "description": "What the sandboxes sent out, from the log of the egress gateway: each connection that it passed on unread, to its host, and each request that it read, to its host and path. Requests that the gateway refused are left out. The user is the name of who sent the turn's message, or the identity provider's subject if it gave no name.",
       "id": 91,
       "gridPos": {"h": 12, "w": 24, "x": 0, "y": 87},
       "datasource": {"type": "loki", "uid": "${logs}"},
       "targets": [
         {
           "datasource": {"type": "loki", "uid": "${logs}"},
-          "expr": "{app=\"atenet-egress\", container=\"envoy\"} | json | leg=~\"passthrough|mitm|cleartext\" | label_format destination=`{{ if .authority }}{{ .authority }}{{ .path }}{{ else }}{{ .sni }}{{ end }}`",
+          "expr": "{app=\"atenet-egress\", container=\"envoy\"} | json | leg=~\"passthrough|mitm|cleartext\" | turn!=\"\" | label_format destination=`{{ if .authority }}{{ .authority }}{{ .path }}{{ else }}{{ .sni }}{{ end }}`, username=`{{ if .username }}{{ .username }}{{ else }}{{ .subject }}{{ end }}` | drop username=\"\"",
           "queryType": "range",
           "maxLines": 1000,
           "refId": "A"
@@ -1533,14 +1533,14 @@
       ],
       "transformations": [
         {"id": "extractFields", "options": {"source": "labels", "format": "json"}},
-        {"id": "filterFieldsByName", "options": {"include": {"names": ["time", "destination", "status", "duration_ms", "project", "agent", "session", "turn", "subject"]}}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["time", "username", "destination", "status", "duration_ms", "project", "agent", "session", "turn"]}}},
         {"id": "convertFieldType", "options": {"conversions": [{"targetField": "time", "destinationType": "time"}, {"targetField": "duration_ms", "destinationType": "number"}]}},
         {"id": "sortBy", "options": {"sort": [{"field": "time", "desc": true}]}},
         {
           "id": "organize",
           "options": {
-            "indexByName": {"time": 0, "subject": 1, "destination": 2, "status": 3, "duration_ms": 4, "project": 5, "agent": 6, "session": 7, "turn": 8},
-            "renameByName": {"duration_ms": "duration", "subject": "user"}
+            "indexByName": {"time": 0, "username": 1, "destination": 2, "status": 3, "duration_ms": 4, "project": 5, "agent": 6, "session": 7, "turn": 8},
+            "renameByName": {"duration_ms": "duration", "username": "user"}
           }
         }
       ],

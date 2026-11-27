@@ -471,10 +471,12 @@ type Origin struct {
 	SessionID uuid.UUID
 	AgentID   uuid.UUID
 	ProjectID uuid.UUID
-	// UserID and Subject identify the user who sent the turn's message. They
-	// are zero if the request was not authenticated.
-	UserID  uuid.UUID
-	Subject string
+	// UserID, Subject and Username identify the user who sent the turn's
+	// message. They are zero if the request was not authenticated, and
+	// Username is also empty if the identity provider gave no name.
+	UserID   uuid.UUID
+	Subject  string
+	Username string
 	// Provider is the current provider of the agent's model. Its name and
 	// times are not set.
 	Provider Provider

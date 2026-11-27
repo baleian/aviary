@@ -1480,7 +1480,7 @@ func (s *records) LastTurn(ctx context.Context, sessionID uuid.UUID) (store.Orig
 	}
 	origin := store.Origin{
 		TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), AgentID: uuid.UUID(row.AgentID), ProjectID: uuid.UUID(row.ProjectID),
-		Subject: row.Subject,
+		Subject: row.Subject, Username: row.Username,
 	}
 	if row.CreatedBy != nil {
 		origin.UserID = uuid.UUID(*row.CreatedBy)
@@ -1495,7 +1495,7 @@ func originOf(row db.SessionTurnRow) (store.Origin, error) {
 	}
 	origin := store.Origin{
 		TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), AgentID: uuid.UUID(row.AgentID), ProjectID: uuid.UUID(row.ProjectID),
-		Subject: row.Subject,
+		Subject: row.Subject, Username: row.Username,
 		Provider: store.Provider{
 			ID: uuid.UUID(row.ProviderID), ProjectID: uuid.UUID(row.ProjectID), URL: row.ProviderUrl, Headers: headers,
 			APIKey: row.ProviderApiKey,

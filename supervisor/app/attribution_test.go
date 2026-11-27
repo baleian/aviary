@@ -10,9 +10,10 @@ import (
 	"aviary/supervisor/internal/api"
 )
 
-// The egress gateway asks whom each connection of a sandbox is for, and any
-// Supervisor answers with the turn that runs in the sandbox's session or,
-// between turns, the one that ran last, with the user who sent its message.
+// The egress gateway asks whom each connection of a sandbox, and each request
+// that it reads, is for, and any Supervisor answers with the turn that runs in
+// the sandbox's session or, between turns, the one that ran last, with the
+// user who sent its message.
 func TestConnectionsOfASandboxAreAttributed(t *testing.T) {
 	t.Parallel()
 	installation := install(t)
@@ -31,7 +32,9 @@ func TestConnectionsOfASandboxAreAttributed(t *testing.T) {
 	session := s.create("/v1/agents/"+agent+"/sessions", "")
 	first := s.send(session, "hello")
 	runner := installation.given(first.ID)
-	want := map[string]string{"turn": first.ID, "session": session, "agent": agent, "project": project, "user": me.ID, "subject": "admin"}
+	want := map[string]string{
+		"turn": first.ID, "session": session, "agent": agent, "project": project, "user": me.ID, "subject": "admin", "username": "admin@example.com",
+	}
 	attributed := func(what string, want map[string]string) {
 		t.Helper()
 		for _, supervisor := range []*supervisor{s, installation.supervisor()} {

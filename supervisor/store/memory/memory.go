@@ -1624,7 +1624,7 @@ func (s *Store) originOf(turn *turn) store.Origin {
 	origin := store.Origin{TurnID: turn.ID, SessionID: turn.SessionID, AgentID: agent.ID, ProjectID: agent.ProjectID, UserID: turn.CreatedBy}
 	for _, user := range s.users {
 		if user.ID == turn.CreatedBy {
-			origin.Subject = user.Subject
+			origin.Subject, origin.Username = user.Subject, user.Username
 		}
 	}
 	provider := s.providers[agent.Model.Provider]

@@ -1,8 +1,9 @@
-// Package attribution tells the egress gateway of Agent Substrate whom each
-// connection of a sandbox is for: the turn, the session, its agent and
-// project, and the user who sent the turn's message. The gateway asks as an
-// external processor when a sandbox opens a connection, and writes the
-// answer into each line of its access log for the connection.
+// Package attribution tells the egress gateway of Agent Substrate whom the
+// connections and requests of a sandbox are for: the turn, the session, its
+// agent and project, and the user who sent the turn's message. The gateway
+// asks as an external processor when a sandbox opens a connection, and again
+// for each request that it reads, and writes the answer into the lines of its
+// access log.
 package attribution
 
 import (
@@ -42,10 +43,10 @@ func New(st store.Store, atespace string) *Service {
 	return &Service{store: st, atespace: atespace}
 }
 
-// Process answers the headers of each request with the origin of the
-// connection as dynamic metadata, and lets the request go on unchanged. The
-// origin is that of the turn that runs in the sandbox's session or, between
-// turns, of the last one that ran. An error refuses the connection.
+// Process answers the headers of each request with its origin as dynamic
+// metadata, and lets the request go on unchanged. The origin is that of the
+// turn that runs in the sandbox's session or, between turns, of the last one
+// that ran. An error refuses the request.
 func (s *Service) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
 	for {
 		request, err := stream.Recv()
@@ -72,7 +73,7 @@ func (s *Service) Process(stream extprocv3.ExternalProcessor_ProcessServer) erro
 	}
 }
 
-// origin returns the dynamic metadata of a connection of the actor.
+// origin returns the dynamic metadata of a request of the actor.
 func (s *Service) origin(ctx context.Context, actor string) (*structpb.Struct, error) {
 	sessionID, known := s.session(actor)
 	if !known {
@@ -97,6 +98,9 @@ func (s *Service) origin(ctx context.Context, actor string) (*structpb.Struct, e
 		if origin.UserID != uuid.Nil {
 			fields["user"] = origin.UserID.String()
 			fields["subject"] = origin.Subject
+			if origin.Username != "" {
+				fields["username"] = origin.Username
+			}
 		}
 	}
 	values, err := structpb.NewStruct(fields)

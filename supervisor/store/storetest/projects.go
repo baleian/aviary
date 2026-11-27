@@ -1231,7 +1231,7 @@ func (suite suite) testSessionTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if origin.TurnID != turn.ID || origin.SessionID != session.ID || origin.AgentID != agent.ID || origin.ProjectID != project.ID ||
-		origin.UserID != sender.ID || origin.Subject != "subject-of-ann" || origin.Provider.ID != provider.ID ||
+		origin.UserID != sender.ID || origin.Subject != "subject-of-ann" || origin.Username != "ann" || origin.Provider.ID != provider.ID ||
 		origin.Provider.URL != provider.URL || !reflect.DeepEqual(origin.Provider.Headers, provider.Headers) ||
 		string(origin.Provider.APIKey) != "a sealed key" || origin.Provider.APIKeyAt != nil || origin.SecretStore != nil {
 		t.Errorf("SessionTurn = %+v, provider %+v", origin, origin.Provider)
@@ -1500,7 +1500,7 @@ func (suite suite) testLastTurn(t *testing.T) {
 			return
 		}
 		if err != nil || origin.TurnID != want || origin.SessionID != session.ID || origin.AgentID != agent.ID ||
-			origin.ProjectID != project.ID || origin.UserID != sender.ID || origin.Subject != "subject-of-bea" {
+			origin.ProjectID != project.ID || origin.UserID != sender.ID || origin.Subject != "subject-of-bea" || origin.Username != "bea" {
 			t.Errorf("%s: LastTurn = %+v, %v; want turn %s", what, origin, err, want)
 		}
 	}

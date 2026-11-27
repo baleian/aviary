@@ -1,14 +1,24 @@
 {{/*
 What the egress gateway adds to the configuration of its release, so that
-each line of its access log says whom the connection of a sandbox is for:
-the turn, session, agent and project, and the user who sent the turn's
-message. When a sandbox opens a connection, the gateway asks the Supervisors,
-and a connection that they do not answer for fails. helm.awk puts these
-templates into the configuration.
+each line of its access log says whom what a sandbox sent is for: the turn,
+session, agent and project, and the user who sent the turn's message. The
+gateway asks the Supervisors when a sandbox opens a connection, for the lines
+of a connection that it passes on unread, and again for each request that it
+reads, for the line of the request. A connection or a request that they do
+not answer for fails. helm.awk puts these templates into the configuration.
 */}}
 
-{{/* The filters of the CONNECT leg that ask, before its router. */}}
-{{- define "substrate.attributionFilters" -}}
+{{/* The fields of an answer. */}}
+{{- define "substrate.attributionNames" -}}
+turn session agent project user username subject
+{{- end }}
+
+{{/*
+The filter that asks, with the actor that the gateway authenticated. It sends
+no header, since on a request that the gateway reads it runs after the
+request's secrets have been put into them.
+*/}}
+{{- define "substrate.attributionProcessor" -}}
 - name: envoy.filters.http.ext_proc
   typed_config:
     "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
@@ -27,6 +37,11 @@ templates into the configuration.
     message_timeout: 2s
     request_attributes:
     - filter_state['dev.ate.actor.identity']
+    forward_rules:
+      disallowed_headers:
+        patterns:
+        - safe_regex:
+            regex: ".*"
     processing_mode:
       request_header_mode: SEND
       response_header_mode: SKIP
@@ -41,11 +56,19 @@ templates into the configuration.
       receiving_namespaces:
         untyped:
         - aviary
+{{- end }}
+
+{{/*
+The filters of the CONNECT leg, before its router, which keep the answer for
+the connection that the leg opens.
+*/}}
+{{- define "substrate.attributionFilters" -}}
+{{ include "substrate.attributionProcessor" . }}
 - name: envoy.filters.http.set_filter_state
   typed_config:
     "@type": type.googleapis.com/envoy.extensions.filters.http.set_filter_state.v3.Config
     on_request_headers:
-    {{- range list "turn" "session" "agent" "project" "user" "subject" }}
+    {{- range splitList " " (include "substrate.attributionNames" .) }}
     - object_key: dev.aviary.{{ . }}
       factory_key: envoy.hashable_string
       skip_if_empty: true
@@ -57,10 +80,17 @@ templates into the configuration.
     {{- end }}
 {{- end }}
 
-{{/* The fields of a JSON line of the access log, after its actor. */}}
+{{/* The fields of a JSON line of the access log of a connection, after its actor. */}}
 {{- define "substrate.attributionFields" -}}
-{{- range list "turn" "session" "agent" "project" "user" "subject" }}
+{{- range splitList " " (include "substrate.attributionNames" .) }}
 {{ . }}: "%FILTER_STATE(dev.aviary.{{ . }}:PLAIN)%"
+{{- end }}
+{{- end }}
+
+{{/* The fields of a JSON line of the access log of a request, after its actor. */}}
+{{- define "substrate.attributionRequestFields" -}}
+{{- range splitList " " (include "substrate.attributionNames" .) }}
+{{ . }}: "%DYNAMIC_METADATA(aviary:{{ . }})%"
 {{- end }}
 {{- end }}
 
@@ -120,5 +150,5 @@ writes in full, which the release samples at 1%.
 
 {{/* Restarts the gateway when what these templates add changes. */}}
 {{- define "substrate.attributionChecksum" -}}
-{{- print (include "substrate.attributionFilters" .) (include "substrate.attributionFields" .) (include "substrate.attributionCluster" .) (include "substrate.requestLogPercent" .) | sha256sum -}}
+{{- print (include "substrate.attributionFilters" .) (include "substrate.attributionFields" .) (include "substrate.attributionRequestFields" .) (include "substrate.attributionCluster" .) (include "substrate.requestLogPercent" .) | sha256sum -}}
 {{- end }}

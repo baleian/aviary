@@ -1269,7 +1269,7 @@ func (q *Queries) IsSessionBusy(ctx context.Context, sessionID key.ID) (bool, er
 
 const lastTurn = `-- name: LastTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
-       coalesce(users.subject, '') as subject
+       coalesce(users.subject, '') as subject, coalesce(users.username, '') as username
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
@@ -1286,6 +1286,7 @@ type LastTurnRow struct {
 	ProjectID key.ID
 	CreatedBy *key.ID
 	Subject   string
+	Username  string
 }
 
 // Returns the origin of the session's dispatched turn with the highest
@@ -1300,6 +1301,7 @@ func (q *Queries) LastTurn(ctx context.Context, sessionID key.ID) (LastTurnRow, 
 		&i.ProjectID,
 		&i.CreatedBy,
 		&i.Subject,
+		&i.Username,
 	)
 	return i, err
 }
@@ -2759,7 +2761,7 @@ func (q *Queries) ResolveApproval(ctx context.Context, arg ResolveApprovalParams
 
 const sessionTurn = `-- name: SessionTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
-       coalesce(users.subject, '') as subject,
+       coalesce(users.subject, '') as subject, coalesce(users.username, '') as username,
        agents.provider_id, providers.url as provider_url, providers.headers as provider_headers,
        providers.api_key as provider_api_key,
        providers.api_key_store_id, providers.api_key_path, providers.api_key_name,
@@ -2782,6 +2784,7 @@ type SessionTurnRow struct {
 	ProjectID       key.ID
 	CreatedBy       *key.ID
 	Subject         string
+	Username        string
 	ProviderID      key.ID
 	ProviderUrl     string
 	ProviderHeaders *json.RawMessage
@@ -2809,6 +2812,7 @@ func (q *Queries) SessionTurn(ctx context.Context, sessionID key.ID) (SessionTur
 		&i.ProjectID,
 		&i.CreatedBy,
 		&i.Subject,
+		&i.Username,
 		&i.ProviderID,
 		&i.ProviderUrl,
 		&i.ProviderHeaders,

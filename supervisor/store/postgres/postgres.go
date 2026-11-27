@@ -1247,7 +1247,9 @@ func (s *records) LastTurn(ctx context.Context, sessionID uuid.UUID) (store.Orig
 	case err != nil:
 		return store.Origin{}, err
 	}
-	origin := store.Origin{TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID, Subject: row.Subject}
+	origin := store.Origin{
+		TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID, Subject: row.Subject, Username: row.Username,
+	}
 	if row.CreatedBy != nil {
 		origin.UserID = *row.CreatedBy
 	}
@@ -1261,6 +1263,7 @@ func originOf(row db.SessionTurnRow) (store.Origin, error) {
 	}
 	origin := store.Origin{
 		TurnID: row.TurnID, SessionID: row.SessionID, AgentID: row.AgentID, ProjectID: row.ProjectID, Subject: row.Subject,
+		Username: row.Username,
 		Provider: store.Provider{
 			ID: row.ProviderID, ProjectID: row.ProjectID, URL: row.ProviderUrl, Headers: headers, APIKey: row.ProviderApiKey,
 		},

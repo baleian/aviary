@@ -390,26 +390,31 @@ func egress(t *testing.T) {
 		t.Parallel()
 		session := agent.session(t)
 		fetched := run(t, session, fetch+"http://"+mockHost+"/healthz")
+		again := run(t, session, "say again")
 		// The access log of the egress gateway says, for each request that a
-		// sandbox sends, the turn, session, agent and project that it is for.
+		// sandbox sends, the turn, session, agent and project that it is for:
+		// those of the turn that sends it, even on a connection that an
+		// earlier turn opened, as the harness's to its model may be.
 		want := map[string]string{"turn": fetched.ID, "session": session, "agent": agent.id, "project": project}
 		var logged map[string]any
-		eventually(t, soon, "the egress gateway did not log the request of the turn to "+mockHost, func() bool {
+		eventually(t, soon, "the egress gateway did not log the requests of the turns to "+mockHost, func() bool {
+			logged = nil
+			later := false
 			for _, line := range egressLog(t) {
 				if line["turn"] == fetched.ID && line["authority"] == mockHost && line["path"] == "/healthz" {
 					logged = line
-					return true
 				}
+				later = later || line["turn"] == again.ID && line["authority"] == mockHost
 			}
-			return false
+			return logged != nil && later
 		})
 		for name, value := range want {
 			if logged[name] != value {
 				t.Errorf("the log of the request has %s %v, want %s: %v", name, logged[name], value, logged)
 			}
 		}
-		if sender, _ := logged["user"].(string); identity && (sender == "" || sender == "-") {
-			t.Errorf("the log of the request names no user: %v", logged)
+		if sender, _ := logged["user"].(string); identity && (sender == "" || logged["username"] != administrator) {
+			t.Errorf("the log of the request names user %v, %v, want one named %s: %v", logged["user"], logged["username"], administrator, logged)
 		}
 	})
 	t.Run("to a disallowed host", func(t *testing.T) {

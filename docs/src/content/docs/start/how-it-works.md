@@ -17,8 +17,8 @@ The Supervisor keeps the files that messages carry there as well.
 
 A sandbox reaches the outside only through the **egress gateway** of
 Substrate, and only the hosts of its turn: the gateway asks a Supervisor
-whom each connection is for, which it logs, and for the secrets of the
-turn's provider and servers, which it puts into the requests. The
+whom each connection and request is for, which it logs, and for the secrets
+of the turn's provider and servers, which it puts into the requests. The
 Supervisors run as many replicas as the installation gives
 them, and any replica serves any request.
 

@@ -237,6 +237,9 @@ func (s *Service) FetchSecret(ctx context.Context, request *credprovider.FetchSe
 	log := slog.With("turn", origin.TurnID, "session", origin.SessionID, "agent", origin.AgentID, "project", origin.ProjectID)
 	if origin.UserID != uuid.Nil {
 		log = log.With("user", origin.UserID, "subject", origin.Subject)
+		if origin.Username != "" {
+			log = log.With("username", origin.Username)
+		}
 	}
 	var value string
 	switch what.kind {

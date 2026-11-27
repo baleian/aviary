@@ -1453,7 +1453,7 @@ func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error
 
 const lastTurn = `-- name: LastTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
-       coalesce(users.subject, '')::text as subject
+       coalesce(users.subject, '')::text as subject, coalesce(users.username, '')::text as username
 from turns
 join sessions on sessions.id = turns.session_id
 join agents on agents.id = sessions.agent_id
@@ -1470,6 +1470,7 @@ type LastTurnRow struct {
 	ProjectID uuid.UUID
 	CreatedBy *uuid.UUID
 	Subject   string
+	Username  string
 }
 
 // Returns the origin of the session's dispatched turn with the highest
@@ -1484,6 +1485,7 @@ func (q *Queries) LastTurn(ctx context.Context, sessionID uuid.UUID) (LastTurnRo
 		&i.ProjectID,
 		&i.CreatedBy,
 		&i.Subject,
+		&i.Username,
 	)
 	return i, err
 }
@@ -2749,7 +2751,7 @@ func (q *Queries) SeeUser(ctx context.Context, arg SeeUserParams) (User, error) 
 
 const sessionTurn = `-- name: SessionTurn :one
 select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
-       coalesce(users.subject, '')::text as subject,
+       coalesce(users.subject, '')::text as subject, coalesce(users.username, '')::text as username,
        agents.provider_id, providers.url as provider_url, providers.headers as provider_headers,
        providers.api_key as provider_api_key,
        providers.api_key_store_id, providers.api_key_path, providers.api_key_name,
@@ -2772,6 +2774,7 @@ type SessionTurnRow struct {
 	ProjectID       uuid.UUID
 	CreatedBy       *uuid.UUID
 	Subject         string
+	Username        string
 	ProviderID      uuid.UUID
 	ProviderUrl     string
 	ProviderHeaders []byte
@@ -2799,6 +2802,7 @@ func (q *Queries) SessionTurn(ctx context.Context, sessionID uuid.UUID) (Session
 		&i.ProjectID,
 		&i.CreatedBy,
 		&i.Subject,
+		&i.Username,
 		&i.ProviderID,
 		&i.ProviderUrl,
 		&i.ProviderHeaders,

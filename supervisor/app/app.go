@@ -392,7 +392,8 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	}
 	credentialsServer := grpc.NewServer(options...)
 	credprovider.RegisterCredentialProviderServer(credentialsServer, credentials.New(&credentials.Resolver{Store: st, Keys: keys, Stores: stores}, atespace))
-	// It also tells the gateway whom each connection of a sandbox is for.
+	// It also tells the gateway whom the connections and requests of a sandbox
+	// are for.
 	extprocv3.RegisterExternalProcessorServer(credentialsServer, attribution.New(st, atespace))
 	// Metrics have a port of their own, so that they are not exposed with the
 	// API. They are served until serveOn returns.
