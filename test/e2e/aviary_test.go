@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -48,18 +50,19 @@ func TestAviary(t *testing.T) {
 			})
 		}
 		tests := map[string]func(*testing.T){
-			"a sandbox reaches only the hosts that it may": egress,
-			"an agent uses its provider":                   providers,
-			"the models of a provider are listed":          models,
-			"a provider keeps its key in a secret store":   secretStore,
-			"a failed turn reports its reason":             failures,
-			"an idle session loses its sandbox":            loses,
-			"a message carries files into its sandbox":     attaches,
-			"a turn is cancelled":                          cancel,
-			"a session is ended":                           ended,
-			"an agent is deleted":                          deletes,
-			"a client watches the sessions of a project":   watches,
-			"the Supervisors report turn metrics":          supervisorMetrics,
+			"a sandbox reaches only the hosts that it may":  egress,
+			"an agent uses its provider":                    providers,
+			"the models of a provider are listed":           models,
+			"a provider keeps its key in a secret store":    secretStore,
+			"a failed turn reports its reason":              failures,
+			"an idle session loses its sandbox":             loses,
+			"a message carries files into its sandbox":      attaches,
+			"the files of a workspace are read and written": workspaceFiles,
+			"a turn is cancelled":                           cancel,
+			"a session is ended":                            ended,
+			"an agent is deleted":                           deletes,
+			"a client watches the sessions of a project":    watches,
+			"the Supervisors report turn metrics":           supervisorMetrics,
 		}
 		if identity {
 			tests["the API authenticates and authorizes callers"] = callers
@@ -357,6 +360,155 @@ func attaches(t *testing.T) {
 	downloaded, err := io.ReadAll(response.Body)
 	if err != nil || response.StatusCode != http.StatusOK || !bytes.Equal(downloaded, large) {
 		t.Errorf("download: got %d with %d bytes, %v; want 200 with the %d that were uploaded", response.StatusCode, len(downloaded), err, len(large))
+	}
+}
+
+// The files of a session's workspace are read and written through the API,
+// whether its sandbox runs, sleeps or is yet to be made: the first file that
+// is written makes the sandbox, the agent finds what was written, and what
+// the agent writes is read.
+func workspaceFiles(t *testing.T) {
+	session := newAgent(t, harness(harnesses[0])).session(t)
+	files := "/v1/sessions/" + session + "/files"
+	type entry struct {
+		Name, Type, Target, Path string
+		Size                     *int64
+	}
+	type listing struct{ Entries []entry }
+	list := func(what string) []entry {
+		t.Helper()
+		var listed listing
+		if status := request(t, "GET", files+what, "", &listed); status != http.StatusOK {
+			t.Fatalf("GET files%s: status %d, want 200", what, status)
+		}
+		return listed.Entries
+	}
+	// read returns the status, the header and the body of a file, or of a
+	// directory as an archive.
+	read := func(what string, headers ...string) (int, http.Header, []byte) {
+		t.Helper()
+		response, err := call(ctx, administrator, "GET", files+what, "", headers...)
+		if err != nil {
+			t.Fatalf("GET files%s: %v", what, err)
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatalf("GET files%s: %v", what, err)
+		}
+		return response.StatusCode, response.Header, body
+	}
+
+	// A session has no files before it has a sandbox, and reading makes none.
+	if listed := list(""); len(listed) != 0 || sandboxState(t, session) != "" {
+		t.Fatalf("workspace of a new session = %+v, sandbox %q; want no files and no sandbox", listed, sandboxState(t, session))
+	}
+	// Megabytes that do not compress, and a name that needs care.
+	large := make([]byte, 8<<20)
+	if _, err := rand.Read(large); err != nil {
+		t.Fatal(err)
+	}
+	const report = "docs/보고서 2026.txt"
+	for path, content := range map[string]string{"data/large.bin": string(large), report: "to do"} {
+		var written entry
+		began := time.Now()
+		status := request(t, "PUT", files+"/content?path="+url.QueryEscape(path), content, &written)
+		if status != http.StatusCreated || written.Type != "file" || written.Size == nil || *written.Size != int64(len(content)) {
+			t.Fatalf("PUT %s: got %d %+v, want 201 with its %d bytes", path, status, written, len(content))
+		}
+		t.Logf("wrote %s, %d bytes, in %s", path, len(content), time.Since(began).Round(time.Millisecond))
+	}
+	if state := sandboxState(t, session); state != "awake" {
+		t.Errorf("session says that its sandbox is %q after a file was written, want awake", state)
+	}
+	// The agent finds them in its workspace.
+	sum := sha256.Sum256(large)
+	if summed := run(t, session, "run sha256sum data/large.bin"); !strings.Contains(summed.tools(), hex.EncodeToString(sum[:])) {
+		t.Errorf("the file in the workspace is not the one that was written: tool calls %s", summed.tools())
+	}
+	if shown := run(t, session, `run cat "`+report+`"`); !strings.Contains(shown.tools(), "to do") {
+		t.Errorf("agent did not read the file that was written: tool calls %s", shown.tools())
+	}
+
+	// What the agent writes is listed and read: a link as what it names, if
+	// that is in the workspace.
+	content := unique("content")
+	run(t, session, fmt.Sprintf("run mkdir -p out/deep && printf %s > out/result.txt && ln -s result.txt out/latest && ln -s /etc/hostname out/outside", content))
+	var told []string
+	for _, each := range list("?path=out") {
+		size := int64(-1)
+		if each.Size != nil {
+			size = *each.Size
+		}
+		told = append(told, fmt.Sprintf("%s %s %d %s", each.Name, each.Type, size, each.Target))
+	}
+	want := []string{
+		"deep directory -1 ",
+		fmt.Sprintf("latest file %d result.txt", len(content)),
+		"outside symlink -1 /etc/hostname",
+		fmt.Sprintf("result.txt file %d ", len(content)),
+	}
+	if !slices.Equal(told, want) {
+		t.Errorf("the directory lists %q, want %q", told, want)
+	}
+	if status, header, body := read("/content?path=out/result.txt"); status != http.StatusOK || string(body) != content ||
+		!strings.HasPrefix(header.Get("Content-Disposition"), "attachment") {
+		t.Errorf("the file = %d %q, disposition %q; want its content as a download", status, body, header.Get("Content-Disposition"))
+	}
+	if status, header, body := read("/content?path=out/latest", "Range", "bytes=1-3"); status != http.StatusPartialContent ||
+		string(body) != content[1:4] || header.Get("Content-Range") != fmt.Sprintf("bytes 1-3/%d", len(content)) {
+		t.Errorf("a range of the file = %d %q, range %q", status, body, header.Get("Content-Range"))
+	}
+	// What leaves the workspace is not read.
+	if status, _, body := read("/content?path=out/outside"); status != http.StatusNotFound {
+		t.Errorf("a link out of the workspace = %d %s, want 404", status, body)
+	}
+	if status, _, body := read("/content?path=../.aviary/harness-session"); status != http.StatusBadRequest {
+		t.Errorf("a path out of the workspace = %d %s, want 400", status, body)
+	}
+	if found := list("/search?query=RESULT"); len(found) != 1 || found[0].Path != "out/result.txt" {
+		t.Errorf("the search found %+v, want the file by its name", found)
+	}
+	status, _, packed := read("/archive?path=out")
+	unpacked, err := zip.NewReader(bytes.NewReader(packed), int64(len(packed)))
+	if status != http.StatusOK || err != nil {
+		t.Fatalf("the archive = %d, %d bytes, %v", status, len(packed), err)
+	}
+	archived := map[string]string{}
+	for _, file := range unpacked.File {
+		opened, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		inside, err := io.ReadAll(opened)
+		if err != nil {
+			t.Fatal(err)
+		}
+		archived[file.Name] = string(inside)
+	}
+	// A link is in the archive as a link, with what it names as its content.
+	if want := map[string]string{"out/": "", "out/deep/": "", "out/latest": "result.txt", "out/outside": "/etc/hostname", "out/result.txt": content}; !maps.Equal(archived, want) {
+		t.Errorf("the archive has %q, want %q", archived, want)
+	}
+
+	// The files of a session that sleeps are read: the sandbox wakes for them.
+	asleep(t, session)
+	began := time.Now()
+	status, _, body := read("/content?path=data/large.bin")
+	if status != http.StatusOK || !bytes.Equal(body, large) {
+		t.Errorf("the file of a session that slept = %d with %d bytes, want 200 with the %d that were written", status, len(body), len(large))
+	}
+	t.Logf("read %d bytes of a session that slept in %s", len(body), time.Since(began).Round(time.Millisecond))
+	if state := sandboxState(t, session); state != "awake" {
+		t.Errorf("session says that its sandbox is %q after its files were read, want awake", state)
+	}
+	// It sleeps again once they are not used.
+	asleep(t, session)
+
+	// A session that has ended has no files.
+	end(t, session)
+	if status := request(t, "GET", files, "", nil); status != http.StatusConflict {
+		t.Errorf("GET files of a session that has ended: status %d, want 409", status)
 	}
 }
 

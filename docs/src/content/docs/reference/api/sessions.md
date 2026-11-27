@@ -141,6 +141,10 @@ until the session ends, whether a turn runs or not.
   nothing, and the first file that is written creates a sandbox for it.
 - **Who.** Those who may read the session may read its files. Besides
   admins, only the creator of the session may write them.
+- **Long answers.** Agent Substrate gives a sandbox five minutes to answer
+  a request, so a file or an archive that takes longer to download is cut
+  off. Over a slow connection, read a large file in ranges. A file may take
+  longer than that to upload.
 
 Each of them returns 400 `invalid_request` for a path that is not one below the workspace, 409 `session_ended` if the session has ended, 503 `no_room` with `Retry-After` if no worker has room for the sandbox, and 503 `sandbox_unavailable` with `Retry-After` if the sandbox cannot be woken for the moment, as while it is put to sleep, or after it crashed and before it is restored.
 
