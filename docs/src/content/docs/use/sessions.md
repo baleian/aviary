@@ -60,6 +60,10 @@ does there.
   their names. A file opens in a tab: a text as it is written, and a
   Markdown file, a web page, a picture and a PDF as what they make. Of a
   long text, the first mebibyte shows.
+- **Web pages.** A page that the agent wrote runs its scripts, as a report
+  with a chart does. It runs apart from the web UI, where it has nothing of
+  yours, and loads what it names with a full address, such as a library, but
+  not the files beside it in the workspace.
 - **Taking files out.** A file is downloaded as it is, and a directory, or
   the whole workspace, as a ZIP file.
 - **Putting files in.** Those who may send the session messages upload

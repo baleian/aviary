@@ -343,14 +343,7 @@ function Opened({
             />
           </div>
         ) : data.text !== undefined && sort.look === "page" ? (
-          <iframe
-            className="fv-page"
-            title={name}
-            // The page runs its scripts apart from the web UI: it has no
-            // origin, and so nothing of the caller's.
-            sandbox="allow-scripts"
-            srcDoc={data.text}
-          />
+          <Page name={name} text={data.text} />
         ) : sort.look === "image" ? (
           <div className="fv-pic">
             <Picture
@@ -382,6 +375,32 @@ function Opened({
         </p>
       )}
     </>
+  );
+}
+
+// Where the server has the page in which a page of a workspace shows.
+const FRAME = "/sandbox.html";
+
+// Page shows a web page that an agent wrote, with its scripts. It shows in a
+// frame without an origin, so that the page has nothing of the web UI's: the
+// frame loads a page of the web UI's server that takes the text, and shows
+// it in its own place.
+function Page({ name, text }: { name: string; text: string }) {
+  return (
+    <iframe
+      // Another text gets a frame of its own: what a frame shows has taken
+      // the place of the page that was told the text.
+      key={text}
+      className="fv-page"
+      title={name}
+      src={FRAME}
+      sandbox="allow-scripts"
+      // A frame without an origin is told by no name but "*". It is told
+      // nothing that the page that it shows does not have.
+      onLoad={(event) =>
+        event.currentTarget.contentWindow?.postMessage({ page: text }, "*")
+      }
+    />
   );
 }
 

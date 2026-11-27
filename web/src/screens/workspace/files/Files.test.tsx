@@ -300,6 +300,19 @@ it("shows the beginning of a long text, and saves what it cannot show", async ()
 });
 
 it("shows a page that the agent wrote apart from the web UI", async () => {
+  // happy-dom loads no page into a frame, and says so on a console that is
+  // not that of the tests.
+  const { stderr } = (
+    globalThis as unknown as {
+      process: { stderr: { write(...told: unknown[]): boolean } };
+    }
+  ).process;
+  const write = stderr.write;
+  vi.spyOn(stderr, "write").mockImplementation((...told) =>
+    String(told[0]).includes("Iframe page loading is disabled")
+      ? true
+      : Reflect.apply(write, stderr, told),
+  );
   const user = await files(await sessionOf(TRIAGE));
   await names();
   await user.click(row("reports"));
@@ -310,9 +323,21 @@ it("shows a page that the agent wrote apart from the web UI", async () => {
     expect(frame).not.toBeNull();
     return frame!;
   });
-  // The page has no origin, so nothing of the caller's.
+  // The page shows in a frame without an origin, which has nothing of the
+  // caller's, and not as the document of a frame of the web UI.
   expect(page.getAttribute("sandbox")).toBe("allow-scripts");
-  expect(page.getAttribute("srcdoc")).toContain("<html");
+  expect(page.getAttribute("src")).toBe("/sandbox.html");
+  expect(page.getAttribute("srcdoc")).toBeNull();
+  // The frame is told the page once it has loaded.
+  const told = vi.fn();
+  Object.defineProperty(page, "contentWindow", {
+    configurable: true,
+    value: { postMessage: told },
+  });
+  fireEvent.load(page);
+  expect(told).toHaveBeenCalledTimes(1);
+  expect(told.mock.calls[0][0].page).toContain("<title>Checkout errors");
+  expect(told.mock.calls[0][1]).toBe("*");
   // A document of the workspace opens the files that it links to.
   await user.click(row("summary.md"));
   await waitFor(() =>

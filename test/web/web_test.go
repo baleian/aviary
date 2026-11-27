@@ -177,6 +177,31 @@ func TestServesThePage(t *testing.T) {
 	}
 }
 
+// The page in which the web UI shows a web page that an agent wrote has no
+// origin, whatever frames it, and only the web UI frames it.
+func TestServesTheFrameOfAPageWithoutAnOrigin(t *testing.T) {
+	for _, server := range []string{fronting, alone} {
+		response, body := get(t, server+"/sandbox.html")
+		if response.StatusCode != http.StatusOK || !strings.Contains(body, "a frame") {
+			t.Fatalf("%s/sandbox.html = %d %q, want the frame", server, response.StatusCode, body)
+		}
+		// One policy, and not that of the web UI, which would keep the page
+		// out of every frame and its scripts from running.
+		if policies := response.Header.Values("Content-Security-Policy"); len(policies) != 1 || policies[0] != "sandbox allow-scripts; frame-ancestors 'self'" {
+			t.Errorf("%s/sandbox.html: Content-Security-Policy %q", server, policies)
+		}
+		for name, want := range map[string]string{
+			"X-Content-Type-Options": "nosniff",
+			"Referrer-Policy":        "no-referrer",
+			"Cache-Control":          "no-cache",
+		} {
+			if got := response.Header.Get(name); got != want {
+				t.Errorf("%s/sandbox.html: %s = %q, want %q", server, name, got, want)
+			}
+		}
+	}
+}
+
 // Every path that is not a file is a screen of the web UI: the page, which
 // reads the path.
 func TestServesThePageForItsScreens(t *testing.T) {

@@ -33,6 +33,13 @@ There are three ways for the browser to find the API:
   [Configuration](../reference/configuration.md)), so that browsers let its pages call the
   API there.
 
+The web UI shows a web page that an agent wrote in a frame of
+`/sandbox.html`, which the server sends with a `Content-Security-Policy` of
+its own in place of that of the web UI, `sandbox allow-scripts;
+frame-ancestors 'self'`: the page has no origin, and only the web UI frames
+it. Whatever is in front of the server must leave the headers of that path
+as they are, or the pages of agents do not show.
+
 The server listens on port 8080 as a user that is not root. When it starts
 it writes its configuration to `/etc/nginx/conf.d` and uses `/tmp`, so with
 a read-only root file system both need a volume, as in `hack/kind/web.yaml`.
