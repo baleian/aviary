@@ -290,7 +290,7 @@ func (d *Driver) attempt(ctx, following context.Context, r *run, given bool) (*s
 	// The runner may get the turn even if the request fails.
 	r.give()
 	err = runner.Start(following, turn.ID, sandbox.Turn{
-		Text: turn.Text, Files: files, Instructions: turn.Instructions, Approval: turn.Approval,
+		Text: turn.Text, Files: files, Instructions: turn.Instructions,
 		Environment: set.environment, McpServers: set.servers,
 	})
 	if errors.Is(err, sandbox.ErrBusy) {

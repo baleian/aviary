@@ -22,7 +22,7 @@ the turn said drops it.
 | `plan.update` | `entries`: the agent's plan, each entry with `content`, `priority` and `status`. |
 | `session.update` | `title`: a title that the harness gives the session. Aviary does not set it: a client that wants it changes the title of the session. |
 | `mcp.unsupported` | `servers`: the MCP servers that the session has on but whose transport the harness does not support, each with `id`, `name` and `transport`. The turn runs without them. |
-| `approval.requested` | The harness asks a person before it acts, and waits. `id`: the request. `tool_call`: what the harness is about to do, with the fields of `tool.call`. `options`: the possible answers, each with `id`, `name` and `kind`, which is `allow_once`, `allow_always`, `reject_once` or `reject_always`. |
+| `approval.requested` | The harness asks a person, and waits. `id`: the request. `tool_call`: what the harness is about to do, with the fields of `tool.call`. `options`: the possible answers, each with `id`, `name` and `kind`, which is `allow_once`, `allow_always`, `reject_once` or `reject_always`. |
 | `approval.resolved` | The harness has its answer to the request `id`. `outcome`: `selected` with the chosen `option_id`, or `cancelled` if the turn was stopped before an answer came. `answered_by`: with an identity provider, the ID of the user who answered. |
 | `turn.completed` | `stop_reason`: why the harness ended the turn. `usage`: the token usage that the harness reported, if any. The last event of the turn. |
 | `turn.failed` | The turn did not complete. `reason`: one of the reasons below. `message`: what is known of the failure. The last event of the turn. |

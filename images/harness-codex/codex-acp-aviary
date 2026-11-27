@@ -9,10 +9,4 @@ CODEX_CONFIG=$(jq --null-input --compact-output \
   --arg model "$AVIARY_LLM_MODEL" --arg base_url "$AVIARY_LLM_BASE_URL" --argjson headers "$headers" \
   '{model: $model, model_provider: "aviary", model_providers: {aviary: {base_url: $base_url, http_headers: $headers}}}')
 export CODEX_CONFIG
-# Read-only mode makes Codex ask: it runs commands in a sandbox of its own,
-# which cannot start in the session's sandbox, so a command runs only after
-# the model asks to run it outside that sandbox and a person allows it.
-if [ "${AVIARY_APPROVAL:-}" = ask ]; then
-  export INITIAL_AGENT_MODE=read-only
-fi
 exec codex-acp

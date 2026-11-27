@@ -10,9 +10,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// The name, description, model, instructions and approval of an agent are
-// replaced together, and the next turn of its sessions runs with them. Its
-// slug and its harness stay.
+// The name, description, model and instructions of an agent are replaced
+// together, and the next turn of its sessions runs with them. Its slug and
+// its harness stay.
 func TestAgentIsReplaced(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
@@ -47,21 +47,21 @@ func TestAgentIsReplaced(t *testing.T) {
 		runner := aviary.given(s.send(session, "hello").ID)
 		runner.report(started("harness-session"))
 		runner.report(finished("end_turn", nil))
-		return []string{runner.Instructions, runner.Approval, runner.Environment["AVIARY_APPROVAL"], runner.Environment["AVIARY_LLM_MODEL"]}
+		return []string{runner.Instructions, runner.Environment["AVIARY_LLM_MODEL"]}
 	}
-	if settings := given(); !reflect.DeepEqual(settings, []string{"Be brief.", "", "", "a-model"}) {
+	if settings := given(); !reflect.DeepEqual(settings, []string{"Be brief.", "a-model"}) {
 		t.Errorf("runner of the agent's turn was given %q", settings)
 	}
 
 	// What the body leaves out is empty afterwards.
 	var replaced map[string]any
-	body := `{"name": "Reviewer", "instructions": "Be thorough.", "approval": "ask", ` + model(second, "another-model") + `}`
+	body := `{"name": "Reviewer", "instructions": "Be thorough.", ` + model(second, "another-model") + `}`
 	if status, _ := s.request("PUT", path, body, &replaced); status != http.StatusOK {
 		t.Fatalf("PUT %s %s: status %d, want 200", path, body, status)
 	}
 	described, present := replaced["description"]
 	if replaced["id"] != created["id"] || replaced["project_id"] != project || replaced["slug"] != "reviewer" || replaced["harness"] != "codex" ||
-		replaced["name"] != "Reviewer" || !present || described != "" || replaced["instructions"] != "Be thorough." || replaced["approval"] != "ask" ||
+		replaced["name"] != "Reviewer" || !present || described != "" || replaced["instructions"] != "Be thorough." ||
 		!reflect.DeepEqual(replaced["model"], map[string]any{"provider": second, "name": "another-model"}) || replaced["created_at"] != created["created_at"] {
 		t.Errorf("replaced agent = %v", replaced)
 	}
@@ -80,7 +80,7 @@ func TestAgentIsReplaced(t *testing.T) {
 	if again := read(); !reflect.DeepEqual(again, replaced) {
 		t.Errorf("agent read after it was replaced = %v, want %v", again, replaced)
 	}
-	if settings := given(); !reflect.DeepEqual(settings, []string{"Be thorough.", "ask", "ask", "another-model"}) {
+	if settings := given(); !reflect.DeepEqual(settings, []string{"Be thorough.", "another-model"}) {
 		t.Errorf("runner of the replaced agent's turn was given %q", settings)
 	}
 
@@ -88,7 +88,7 @@ func TestAgentIsReplaced(t *testing.T) {
 	var plain map[string]any
 	body = `{"slug": "reviewer", "harness": "codex", ` + model(first, "a-model") + `}`
 	if status, _ := s.request("PUT", path, body, &plain); status != http.StatusOK || plain["slug"] != "reviewer" || plain["harness"] != "codex" ||
-		plain["name"] != "" || plain["instructions"] != nil || plain["approval"] != nil {
+		plain["name"] != "" || plain["instructions"] != nil {
 		t.Errorf("PUT %s %s = %d %v, want 200 with an agent that has only a model", path, body, status, plain)
 	}
 	last := read()
@@ -102,7 +102,6 @@ func TestAgentIsReplaced(t *testing.T) {
 		{path, `{"name": "Reviewer"}`, http.StatusBadRequest, "invalid_request"},
 		{path, `{"slug": "renamed", ` + model(first, "a-model") + `}`, http.StatusBadRequest, "invalid_request"},
 		{path, `{"harness": "opencode", ` + model(first, "a-model") + `}`, http.StatusBadRequest, "invalid_request"},
-		{path, `{"approval": "always", ` + model(first, "a-model") + `}`, http.StatusBadRequest, "invalid_request"},
 		{path, `{"id": "` + uuid.NewString() + `", ` + model(first, "a-model") + `}`, http.StatusBadRequest, "invalid_request"},
 		{path, `{` + model(first, "") + `}`, http.StatusBadRequest, "invalid_request"},
 		{path, `{` + model(theirs, "a-model") + `}`, http.StatusBadRequest, "invalid_request"},

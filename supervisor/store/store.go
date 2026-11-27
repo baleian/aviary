@@ -84,10 +84,7 @@ type Agent struct {
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	// Instructions, if not empty, are given to the agent before every turn.
 	Instructions string `json:"instructions,omitempty"`
-	// Approval is "ask" if the harness asks a person for approval before it
-	// acts. If empty, the harness does not ask.
-	Approval string `json:"approval,omitempty"`
-	Model    Model  `json:"model"`
+	Model        Model  `json:"model"`
 	// McpServers are the MCP servers of the project that the agent begins
 	// its sessions with, in the order of the project's servers.
 	McpServers []uuid.UUID `json:"mcp_servers,omitempty"`
@@ -434,10 +431,9 @@ type FollowedTurn struct {
 	Turn
 	AgentID   uuid.UUID
 	ProjectID uuid.UUID
-	// Harness, Instructions and Approval are those of the session's agent.
+	// Harness and Instructions are those of the session's agent.
 	Harness      string
 	Instructions string
-	Approval     string
 	ProviderURL  string
 	Model        string
 	// Sandbox and SandboxState are empty if the session has no sandbox.

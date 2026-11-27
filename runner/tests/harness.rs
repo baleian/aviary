@@ -95,8 +95,8 @@ struct Bench {
     made: AtomicU32,
 }
 
-/// A turn's message, with the agent's instructions and approval mode, and the
-/// MCP servers of the session.
+/// A turn's message, with the agent's instructions and the MCP servers of the
+/// session.
 #[derive(Default)]
 struct Message<'a> {
     text: &'a str,
@@ -104,8 +104,6 @@ struct Message<'a> {
     /// attachments of the home.
     files: &'a [String],
     instructions: &'a str,
-    /// "ask", or empty.
-    approval: &'a str,
     mcp_servers: &'a [Value],
     /// The model of the turn, if not "mock".
     model: &'a str,
@@ -343,7 +341,7 @@ impl Sitting {
     /// Starts the next turn of the session.
     async fn start(&self, message: Message<'_>) -> Turn<'_> {
         let id = format!("t{}", self.turns.fetch_add(1, Ordering::Relaxed) + 1);
-        let mut environment = json!({
+        let environment = json!({
             "AVIARY_LLM_BASE_URL": "http://model:8080/v1",
             "AVIARY_LLM_MODEL": if message.model.is_empty() { "mock" } else { message.model },
             "AVIARY_LLM_API_KEY": KEY,
@@ -353,10 +351,6 @@ impl Sitting {
             "http_proxy": PROXY, "https_proxy": PROXY, "no_proxy": "localhost,127.0.0.1,::1,model",
             "NODE_USE_ENV_PROXY": "1",
         });
-        // Set only for an agent that asks, as the Supervisor does.
-        if !message.approval.is_empty() {
-            environment["AVIARY_APPROVAL"] = json!(message.approval);
-        }
         let started = self
             .runner
             .turn_with(
@@ -365,7 +359,6 @@ impl Sitting {
                     "text": message.text,
                     "files": message.files,
                     "instructions": message.instructions,
-                    "approval": message.approval,
                     "environment": environment,
                     "mcp_servers": message.mcp_servers,
                 }),
@@ -488,26 +481,6 @@ impl Turn<'_> {
         assert_eq!(told, StatusCode::NO_CONTENT);
     }
 
-    /// Answers the approval request with the option of the given kind.
-    async fn answer(&mut self, kind: &str) {
-        let asked = find(&self.events, "approval.requested").expect("no approval.requested event");
-        let options = asked.data["options"].as_array().unwrap();
-        let option = options
-            .iter()
-            .find(|option| option["kind"] == kind)
-            .unwrap_or_else(|| panic!("no {kind} option in {}", asked.data));
-        let answered = self
-            .sitting
-            .runner
-            .answer(
-                &self.id,
-                asked.data["id"].as_str().unwrap(),
-                option["id"].as_str().unwrap(),
-            )
-            .await;
-        assert_eq!(answered, StatusCode::NO_CONTENT);
-    }
-
     /// Waits for the turn to end.
     async fn end(mut self) -> Ended {
         loop {
@@ -584,11 +557,6 @@ impl Ended {
             .as_str()
             .unwrap()
             .to_owned()
-    }
-
-    /// Returns the outcome of the turn's approval request.
-    fn resolved(&self) -> Option<&str> {
-        find(&self.events, "approval.resolved")?.data["outcome"].as_str()
     }
 }
 
@@ -765,90 +733,6 @@ async fn instructions_reach_the_model_every_turn() {
     .await;
 }
 
-/// How a turn ends after a refusal depends on the harness.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs the harness images"]
-async fn approval_mode_runs_only_allowed_commands() {
-    each(|bench| async move {
-        let session = bench.session().await;
-        let asked = |events: &[Event]| find(events, "approval.requested").is_some();
-        let (allowed, refused, dropped) = (word("allowed"), word("refused"), word("dropped"));
-        let ask = |text| Message {
-            text,
-            approval: "ask",
-            ..Message::default()
-        };
-
-        let allow = format!("escalate touch {allowed}");
-        let mut turn = session.start(ask(&allow)).await;
-        turn.until("no approval request", asked).await;
-        let request = find(&turn.events, "approval.requested")
-            .unwrap()
-            .data
-            .clone();
-        let kinds: Vec<&str> = request["options"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|option| option["kind"].as_str())
-            .collect();
-        assert!(
-            request.to_string().contains(&allowed)
-                && kinds.contains(&"allow_once")
-                && kinds.contains(&"reject_once"),
-            "{}: unexpected approval request {request}",
-            bench.image
-        );
-        assert!(
-            !session.files().await.contains(&allowed),
-            "{}: command ran before it was allowed",
-            bench.image
-        );
-        turn.answer("allow_once").await;
-        let first = turn.end().await;
-        first.completed();
-        assert!(
-            first.resolved() == Some("selected") && session.files().await.contains(&allowed),
-            "{}: allowed command did not run: {:?}",
-            first.image,
-            first.events
-        );
-
-        let refuse = format!("escalate touch {refused}");
-        let mut turn = session.start(ask(&refuse)).await;
-        turn.until("no approval request", asked).await;
-        turn.answer("reject_once").await;
-        let second = turn.end().await;
-        assert!(
-            second.stopped().is_some()
-                && second.resolved() == Some("selected")
-                && !session.files().await.contains(&refused),
-            "{}: unexpected events after a refusal: {:?}\n{}",
-            second.image,
-            second.events,
-            second.log
-        );
-
-        let drop = format!("escalate touch {dropped}");
-        let mut turn = session.start(ask(&drop)).await;
-        turn.until("no approval request", asked).await;
-        turn.cancel().await;
-        let third = turn.end().await;
-        assert!(
-            third.stopped() == Some("cancelled")
-                && third.resolved() == Some("cancelled")
-                && !session.files().await.contains(&dropped),
-            "{}: unexpected events after cancelling a pending approval: {:?}\n{}",
-            third.image,
-            third.events,
-            third.log
-        );
-
-        session.run(ask("recall")).await.completed().says(&allow);
-    })
-    .await;
-}
-
 /// A picture of one white pixel.
 const PIXEL: [u8; 69] = [
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -858,45 +742,62 @@ const PIXEL: [u8; 69] = [
     0x44, 0xae, 0x42, 0x60, 0x82,
 ];
 
-/// The files that messages carry are what the user gave the agent, so an
-/// agent that asks reads them with its tool for reading files without asking.
-/// The file is a picture, which every harness has a tool to look at.
+/// An agent acts without asking: its harness asks nobody before it runs a
+/// command, also one that writes outside the workspace, or before it reads a
+/// file of secrets or a file that a message carries. The file of the message
+/// is a picture, which every harness has a tool to look at.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the harness images"]
-async fn asking_agent_reads_the_files_of_messages_without_asking() {
+async fn agent_acts_without_asking() {
     each(|bench| async move {
         let session = bench.session().await;
         let written = session.runner.file("1/pixel.png", PIXEL.to_vec()).await;
         assert_eq!(written, StatusCode::NO_CONTENT, "{}", bench.image);
-        let read = Message {
-            text: "read /home/.attachments/1/pixel.png",
-            approval: "ask",
-            ..Message::default()
-        };
-        let mut turn = session.start(read).await;
-        turn.until("neither an approval request nor the end", |events| {
-            find(events, "approval.requested").is_some()
-                || matches!(events.last(), Some(last) if last.name == "finished" || last.name == "failed")
-        })
-        .await;
+        let made = word("made");
+        let mut ended = Vec::new();
+        for text in [
+            format!("run touch {made} .env /home/{made}"),
+            "read /home/workspace/.env".to_owned(),
+            "read /home/.attachments/1/pixel.png".to_owned(),
+        ] {
+            let mut turn = session
+                .start(Message {
+                    text: &text,
+                    ..Message::default()
+                })
+                .await;
+            turn.until("neither an approval request nor the end", |events| {
+                find(events, "approval.requested").is_some()
+                    || matches!(events.last(), Some(last) if last.name == "finished" || last.name == "failed")
+            })
+            .await;
+            assert!(
+                find(&turn.events, "approval.requested").is_none(),
+                "{}: asked before {text}: {:?}",
+                bench.image,
+                turn.events
+            );
+            let done = turn.end().await;
+            done.completed();
+            ended.push(done);
+        }
         assert!(
-            find(&turn.events, "approval.requested").is_none(),
-            "{}: asked before it read a file of a message: {:?}",
+            session.files().await.contains(&made),
+            "{}: the command did not run: {:?}",
             bench.image,
-            turn.events
+            ended[0].events
         );
-        let ended = turn.end().await;
-        ended.completed();
-        let calls: Vec<_> = ended
+        let read = &ended[2];
+        let calls: Vec<_> = read
             .events
             .iter()
             .filter(|event| event.name.starts_with("tool."))
             .collect();
         assert!(
             !calls.is_empty() && !calls.iter().any(|call| call.data["status"] == "failed"),
-            "{}: the file was not read: {:?}",
-            ended.image,
-            ended.events
+            "{}: the file of the message was not read: {:?}",
+            read.image,
+            read.events
         );
     })
     .await;
@@ -1250,31 +1151,6 @@ async fn harness_calls_the_tools_of_mcp_servers() {
                 fed.says("x-server: feed");
             }
         }
-    })
-    .await;
-}
-
-/// An agent that asks asks before it calls a tool of an MCP server.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs the harness images"]
-async fn agent_that_asks_asks_before_it_calls_a_tool_of_an_mcp_server() {
-    each(|bench| async move {
-        let session = bench.session().await;
-        let servers = [mcp_server("11", "web", "http", "/mcp")];
-        let mut turn = session
-            .start(Message {
-                text: r#"use web headers {"names": ["x-server"]}"#,
-                approval: "ask",
-                mcp_servers: &servers,
-                ..Message::default()
-            })
-            .await;
-        turn.until("no approval request", |events| {
-            find(events, "approval.requested").is_some()
-        })
-        .await;
-        turn.answer("allow_once").await;
-        turn.end().await.completed().says("x-server: web");
     })
     .await;
 }

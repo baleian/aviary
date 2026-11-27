@@ -64,7 +64,6 @@ func TestRefusals(t *testing.T) {
 
 		{"POST", agents, `{"slug": "test", "harness": "another", ` + model + `}`, http.StatusBadRequest, invalid},
 		{"POST", agents, `{"slug": "test", "harness": "opencode", "resources": {"limits": {"memory": "2Gi"}}, ` + model + `}`, http.StatusBadRequest, invalid},
-		{"POST", agents, `{"slug": "test", "harness": "opencode", "approval": "always", ` + model + `}`, http.StatusBadRequest, invalid},
 		{"POST", agents, `{"slug": "test", "harness": "opencode", "description": 7, ` + model + `}`, http.StatusBadRequest, invalid},
 		{"POST", agents, `{"slug": "test", "harness": "opencode"}`, http.StatusBadRequest, invalid},
 		{"POST", "/v1/projects/" + none + "/agents", `{"slug": "test", "harness": "opencode", ` + model + `}`, http.StatusNotFound, notFound},
@@ -159,20 +158,20 @@ func TestResources(t *testing.T) {
 
 	provider := s.create("/v1/projects/"+project+"/providers", `{"name": "a provider", "url": "https://api.example.com/v1"}`)
 	agents := returned("/v1/projects/"+project+"/agents", `{"slug": "reviewer", "name": "Code reviewer", "description": "Reviews a branch.", "harness": "codex", `+
-		`"instructions": "Be brief.", "approval": "ask", "model": {"provider": "`+provider+`", "name": "a-model"}}`, "/v1/agents/", "agents")
+		`"instructions": "Be brief.", "model": {"provider": "`+provider+`", "name": "a-model"}}`, "/v1/agents/", "agents")
 	agent, _ := agents["created"]["id"].(string)
 	for how, full := range agents {
 		if full["id"] != agent || full["project_id"] != project || !named(full, "reviewer", "Code reviewer") || full["description"] != "Reviews a branch." ||
-			full["harness"] != "codex" || full["instructions"] != "Be brief." || full["approval"] != "ask" {
+			full["harness"] != "codex" || full["instructions"] != "Be brief." {
 			t.Errorf("%s agent %v", how, full)
 		}
 	}
 	// Optional fields that were not given are omitted, not defaulted, except
 	// for the name and the description, which are empty.
-	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "name": "", "description": "", "instructions": "", "approval": ""}`} {
+	for _, body := range []string{`{"harness": "opencode"}`, `{"harness": "opencode", "name": "", "description": "", "instructions": ""}`} {
 		plain := get("/v1/agents/" + s.agent(project, body))
 		description, described := plain["description"]
-		if name, given := plain["name"]; plain["instructions"] != nil || plain["approval"] != nil || plain["harness"] != "opencode" ||
+		if name, given := plain["name"]; plain["instructions"] != nil || plain["harness"] != "opencode" ||
 			!given || name != "" || !described || description != "" {
 			t.Errorf("agent created with %s = %v", body, plain)
 		}

@@ -184,11 +184,11 @@ var (
 func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	i := install(t)
 	driver, _ := i.supervisor()
-	session := i.session(store.Agent{Instructions: "be kind", Approval: Ask})
+	session := i.session(store.Agent{Instructions: "be kind"})
 	turn := i.send(driver, session, "hello")
 
 	given := i.service.Turn(t)
-	if given.ID != turn.ID.String() || given.Text != "hello" || given.Instructions != "be kind" || given.Approval != Ask {
+	if given.ID != turn.ID.String() || given.Text != "hello" || given.Instructions != "be kind" {
 		t.Errorf("runner got %+v", given)
 	}
 	// The harness reaches the provider at its URL, and sends a placeholder in
@@ -198,7 +198,6 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 		"AVIARY_LLM_MODEL":    "a-model",
 		"AVIARY_LLM_API_KEY":  "aviary",
 		"AVIARY_LLM_HEADERS":  "{}",
-		"AVIARY_APPROVAL":     Ask,
 	}
 	for name, value := range want {
 		if given.Environment[name] != value {
@@ -240,11 +239,10 @@ func TestATurnRunsInTheSandboxOfItsSession(t *testing.T) {
 	again.Tell("finished", finished)
 	i.ended(next.ID)
 
-	// An agent without approval gets no AVIARY_APPROVAL.
+	// The turn of another session runs in a sandbox of its own.
 	plain := i.session(store.Agent{})
 	i.send(driver, plain, "hello")
-	other := i.service.Turn(t)
-	if _, asks := other.Environment["AVIARY_APPROVAL"]; asks || other.Sandbox == given.Sandbox || other.Approval != "" {
+	if other := i.service.Turn(t); other.Sandbox == given.Sandbox {
 		t.Errorf("other session's turn = %+v", other)
 	}
 }
@@ -387,7 +385,7 @@ func TestATurnThatRunsForTooLongIsGivenUp(t *testing.T) {
 func TestATurnThatWaitsForAPersonHasNoMoreTimeThanAnyOther(t *testing.T) {
 	i := install(t, func(config *Config) { config.MaxTurn = 300 * time.Millisecond })
 	driver, _ := i.supervisor()
-	turn := i.send(driver, i.session(store.Agent{Approval: Ask}), "hello")
+	turn := i.send(driver, i.session(store.Agent{}), "hello")
 	given := i.service.Turn(t)
 	given.Tell("started", started)
 	given.Tell("approval.requested", asks)
@@ -1112,7 +1110,7 @@ func TestATurnThatWaitsForAPersonGoesOnWhenItIsToldSomething(t *testing.T) {
 	for _, answered := range []bool{true, false} {
 		i := install(t)
 		driver, _ := i.supervisor()
-		turn := i.send(driver, i.session(store.Agent{Approval: Ask}), "hello")
+		turn := i.send(driver, i.session(store.Agent{}), "hello")
 		given := i.service.Turn(t)
 		given.Tell("started", started)
 		given.Tell("approval.requested", asks)

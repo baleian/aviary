@@ -34,10 +34,6 @@ func TestAviary(t *testing.T) {
 				t.Parallel()
 				session(t, harness)
 			})
-			t.Run(harness+" agent asks for approval", func(t *testing.T) {
-				t.Parallel()
-				approval(t, harness)
-			})
 			t.Run("replaced "+harness+" agent runs its next turn as it then is", func(t *testing.T) {
 				t.Parallel()
 				replaces(t, harness)
@@ -45,10 +41,6 @@ func TestAviary(t *testing.T) {
 			t.Run("idle "+harness+" session sleeps", func(t *testing.T) {
 				t.Parallel()
 				sleeps(t, harness)
-			})
-			t.Run(harness+" turn awaiting approval sleeps until it is answered", func(t *testing.T) {
-				t.Parallel()
-				waitsAsleep(t, harness)
 			})
 			t.Run(harness+" agent uses the tools of MCP servers", func(t *testing.T) {
 				t.Parallel()
@@ -204,79 +196,9 @@ func session(t *testing.T, name string) {
 	})
 }
 
-// An agent with approval "ask" runs a command only if a person allows it. The
-// turn waits for the answer, which is given through the API.
-func approval(t *testing.T, name string) {
-	session := newAgent(t, fmt.Sprintf(`{"harness": %q, "approval": "ask"}`, name)).session(t)
-	// answered sends text, answers the approval request with the option of
-	// kind, and returns the ended turn.
-	answered := func(text, kind string) turn {
-		t.Helper()
-		accepted := send(t, session, text)
-		events := read(t, accepted.ID)
-		var asked approvalRequest
-		events.until(t, "asked for approval", func(next event) bool {
-			return next.Type == "approval.requested" && json.Unmarshal([]byte(next.Data), &asked) == nil
-		})
-		// The request names the command. While it waits, the turn is running
-		// and lists the request.
-		command := strings.TrimPrefix(text, "escalate ")
-		waiting := record(t, accepted.ID)
-		if !strings.Contains(string(asked.ToolCall.Input), command) || waiting.State != "running" ||
-			len(waiting.Approvals) != 1 || waiting.Approvals[0].ID != asked.ID {
-			t.Errorf("approval request = %+v, turn state = %s, pending approvals = %+v", asked, waiting.State, waiting.Approvals)
-		}
-		var option string
-		for _, offered := range asked.Options {
-			if offered.Kind == kind {
-				option = offered.ID
-			}
-		}
-		answer := fmt.Sprintf(`{"option_id": %q}`, option)
-		if status := request(t, "POST", "/v1/turns/"+accepted.ID+"/approvals/"+asked.ID, answer, nil); status != http.StatusAccepted {
-			t.Fatalf("answer %s to approval request %+v: got status %d, want 202", answer, asked, status)
-		}
-		// A harness ends a turn after a refusal in its own way, but the turn
-		// does not fail.
-		if last := events.end(t); last.Type != "turn.completed" {
-			t.Fatalf("turn for %q ended with %s %s, want turn.completed", text, last.Type, last.Data)
-		}
-		ended := record(t, accepted.ID)
-		var kept []map[string]any
-		for _, encoded := range ended.Items {
-			var item map[string]any
-			if json.Unmarshal(encoded, &item) == nil && item["type"] == "approval" {
-				kept = append(kept, item)
-			}
-		}
-		if len(kept) != 1 || kept[0]["id"] != asked.ID || kept[0]["outcome"] != "selected" || kept[0]["option_id"] != option ||
-			len(ended.Approvals) != 0 {
-			t.Errorf("turn for %q: approval items = %v, pending approvals = %+v", text, kept, ended.Approvals)
-		}
-		return ended
-	}
-
-	allowed, refused := unique("allowed"), unique("refused")
-	answered("escalate touch "+allowed, "allow_once")
-	answered("escalate touch "+refused, "reject_once")
-	// A harness may run a command that only reads without asking, and this
-	// one writes the listing too.
-	listed := answered("escalate ls | tee listing", "allow_once")
-	if files := listed.said() + listed.tools(); !strings.Contains(files, allowed) || strings.Contains(files, refused) {
-		t.Errorf("files after one allowed and one rejected command: %q", files)
-	}
-	for _, outcome := range []string{"allow_once", "reject_once"} {
-		series := fmt.Sprintf(`aviary_approval_wait_seconds_count{harness=%q,outcome=%q}`, name, outcome)
-		eventually(t, soon, "Supervisor metrics have no "+series, func() bool {
-			return total(metrics(t, "supervisor"), series) >= 1
-		})
-	}
-}
-
 // An agent that is replaced runs the next turn of its sessions as it then is,
-// also in a sandbox that is awake: here with other instructions, and asking a
-// person before it acts. The harness is started again for that, and still has
-// the conversation.
+// also in a sandbox that is awake: here with other instructions. The harness
+// is started again for that, and still has the conversation.
 func replaces(t *testing.T, name string) {
 	before, after := unique("plum"), unique("pear")
 	project := newProject(t)
@@ -287,34 +209,15 @@ func replaces(t *testing.T, name string) {
 		t.Fatalf("model was not sent the agent's instructions: said %q", first.said())
 	}
 
-	body := fmt.Sprintf(`{"name": "Renamed", "instructions": "The word of the day is %s.", "approval": "ask", "model": {"provider": %q, "name": "mock"}}`,
+	body := fmt.Sprintf(`{"name": "Renamed", "instructions": "The word of the day is %s.", "model": {"provider": %q, "name": "mock"}}`,
 		after, models)
-	var replaced struct{ Name, Harness, Approval string }
+	var replaced struct{ Name, Harness string }
 	if status := request(t, "PUT", "/v1/agents/"+agent.id, body, &replaced); status != http.StatusOK ||
-		replaced.Name != "Renamed" || replaced.Harness != name || replaced.Approval != "ask" {
+		replaced.Name != "Renamed" || replaced.Harness != name {
 		t.Fatalf("replace agent: got %d %+v, want 200 with the agent as it was replaced", status, replaced)
 	}
 	if second := run(t, session, "find "+after); !strings.Contains(second.said(), "present") {
 		t.Errorf("model was not sent the replaced instructions: said %q", second.said())
-	}
-	accepted := send(t, session, "escalate touch "+unique("replaced"))
-	events := read(t, accepted.ID)
-	var asked approvalRequest
-	events.until(t, "asked for approval", func(next event) bool {
-		return next.Type == "approval.requested" && json.Unmarshal([]byte(next.Data), &asked) == nil
-	})
-	var option string
-	for _, offered := range asked.Options {
-		if offered.Kind == "allow_once" {
-			option = offered.ID
-		}
-	}
-	answer := fmt.Sprintf(`{"option_id": %q}`, option)
-	if status := request(t, "POST", "/v1/turns/"+accepted.ID+"/approvals/"+asked.ID, answer, nil); status != http.StatusAccepted {
-		t.Fatalf("answer %s to approval request %+v: got status %d, want 202", answer, asked, status)
-	}
-	if last := events.end(t); last.Type != "turn.completed" {
-		t.Fatalf("turn of the replaced agent ended with %s %s, want turn.completed", last.Type, last.Data)
 	}
 	if recalled := run(t, session, "recall"); !strings.Contains(recalled.said(), "find "+before) {
 		t.Errorf("the harness does not have the conversation from before the agent was replaced: said %q", recalled.said())
@@ -454,48 +357,6 @@ func attaches(t *testing.T) {
 	downloaded, err := io.ReadAll(response.Body)
 	if err != nil || response.StatusCode != http.StatusOK || !bytes.Equal(downloaded, large) {
 		t.Errorf("download: got %d with %d bytes, %v; want 200 with the %d that were uploaded", response.StatusCode, len(downloaded), err, len(large))
-	}
-}
-
-// A turn that waits for approval has its sandbox put to sleep after the idle
-// time, as an idle session has, and the answer wakes it where it was: the
-// snapshots keep the processes.
-func waitsAsleep(t *testing.T, name string) {
-	session := newAgent(t, fmt.Sprintf(`{"harness": %q, "approval": "ask"}`, name)).session(t)
-	accepted := send(t, session, "escalate touch "+unique("asleep"))
-	var asked approvalRequest
-	read(t, accepted.ID).until(t, "asked for approval", func(next event) bool {
-		return next.Type == "approval.requested" && json.Unmarshal([]byte(next.Data), &asked) == nil
-	})
-	waiting := actorOf(t, session)
-	asleep(t, session)
-	// Other tests have turns too, so the state metrics are only checked to
-	// count this one.
-	for _, series := range []string{
-		fmt.Sprintf(`aviary_turns{harness=%q,state="awaiting_approval"}`, name),
-		fmt.Sprintf(`aviary_approvals_waiting{harness=%q}`, name),
-	} {
-		if counted := total(metrics(t, "state-metrics"), series); counted < 1 {
-			t.Errorf("state metrics report %v for %s while a turn of %s awaits approval", counted, series, name)
-		}
-	}
-
-	var option string
-	for _, offered := range asked.Options {
-		if offered.Kind == "allow_once" {
-			option = offered.ID
-		}
-	}
-	answer := fmt.Sprintf(`{"option_id": %q}`, option)
-	if status := request(t, "POST", "/v1/turns/"+accepted.ID+"/approvals/"+asked.ID, answer, nil); status != http.StatusAccepted {
-		t.Fatalf("answer %s to approval request %+v: got status %d, want 202", answer, asked, status)
-	}
-	// A new reader gives the turn the full patience from the answer.
-	if last := read(t, accepted.ID).end(t); last.Type != "turn.completed" {
-		t.Fatalf("turn approved after a long wait ended with %s %s, want turn.completed", last.Type, last.Data)
-	}
-	if woken := actorOf(t, session); waiting == nil || woken == nil || woken.UID != waiting.UID {
-		t.Errorf("sandbox of the turn = %+v, then %+v; want the same one, woken", waiting, woken)
 	}
 }
 

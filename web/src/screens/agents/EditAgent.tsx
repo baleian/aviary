@@ -8,7 +8,7 @@ import { named, text, Wrong } from "../../lib/form.ts";
 import { label, plural, sentence, transportName } from "../../lib/format.ts";
 import { queryClient } from "../../query.ts";
 import { Dialog } from "../../ui/Dialog.tsx";
-import { Check, Field, NameAndSlug, Select, Toggle } from "../../ui/fields.tsx";
+import { Check, Field, NameAndSlug, Select } from "../../ui/fields.tsx";
 import { Icon } from "../../ui/Icon.tsx";
 import { toast } from "../../ui/toast.ts";
 import { matches } from "../../lib/mcp.ts";
@@ -216,7 +216,6 @@ export function EditAgent({
       description: text(data, "description"),
       model: { provider: text(data, "provider"), name: model },
       instructions: text(data, "instructions"),
-      approval: data.get("approval") ? "ask" : "",
       mcp_servers: data.getAll("mcp").map(String),
     };
     const saved = existing
@@ -324,11 +323,6 @@ export function EditAgent({
       </Field>
       <h3 className="dlg-sec">Tools</h3>
       <McpField context={context} chosen={existing?.mcp_servers ?? []} />
-      <div className="fld">
-        <Toggle name="approval" defaultChecked={existing?.approval === "ask"}>
-          Ask before it acts
-        </Toggle>
-      </div>
     </Dialog>
   );
 }

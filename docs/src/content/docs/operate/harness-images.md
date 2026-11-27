@@ -25,9 +25,8 @@ The harness runs in this environment:
 | Home | `/home`, also in `HOME`. The files that messages carry are in `/home/.attachments/<turn>/`, under the number of the turn of their message. |
 | Working directory | `/home/workspace` |
 | Model endpoint | `AVIARY_LLM_BASE_URL`, `AVIARY_LLM_API_KEY` and `AVIARY_LLM_MODEL`, and `AVIARY_LLM_HEADERS`, the headers of the provider as a JSON object. The URL is the provider's, and the key and the headers that have secrets are a placeholder, `aviary`, which the egress gateway replaces. |
-| Approval | `AVIARY_APPROVAL=ask` if the agent must ask a person before it acts. Otherwise the variable is not set. |
 | MCP servers | `AVIARY_MCP_SERVERS`: the names of the MCP servers that the harness gets when it starts, separated by spaces, so that the image can set the harness up for each. |
-| Persistence | The home is the durable directory of the sandbox, which its snapshot keeps while the session sleeps. With `memory` snapshots the harness keeps running across a sleep; with `rootfs` and `volumes` it starts again when the sandbox wakes, and with `volumes` the rest of the file system comes from the image again. The harness keeps running between turns until the agent's model, approval or instructions or the session's MCP servers are changed: the next turn then gets a new harness, which resumes the session. |
+| Persistence | The home is the durable directory of the sandbox, which its snapshot keeps while the session sleeps. With `memory` snapshots the harness keeps running across a sleep; with `rootfs` and `volumes` it starts again when the sandbox wakes, and with `volumes` the rest of the file system comes from the image again. The harness keeps running between turns until the agent's model or instructions or the session's MCP servers are changed: the next turn then gets a new harness, which resumes the session. |
 | Network | The hosts that the installation allows and those of the turn, through the egress gateway of Agent Substrate, which takes the connections without a proxy setting. It reads the HTTPS of the hosts into whose requests it puts secrets, with a certificate that the sandbox trusts: `/etc/aviary/trust/ca.pem` has it with the public authorities, and `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` and `PIP_CERT` name that file. Names resolve only for those hosts. The runner listens on port 80, where Substrate reaches it. |
 
 The runner talks to the harness over its standard input and output with the
@@ -62,12 +61,11 @@ The runner talks to the harness over its standard input and output with the
   harness that then ends the turn answers the prompt with the stop reason
   `cancelled`. A turn cancelled before its prompt is sent never reaches the
   harness.
-- **Approval.** For an agent that asks, the runner passes each
-  `session/request_permission` on with the options that the harness gave, and
-  answers with the option that a person picks. The harness waits for as long
-  as the turn runs. A request that is still open when the turn is cancelled
-  is answered as cancelled. For any other agent, the runner allows the action
-  once by itself.
+- **Approval.** The runner passes each `session/request_permission` on to a
+  person with the options that the harness gave, and answers with the option
+  that the person picks. The harness waits for as long as the turn runs. A
+  request that is still open when the turn is cancelled is answered as
+  cancelled.
 
 ## What the image must provide
 
@@ -97,11 +95,11 @@ The runner talks to the harness over its standard input and output with the
    runner writes the agent's instructions there, or empties the file if the
    agent has none, so the harness's user must be able to write it. An image
    that names no file runs only agents without instructions.
-7. **Asking before acting if `AVIARY_APPROVAL` is `ask`.** The image then
-   starts the harness so that it sends `session/request_permission` before
-   actions that a person should approve first. Which actions is up to the
-   image and the settings of its harness. An image that ignores the variable
-   runs such an agent like any other: nobody is asked.
+7. **Acting without asking.** The image starts the harness so that it does
+   not send `session/request_permission` before it reads or changes files,
+   runs commands or calls tools: each request waits for a person. What the
+   harness still asks should be what only a person can decide, such as
+   whether to carry out a plan.
 8. **How the harness titles a call of a tool of an MCP server**, in
    `AVIARY_MCP_TOOL_TITLE`, with `{server}` and `{tool}` in place of the
    server's name and the tool's: `{server}: {tool}` for a title such as
@@ -147,24 +145,15 @@ images in this repository handle these cases:
   own, which the script of its image sets. Claude Code adds `/v1` to the
   server URL itself, so the script takes off a `/v1` at the end of
   `AVIARY_LLM_BASE_URL`, where the URLs of providers for the OpenAI APIs end.
-- **Approval tied to the harness's sandbox.** Codex asks a person only when a
-  command needs to leave its sandbox, which the image does not start. For an
-  agent that asks, the image still runs Codex in read-only mode: a
-  command that the model tries in the sandbox fails, and runs once the model
-  asks to run it outside and a person allows that. The failed attempt costs
-  one more model request.
-- **A permission mode kept with the session.** Claude Code resumes a session
-  in the permission mode that the session last had, so a mode chosen for an
-  agent that does not ask would outlast a change to its approval. The image
-  starts every session in the default mode instead, in which Claude Code
-  asks before it runs a command that does more than read the workspace, or
-  before it changes a file. For an agent that does not ask, the runner
-  allows each action once.
-- **Reading outside the workspace.** OpenCode and Claude Code ask before
-  they read a file outside the working directory, which is where the files
-  that messages carry are: in `/home/.attachments`. Their images allow that
-  directory, so that an agent that asks reads what the user gave it without
-  asking. Codex looks at such a file with its own tool without asking.
+- **Asking for permission.** A harness asks before many actions by default,
+  with nobody there to answer. OpenCode's image allows what OpenCode asks
+  about otherwise: files outside the workspace, such as those that messages
+  carry, files of secrets such as `.env`, and a tool called the same way again
+  and again. Claude Code's image starts every session in the
+  `bypassPermissions` mode, and Codex's runs Codex with full access. Claude
+  Code resumes a session in the permission mode that the session last had:
+  after a person approves a plan with “Yes, manually approve edits”, it asks
+  before its actions for the rest of the session.
 - **Links to files.** Claude Code and Codex give their model a link as a
   line of text, `[@name](uri)`, and the model reads the file with a tool if
   it wants to. Claude Code takes the name from the URI, which is why the
@@ -216,7 +205,7 @@ images in this repository handle these cases:
   The image turns these off.
 - **Startup time.** The harness starts with the first turn of a session, and
   again with the first turn after the session sleeps or after the agent's
-  model, approval or instructions or the session's MCP servers are changed,
+  model or instructions or the session's MCP servers are changed,
   so its startup time adds to those turns.
 
 ## The images in this repository
@@ -224,9 +213,9 @@ images in this repository handle these cases:
 | Image | Contents |
 | --- | --- |
 | `harness-base` | Node.js, git, Python with pip and venv, and the `agent` user. The base of the others. |
-| `harness-opencode` | [OpenCode](https://opencode.ai), run as `opencode acp`. It uses the Chat Completions API. For an agent that asks, it asks before it runs a command, changes a file or calls a tool of an MCP server. |
-| `harness-codex` | [Codex](https://github.com/openai/codex) through its ACP adapter, `codex-acp`. It uses the Responses API. For an agent that asks, it runs in read-only mode and asks before a command runs outside its sandbox, and before it calls a tool of an MCP server. |
-| `harness-claude-code` | [Claude Code](https://code.claude.com) through its ACP adapter, `claude-agent-acp`. It uses the Messages API. For an agent that asks, it asks before it runs a command that does more than read the workspace, changes a file or calls a tool of an MCP server. |
+| `harness-opencode` | [OpenCode](https://opencode.ai), run as `opencode acp`. It uses the Chat Completions API. |
+| `harness-codex` | [Codex](https://github.com/openai/codex) through its ACP adapter, `codex-acp`. It uses the Responses API. |
+| `harness-claude-code` | [Claude Code](https://code.claude.com) through its ACP adapter, `claude-agent-acp`. It uses the Messages API. |
 
 ## Adding a harness
 
@@ -245,7 +234,7 @@ images in this repository handle these cases:
    and Messages APIs. The tests have the agent run shell commands, so the
    harness must offer the model a tool with a `command` or `cmd` parameter.
    They fail a harness that fetches anything for itself at startup, or that
-   runs a command of an agent that asks without asking. The containers reach
+   asks before it runs a command or reads a file. The containers reach
    nothing but the mock server, which is also their proxy in the standard
    variables, so the tests see what a harness fetches. git, npm, pip and curl
    use those variables, and Node's `fetch` does with `NODE_USE_ENV_PROXY=1`,

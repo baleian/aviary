@@ -18,7 +18,6 @@ type Agent struct {
 	Description  string
 	Harness      string
 	Instructions string
-	Approval     string
 	ProviderID   uuid.UUID
 	Model        string
 	CreatedAt    time.Time

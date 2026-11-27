@@ -84,7 +84,7 @@ func TestSessionChangesAreStreamed(t *testing.T) {
 	s, other := aviary.supervisor(), aviary.supervisor()
 	other.hears()
 	project := s.project()
-	agent := s.agent(project, `{"harness": "opencode", "approval": "ask"}`)
+	agent := s.agent(project, `{"harness": "opencode"}`)
 	stream := other.changes(project)
 
 	// The sessions of other projects are not sent.

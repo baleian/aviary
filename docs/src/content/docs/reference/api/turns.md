@@ -69,7 +69,7 @@ from outside, or never reached its harness.
 | `state` | `stop_reason` | Meaning |
 | --- | --- | --- |
 | `completed` | `end_turn`, `max_tokens`, `max_turn_requests` or `refusal` | The harness ended the turn. |
-| `completed` | `cancelled` | The harness ended the turn because a person refused an action that it asked approval for. Codex does this. |
+| `completed` | `cancelled` | The harness ended the turn because a person refused what it asked approval for. Claude Code does this when a person refuses its plan. |
 | `cancelled` | `cancelled` | The turn was cancelled, and the harness stopped when it was asked to. |
 | `cancelled` | none | Without `started_at`, the turn was cancelled before its harness received the message. Otherwise its harness did not stop in time, and its sandbox was put to sleep. |
 | `failed` | none | The turn failed, for the reason in `failure`. |

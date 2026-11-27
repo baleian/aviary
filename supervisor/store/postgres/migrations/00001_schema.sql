@@ -128,9 +128,6 @@ create table agents (
     harness text not null,
     -- Given to the agent before every turn, if not empty.
     instructions text not null default '',
-    -- 'ask' if the harness asks a person for approval before it acts, empty
-    -- if it does not ask.
-    approval text not null default '',
     -- The agent's model: a provider of the project and the provider's name
     -- for the model.
     provider_id uuid not null references providers (id),

@@ -52,8 +52,8 @@ into it: by default up to 10 files of up to 64 MiB each.
 ## Following a turn
 
 While a turn runs, the conversation shows what the agent says and thinks,
-the tools that it calls with their input and output, its plan, and what it
-asks before it acts. When the turn has ended, it shows the tokens that the
+the tools that it calls with their input and output, its plan, and what its
+harness asks you. When the turn has ended, it shows the tokens that the
 harness reported for it, which is not a measurement.
 
 **Stop turn** cancels the turn. A queued turn ends at once. A running turn

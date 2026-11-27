@@ -8,7 +8,7 @@
 //   await ctx.think(text)                   thought.delta events
 //   await ctx.say(text)                     message.delta events
 //   await ctx.plan([[content, status]...])  a plan.update event
-//   await ctx.tool({...})                   a tool call, with approval if the agent asks
+//   await ctx.tool({...})                   a tool call, which waits for approval if the harness asks
 //   await ctx.mcp(server, tool, {...})      a call of a tool of an MCP server
 //   ctx.servers                             the MCP servers of the turn
 //   ctx.fail(reason, message)               ends the turn as failed
@@ -171,8 +171,7 @@ async function answer(ctx) {
       "This page is answered from example data, so no model is behind this agent and the reply is scripted. " +
       "Everything around it is what the API does: the message became a **turn**, the turn was taken from the queue, " +
       "its events were streamed to this page, and its record was stored when it ended.\n\n" +
-      "To see the agent work with tools, send a request of a sentence or more that is not a question. " +
-      "An agent that asks before it acts then waits for approval.",
+      "To see the agent work with tools, send a request of a sentence or more that is not a question.",
   );
 }
 
@@ -187,7 +186,7 @@ const TESTS =
   " ✓ test/webhooks/sender.test.ts (3 tests) 1834ms\n\n" +
   " Test Files  3 passed (3)\n      Tests  26 passed (26)\n   Duration  2.71s\n";
 
-// work looks around, changes a file and runs the tests. If the agent asks
+// work looks around, changes a file and runs the tests. If the harness asks
 // before it acts, the change and the command each wait for approval.
 async function work(ctx) {
   if (await lookUp(ctx)) return;

@@ -29,7 +29,8 @@ own:
   number and the size that the installation gives them.
 - **A queue.** A turn whose sandbox finds no worker with room waits in
   order, and sessions that are not in use make room for it.
-- **Approval.** An agent can be made to ask a person before it acts.
+- **Approval.** Agents act without asking. What a harness asks a person,
+  such as the approval of a plan, waits for an answer.
 - **Access control.** With an identity provider, callers are authenticated
   and limited to what they may do in each project.
 - **Replaceable Supervisors.** Supervisors can be replaced while turns run.

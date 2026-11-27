@@ -312,11 +312,11 @@ func (q *Queries) CountSandboxes(ctx context.Context) ([]CountSandboxesRow, erro
 }
 
 const createAgent = `-- name: CreateAgent :one
-insert into agents (id, project_id, slug, name, description, harness, instructions, approval, provider_id, model)
+insert into agents (id, project_id, slug, name, description, harness, instructions, provider_id, model)
 select $1::uuid, projects.id, $2::text, $3::text, $4::text, $5::text, $6::text,
-       $7::text, $8::uuid, $9::text
-from projects where projects.id = $10
-returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at
+       $7::uuid, $8::text
+from projects where projects.id = $9
+returning id, project_id, slug, name, description, harness, instructions, provider_id, model, created_at, updated_at, deleted_at
 `
 
 type CreateAgentParams struct {
@@ -326,7 +326,6 @@ type CreateAgentParams struct {
 	Description  string
 	Harness      string
 	Instructions string
-	Approval     string
 	ProviderID   uuid.UUID
 	Model        string
 	ProjectID    uuid.UUID
@@ -340,7 +339,6 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		arg.Description,
 		arg.Harness,
 		arg.Instructions,
-		arg.Approval,
 		arg.ProviderID,
 		arg.Model,
 		arg.ProjectID,
@@ -354,7 +352,6 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.Description,
 		&i.Harness,
 		&i.Instructions,
-		&i.Approval,
 		&i.ProviderID,
 		&i.Model,
 		&i.CreatedAt,
@@ -656,7 +653,7 @@ func (q *Queries) CreateTurn(ctx context.Context, arg CreateTurnParams) (Turn, e
 }
 
 const deleteAgent = `-- name: DeleteAgent :one
-update agents set deleted_at = now() where id = $1 returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at
+update agents set deleted_at = now() where id = $1 returning id, project_id, slug, name, description, harness, instructions, provider_id, model, created_at, updated_at, deleted_at
 `
 
 func (q *Queries) DeleteAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
@@ -670,7 +667,6 @@ func (q *Queries) DeleteAgent(ctx context.Context, id uuid.UUID) (Agent, error) 
 		&i.Description,
 		&i.Harness,
 		&i.Instructions,
-		&i.Approval,
 		&i.ProviderID,
 		&i.Model,
 		&i.CreatedAt,
@@ -965,7 +961,7 @@ func (q *Queries) FollowTurn(ctx context.Context, id uuid.UUID) (int64, error) {
 
 const followedTurn = `-- name: FollowedTurn :one
 select turns.id, turns.session_id, turns.seq, turns.created_by, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
-       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox, sessions.sandbox_state,
+       providers.url as provider_url, agents.model, sessions.sandbox, sessions.sandbox_state,
        extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched
 from turns
 join sessions on sessions.id = turns.session_id
@@ -980,7 +976,6 @@ type FollowedTurnRow struct {
 	ProjectID    uuid.UUID
 	Harness      string
 	Instructions string
-	Approval     string
 	ProviderUrl  string
 	Model        string
 	Sandbox      *string
@@ -1016,7 +1011,6 @@ func (q *Queries) FollowedTurn(ctx context.Context, id uuid.UUID) (FollowedTurnR
 		&i.ProjectID,
 		&i.Harness,
 		&i.Instructions,
-		&i.Approval,
 		&i.ProviderUrl,
 		&i.Model,
 		&i.Sandbox,
@@ -1052,7 +1046,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where id = $1
+select id, project_id, slug, name, description, harness, instructions, provider_id, model, created_at, updated_at, deleted_at from agents where id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
@@ -1066,7 +1060,6 @@ func (q *Queries) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 		&i.Description,
 		&i.Harness,
 		&i.Instructions,
-		&i.Approval,
 		&i.ProviderID,
 		&i.Model,
 		&i.CreatedAt,
@@ -1488,7 +1481,7 @@ func (q *Queries) ListAgentMcpServers(ctx context.Context, agentIds []uuid.UUID)
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where project_id = $1 and deleted_at is null order by created_at, id
+select id, project_id, slug, name, description, harness, instructions, provider_id, model, created_at, updated_at, deleted_at from agents where project_id = $1 and deleted_at is null order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent, error) {
@@ -1508,7 +1501,6 @@ func (q *Queries) ListAgents(ctx context.Context, projectID uuid.UUID) ([]Agent,
 			&i.Description,
 			&i.Harness,
 			&i.Instructions,
-			&i.Approval,
 			&i.ProviderID,
 			&i.Model,
 			&i.CreatedAt,
@@ -2281,7 +2273,7 @@ func (q *Queries) Lock(ctx context.Context, key int64) error {
 }
 
 const lockAgent = `-- name: LockAgent :one
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where id = $1 for update
+select id, project_id, slug, name, description, harness, instructions, provider_id, model, created_at, updated_at, deleted_at from agents where id = $1 for update
 `
 
 // Locks the agent until the transaction ends, so that it gets no session
@@ -2297,7 +2289,6 @@ func (q *Queries) LockAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 		&i.Description,
 		&i.Harness,
 		&i.Instructions,
-		&i.Approval,
 		&i.ProviderID,
 		&i.Model,
 		&i.CreatedAt,
@@ -2486,17 +2477,16 @@ func (q *Queries) RemoveMember(ctx context.Context, id uuid.UUID) (int64, error)
 }
 
 const replaceAgent = `-- name: ReplaceAgent :one
-update agents set name = $1, description = $2, instructions = $3, approval = $4,
-       provider_id = $5, model = $6, updated_at = now()
-where id = $7 and deleted_at is null
-returning id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at
+update agents set name = $1, description = $2, instructions = $3,
+       provider_id = $4, model = $5, updated_at = now()
+where id = $6 and deleted_at is null
+returning id, project_id, slug, name, description, harness, instructions, provider_id, model, created_at, updated_at, deleted_at
 `
 
 type ReplaceAgentParams struct {
 	Name         string
 	Description  string
 	Instructions string
-	Approval     string
 	ProviderID   uuid.UUID
 	Model        string
 	ID           uuid.UUID
@@ -2508,7 +2498,6 @@ func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (Age
 		arg.Name,
 		arg.Description,
 		arg.Instructions,
-		arg.Approval,
 		arg.ProviderID,
 		arg.Model,
 		arg.ID,
@@ -2522,7 +2511,6 @@ func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (Age
 		&i.Description,
 		&i.Harness,
 		&i.Instructions,
-		&i.Approval,
 		&i.ProviderID,
 		&i.Model,
 		&i.CreatedAt,

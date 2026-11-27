@@ -45,8 +45,9 @@ message from the API to the sandbox and back.
 - **Controlled egress.** An agent reaches only the hosts that the
   installation and its turn allow, and every secret that is put into a
   request is logged with the turn and the user that it came from.
-- **A person in the loop.** An agent can be made to ask before it acts, and
-  its turn waits for the answer.
+- **A person in the loop.** An agent acts without asking. When its harness
+  asks a person, as for the approval of a plan, the turn waits for the
+  answer.
 - **Made for many users.** With an identity provider, callers are
   authenticated and limited to what their role allows in each project. The
   turns that run at once are limited, and further turns wait in order.

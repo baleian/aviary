@@ -11,7 +11,7 @@ description: The requests for agents, and for the harnesses that they can use.
 POST /v1/projects/{id}/agents
 ```
 
-Creates an agent. Body: `{"slug": "...", "name": "...", "description": "...", "harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "approval": "ask", "mcp_servers": ["..."]}`. The optional description says what the agent is for, and like the name is only for display. The harness is one of those that `GET /v1/harnesses` lists. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. With `"approval": "ask"`, the agent asks a person before it acts (see [Approval](../../use/approvals.md)); without it, it asks nobody. The optional MCP servers, by ID, are servers of the project that the agent's sessions begin with (see [MCP servers](../../use/mcp-servers.md)). Returns 409 if another agent of the project has the slug.
+Creates an agent. Body: `{"slug": "...", "name": "...", "description": "...", "harness": "...", "model": {"provider": "...", "name": "..."}, "instructions": "...", "mcp_servers": ["..."]}`. The optional description says what the agent is for, and like the name is only for display. The harness is one of those that `GET /v1/harnesses` lists. The model is a provider of the project, by ID, and the provider's name for the model. The optional instructions are given to the agent before every turn. The agent acts without asking (see [Approvals](../../use/approvals.md)). The optional MCP servers, by ID, are servers of the project that the agent's sessions begin with (see [MCP servers](../../use/mcp-servers.md)). Returns 409 if another agent of the project has the slug.
 
 ### List agents
 
@@ -35,7 +35,7 @@ Returns the agent, also after it was deleted.
 PUT /v1/agents/{id}
 ```
 
-Replaces the name, the description, the model, the instructions, the approval and the MCP servers of an agent together: what the body leaves out is empty afterwards, and the model is required. The slug and the harness cannot be changed, and the body may leave them out. The agent's sessions run their next turn with the change. Returns 200 with the agent.
+Replaces the name, the description, the model, the instructions and the MCP servers of an agent together: what the body leaves out is empty afterwards, and the model is required. The slug and the harness cannot be changed, and the body may leave them out. The agent's sessions run their next turn with the change. Returns 200 with the agent.
 
 ### Delete an agent
 

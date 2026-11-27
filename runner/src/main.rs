@@ -16,12 +16,15 @@
 //! does not know. Requests from the runner's own sandbox are refused, so that
 //! the agent cannot answer its own approval requests.
 //!
+//! Each request of the harness for permission is an approval request of the
+//! turn, which waits until a person answers it.
+//!
 //! The harness is started for the first turn and kept for the turns after it,
-//! until a turn has another approval mode, environment, instructions or set of
-//! MCP servers: that turn gets a new harness. The runner stores the harness
-//! session ID in the home, which outlives the processes of the sandbox, so a
-//! new harness, and a new runner in a sandbox that kept only its files,
-//! resume the same session.
+//! until a turn has another environment, instructions or set of MCP servers:
+//! that turn gets a new harness. The runner stores the harness session ID in
+//! the home, which outlives the processes of the sandbox, so a new harness,
+//! and a new runner in a sandbox that kept only its files, resume the same
+//! session.
 //!
 //! A harness reaches its MCP servers at their URLs, with the headers of each.
 //! A server of a transport that the harness does not support is left out, and
@@ -48,10 +51,10 @@ use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     CancelNotification, ClientCapabilities, ClientSessionCapabilities, ContentBlock, ContentChunk,
     HttpHeader, InitializeRequest, McpCapabilities, McpServer, McpServerHttp, McpServerSse,
-    NewSessionRequest, NoticeCapabilities, PermissionOptionKind, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    ResumeSessionRequest, SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
-    ToolCallContent, ToolCallStatus, ToolCallUpdate,
+    NewSessionRequest, NoticeCapabilities, PromptRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
+    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, ToolCallContent,
+    ToolCallStatus, ToolCallUpdate,
 };
 use agent_client_protocol::{AcpAgent, Agent, ByteStreams, Client, Responder, V1};
 use axum::extract::connect_info::Connected;
@@ -237,10 +240,6 @@ struct Start {
     /// every turn.
     #[serde(default)]
     instructions: String,
-    /// "ask" to pass the harness's approval requests on to a person.
-    /// Otherwise each request is allowed once.
-    #[serde(default)]
-    approval: String,
     /// Variables added to the runner's environment for the harness, such as
     /// the agent's model. A harness keeps those that it started with, so a
     /// turn that has others gets a new harness.
@@ -513,9 +512,9 @@ async fn run_turns(runner: &Arc<Runner>, mut orders: mpsc::UnboundedReceiver<Ord
 }
 
 /// Starts a harness and runs turns on it, beginning with `first`, until the
-/// harness exits or a turn fails. A turn whose approval mode, environment,
-/// instructions or MCP servers differ from those of `first` is returned
-/// instead of run, since the harness may have them only from its start.
+/// harness exits or a turn fails. A turn whose environment, instructions or
+/// MCP servers differ from those of `first` is returned instead of run, since
+/// the harness may have them only from its start.
 async fn run_harness(
     runner: &Arc<Runner>,
     first: Order,
@@ -559,7 +558,6 @@ async fn run_harness(
         .ok()
         .and_then(|bytes| bytes.parse::<usize>().ok())
         .filter(|bytes| *bytes > 0);
-    let asks = first.start.approval == "ask";
     let environment = first.start.environment.clone();
     let instructions = first.start.instructions.clone();
     let mcp_servers = first.start.mcp_servers.clone();
@@ -615,9 +613,6 @@ async fn run_harness(
         )
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _| {
-                if !asks {
-                    return responder.respond(RequestPermissionResponse::new(allow_once(&request)));
-                }
                 // Answered later, by the turn loop.
                 asked.unbounded_send((request, responder)).map_err(|_| {
                     agent_client_protocol::Error::internal_error().data("approval channel closed")
@@ -702,8 +697,7 @@ async fn run_harness(
                         }
                     },
                 };
-                if (start.approval == "ask") != asks
-                    || start.environment != environment
+                if start.environment != environment
                     || start.instructions != instructions
                     || start.mcp_servers != mcp_servers
                 {
@@ -1202,18 +1196,6 @@ fn cut(json: Value, longest: Option<usize>) -> Value {
     }
 }
 
-fn allow_once(request: &RequestPermissionRequest) -> RequestPermissionOutcome {
-    request
-        .options
-        .iter()
-        .find(|option| option.kind == PermissionOptionKind::AllowOnce)
-        .map_or(RequestPermissionOutcome::Cancelled, |option| {
-            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                option.option_id.clone(),
-            ))
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1478,37 +1460,6 @@ mod tests {
         ] {
             assert_eq!(marked(form, title), None, "form {form:?}, title {title:?}");
         }
-    }
-
-    #[test]
-    fn allow_once_never_allows_always() {
-        let ask = |options: Value| -> RequestPermissionRequest {
-            serde_json::from_value(json!({
-                "sessionId": "s1",
-                "toolCall": {"toolCallId": "t1"},
-                "options": options,
-            }))
-            .expect("parse permission request")
-        };
-        let offered = ask(json!([
-            {"optionId": "always", "name": "Always", "kind": "allow_always"},
-            {"optionId": "once", "name": "Once", "kind": "allow_once"},
-            {"optionId": "no", "name": "No", "kind": "reject_once"},
-        ]));
-        match allow_once(&offered) {
-            RequestPermissionOutcome::Selected(selected) => {
-                assert_eq!(selected.option_id.to_string(), "once");
-            }
-            other => panic!("allow_once = {other:?}, want Selected"),
-        }
-        // Never allows more than once.
-        let not_offered = ask(json!([
-            {"optionId": "always", "name": "Always", "kind": "allow_always"},
-        ]));
-        assert!(matches!(
-            allow_once(&not_offered),
-            RequestPermissionOutcome::Cancelled
-        ));
     }
 
     #[test]

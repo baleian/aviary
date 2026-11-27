@@ -38,7 +38,6 @@ export const ICONS = [
   "eye",
   "info",
   "warn",
-  "bolt",
   "sun",
   "moon",
   "monitor",

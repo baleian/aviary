@@ -53,7 +53,7 @@ func TestATurnThatWaitsSleeps(t *testing.T) {
 	})
 	aviary.service.KeepProcesses()
 	s := aviary.supervisor()
-	turn := s.send(s.session(`{"harness": "opencode", "approval": "ask"}`), "hello")
+	turn := s.send(s.session(`{"harness": "opencode"}`), "hello")
 	runner := aviary.given(turn.ID)
 	runner.report(started("harness-session"))
 	runner.report(asks("1", "rm -r build"))
@@ -84,12 +84,9 @@ func TestApproval(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	following := aviary.supervisor()
-	session := following.session(`{"harness": "opencode", "approval": "ask"}`)
+	session := following.session(`{"harness": "opencode"}`)
 	accepted := following.send(session, "hello")
 	runner := aviary.given(accepted.ID)
-	if runner.Approval != "ask" || runner.Environment["AVIARY_APPROVAL"] != "ask" {
-		t.Errorf("runner turn = %+v, want approval ask", runner.Turn)
-	}
 	// Started after the dispatch, so that the other Supervisor follows the
 	// turn.
 	asked := aviary.supervisor()
@@ -259,7 +256,7 @@ func TestApprovalIsAnsweredBySomeone(t *testing.T) {
 	s := aviary.supervisor()
 	s.token = "an-administrator"
 	project := s.project()
-	agent := s.agent(project, `{"harness": "opencode", "approval": "ask"}`)
+	agent := s.agent(project, `{"harness": "opencode"}`)
 	s.create("/v1/projects/"+project+"/members", `{"user": "alice@example.com", "role": "user"}`)
 	s.create("/v1/projects/"+project+"/members", `{"user": "carol@example.com", "role": "owner"}`)
 

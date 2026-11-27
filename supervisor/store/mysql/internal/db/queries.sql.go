@@ -317,9 +317,9 @@ func (q *Queries) CountSandboxes(ctx context.Context) ([]CountSandboxesRow, erro
 }
 
 const createAgent = `-- name: CreateAgent :execrows
-insert into agents (id, project_id, slug, name, description, harness, instructions, approval, provider_id, model)
+insert into agents (id, project_id, slug, name, description, harness, instructions, provider_id, model)
 select ?, projects.id, ?, ?, ?, ?,
-       ?, ?, ?, ?
+       ?, ?, ?
 from projects where projects.id = ?
 `
 
@@ -330,7 +330,6 @@ type CreateAgentParams struct {
 	Description  string
 	Harness      string
 	Instructions string
-	Approval     string
 	ProviderID   key.ID
 	Model        string
 	ProjectID    key.ID
@@ -344,7 +343,6 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (int64
 		arg.Description,
 		arg.Harness,
 		arg.Instructions,
-		arg.Approval,
 		arg.ProviderID,
 		arg.Model,
 		arg.ProjectID,
@@ -742,7 +740,7 @@ func (q *Queries) FollowTurn(ctx context.Context, id key.ID) error {
 
 const followedTurn = `-- name: FollowedTurn :one
 select turns.id, turns.session_id, turns.seq, turns.created_by, turns.state, turns.text, turns.created_at, turns.dispatched_at, turns.started_at, turns.cancel_requested_at, turns.ended_at, turns.stop_reason, turns.failure_reason, turns.failure_message, turns.total_tokens, turns.input_tokens, turns.output_tokens, turns.thought_tokens, turns.cached_read_tokens, turns.cached_write_tokens, agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
-       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox, sessions.sandbox_state,
+       providers.url as provider_url, agents.model, sessions.sandbox, sessions.sandbox_state,
        cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
 from turns
 join sessions on sessions.id = turns.session_id
@@ -757,7 +755,6 @@ type FollowedTurnRow struct {
 	ProjectID    key.ID
 	Harness      string
 	Instructions string
-	Approval     string
 	ProviderUrl  string
 	Model        string
 	Sandbox      *string
@@ -793,7 +790,6 @@ func (q *Queries) FollowedTurn(ctx context.Context, id key.ID) (FollowedTurnRow,
 		&i.ProjectID,
 		&i.Harness,
 		&i.Instructions,
-		&i.Approval,
 		&i.ProviderUrl,
 		&i.Model,
 		&i.Sandbox,
@@ -829,7 +825,7 @@ func (q *Queries) FreeUsername(ctx context.Context, arg FreeUsernameParams) erro
 }
 
 const getAgent = `-- name: GetAgent :one
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where id = ?
+select id, project_id, slug, name, description, harness, instructions, provider_id, model, created_at, updated_at, deleted_at from agents where id = ?
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
@@ -843,7 +839,6 @@ func (q *Queries) GetAgent(ctx context.Context, id key.ID) (Agent, error) {
 		&i.Description,
 		&i.Harness,
 		&i.Instructions,
-		&i.Approval,
 		&i.ProviderID,
 		&i.Model,
 		&i.CreatedAt,
@@ -1315,7 +1310,7 @@ func (q *Queries) ListAgentMcpServers(ctx context.Context, agentIds []key.ID) ([
 }
 
 const listAgents = `-- name: ListAgents :many
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where project_id = ? and deleted_at is null order by created_at, id
+select id, project_id, slug, name, description, harness, instructions, provider_id, model, created_at, updated_at, deleted_at from agents where project_id = ? and deleted_at is null order by created_at, id
 `
 
 func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, error) {
@@ -1335,7 +1330,6 @@ func (q *Queries) ListAgents(ctx context.Context, projectID key.ID) ([]Agent, er
 			&i.Description,
 			&i.Harness,
 			&i.Instructions,
-			&i.Approval,
 			&i.ProviderID,
 			&i.Model,
 			&i.CreatedAt,
@@ -2276,7 +2270,7 @@ func (q *Queries) Lock(ctx context.Context, name string) (string, error) {
 }
 
 const lockAgent = `-- name: LockAgent :one
-select id, project_id, slug, name, description, harness, instructions, approval, provider_id, model, created_at, updated_at, deleted_at from agents where id = ? for update
+select id, project_id, slug, name, description, harness, instructions, provider_id, model, created_at, updated_at, deleted_at from agents where id = ? for update
 `
 
 // Locks the agent until the transaction ends, so that it gets no session
@@ -2292,7 +2286,6 @@ func (q *Queries) LockAgent(ctx context.Context, id key.ID) (Agent, error) {
 		&i.Description,
 		&i.Harness,
 		&i.Instructions,
-		&i.Approval,
 		&i.ProviderID,
 		&i.Model,
 		&i.CreatedAt,
@@ -2579,7 +2572,7 @@ func (q *Queries) RemoveMember(ctx context.Context, id key.ID) (int64, error) {
 
 const replaceAgent = `-- name: ReplaceAgent :execrows
 update agents set name = ?, description = ?, instructions = ?,
-       approval = ?, provider_id = ?, model = ?, updated_at = now(6)
+       provider_id = ?, model = ?, updated_at = now(6)
 where id = ? and deleted_at is null
 `
 
@@ -2587,7 +2580,6 @@ type ReplaceAgentParams struct {
 	Name         string
 	Description  string
 	Instructions string
-	Approval     string
 	ProviderID   key.ID
 	Model        string
 	ID           key.ID
@@ -2599,7 +2591,6 @@ func (q *Queries) ReplaceAgent(ctx context.Context, arg ReplaceAgentParams) (int
 		arg.Name,
 		arg.Description,
 		arg.Instructions,
-		arg.Approval,
 		arg.ProviderID,
 		arg.Model,
 		arg.ID,

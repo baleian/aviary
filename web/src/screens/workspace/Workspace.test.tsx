@@ -160,7 +160,7 @@ it("shows an agent with its sessions, and the start of a new one", async () => {
   expect(screen.getByRole("heading", { name: "New session" })).toBeTruthy();
   const welcome = document.querySelector(".welcome")!.textContent;
   expect(welcome).toBe(
-    "Backend engineerFeatures, fixes and tests for the storefront backend.opencodecoder-largeasks before it acts",
+    "Backend engineerFeatures, fixes and tests for the storefront backend.opencodecoder-large",
   );
   await titled("Backend engineer · Storefront · Aviary");
   expect(
@@ -1188,7 +1188,8 @@ it("says that a turn waits for a sandbox that sleeps to wake", async () => {
 const card = () => screen.findByRole("group", { name: "Request for approval" });
 
 // A message that is no question has the agents of the mock work with their
-// tools, and the backend engineer asks before it changes a file.
+// tools. In the approval scenario, the harness asks before it changes a file
+// and before it runs a command.
 const WORK = "Note down that the total rounds twice, and run the tests.";
 
 it("answers a request for approval, and the turn goes on", async () => {
@@ -1238,6 +1239,7 @@ it("refuses what an agent asks to do, one request after another", async () => {
   const session = await talk("Asked twice", "backend-engineer");
   const user = open(session.path, "alice");
   await screen.findByRole("heading", { name: "Asked twice" });
+  (await backend()).mock.scenario = "approval";
   await user.type(box(), WORK + "{Enter}");
   // The change of a file comes first.
   let asking = await card();
@@ -1326,6 +1328,7 @@ it("tells the caller of a request that waits in another session", async () => {
   const user = open("/p/storefront", "alice");
   await screen.findByRole("heading", { name: /Storefront/ });
   const session = await talk("Asks elsewhere", "backend-engineer");
+  (await backend()).mock.scenario = "approval";
   session.send(WORK);
   const told = await screen.findByText("is waiting for you");
   expect(told.textContent).toBe("Backend engineer is waiting for you");
@@ -1360,6 +1363,7 @@ it("tells nobody of a request that is not theirs to answer", async () => {
   open("/p/storefront", "erin");
   await screen.findByRole("heading", { name: /Storefront/ });
   const session = await talk("Not hers to answer", "backend-engineer");
+  (await backend()).mock.scenario = "approval";
   const turn = session.send(WORK);
   await waitFor(() => {
     const read = session.request("GET", "/v1/turns/" + turn.id) as {
@@ -1419,7 +1423,6 @@ it("shows the details of a session and of its agent beside the conversation", as
   expect(rows.get("Harness")).toBe("opencode");
   expect(rows.get("Model")).toBe("coder-large");
   expect(rows.get("Provider")).toBe("Company gateway");
-  expect(rows.get("Approval")).toBe("ask");
   expect(pane.querySelector(".about")!.textContent).toBe(
     "Features, fixes and tests for the storefront backend.",
   );
@@ -1457,14 +1460,7 @@ it("tells of the agent beside the start of a new session", async () => {
     "About this agent",
   );
   expect(pane.querySelector(".idb")).toBeNull();
-  expect([...rows.keys()]).toEqual([
-    "Slug",
-    "Harness",
-    "Model",
-    "Provider",
-    "Approval",
-  ]);
-  expect(rows.get("Approval")).toBe("None");
+  expect([...rows.keys()]).toEqual(["Slug", "Harness", "Model", "Provider"]);
 });
 
 // servers returns the MCP servers in the details of a session.

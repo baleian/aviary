@@ -61,7 +61,6 @@ func TestARunnerIsGivenATurn(t *testing.T) {
 	start := Turn{
 		Text:         "hello",
 		Instructions: "be kind",
-		Approval:     "ask",
 		Environment:  map[string]string{"AVIARY_LLM_MODEL": "a-model"},
 	}
 	// Start is idempotent, since the caller may have missed the response.
@@ -72,7 +71,7 @@ func TestARunnerIsGivenATurn(t *testing.T) {
 	}
 	turn := s.Turn(t)
 	if turn.Sandbox != "a-sandbox" || turn.ID != first.String() || turn.Text != "hello" || turn.Instructions != "be kind" ||
-		turn.Approval != "ask" || turn.Environment["AVIARY_LLM_MODEL"] != "a-model" {
+		turn.Environment["AVIARY_LLM_MODEL"] != "a-model" {
 		t.Errorf("runner got %+v", turn)
 	}
 	// The runner runs one turn at a time.

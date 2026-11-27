@@ -317,7 +317,7 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 	}
 	params := db.CreateAgentParams{
 		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Description: agent.Description, Harness: agent.Harness,
-		Instructions: agent.Instructions, Approval: agent.Approval, ProviderID: agent.Model.Provider, Model: agent.Model.Name,
+		Instructions: agent.Instructions, ProviderID: agent.Model.Provider, Model: agent.Model.Name,
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -364,7 +364,7 @@ func (s *records) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Ag
 	queries := s.queries.WithTx(tx)
 	row, err := queries.ReplaceAgent(ctx, db.ReplaceAgentParams{
 		ID: agent.ID, Name: agent.Name, Description: agent.Description, Instructions: agent.Instructions,
-		Approval: agent.Approval, ProviderID: agent.Model.Provider, Model: agent.Model.Name,
+		ProviderID: agent.Model.Provider, Model: agent.Model.Name,
 	})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -1215,7 +1215,6 @@ func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Follo
 		ProjectID:    row.ProjectID,
 		Harness:      row.Harness,
 		Instructions: row.Instructions,
-		Approval:     row.Approval,
 		ProviderURL:  row.ProviderUrl,
 		Model:        row.Model,
 		Dispatched:   time.Duration(row.Dispatched * float64(time.Second)),
@@ -1432,7 +1431,6 @@ func agentFrom(row db.Agent) store.Agent {
 		UpdatedAt:    row.UpdatedAt,
 		DeletedAt:    row.DeletedAt,
 		Instructions: row.Instructions,
-		Approval:     row.Approval,
 		Model:        store.Model{Provider: row.ProviderID, Name: row.Model},
 	}
 }

@@ -417,9 +417,6 @@ a:hover .top > .go {
 .agent li .i {
   color: var(--slate);
 }
-.agent li.ask .i {
-  color: var(--c-icon);
-}
 .ag-w {
   position: relative;
   display: grid;

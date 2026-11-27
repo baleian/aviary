@@ -5,9 +5,9 @@ insert into projects (id, slug, name) values (sqlc.arg(id), sqlc.arg(slug), sqlc
 select * from projects where id = ?;
 
 -- name: CreateAgent :execrows
-insert into agents (id, project_id, slug, name, description, harness, instructions, approval, provider_id, model)
+insert into agents (id, project_id, slug, name, description, harness, instructions, provider_id, model)
 select sqlc.arg(id), projects.id, sqlc.arg(slug), sqlc.arg(name), sqlc.arg(description), sqlc.arg(harness),
-       sqlc.arg(instructions), sqlc.arg(approval), sqlc.arg(provider_id), sqlc.arg(model)
+       sqlc.arg(instructions), sqlc.arg(provider_id), sqlc.arg(model)
 from projects where projects.id = sqlc.arg(project_id);
 
 -- name: GetAgent :one
@@ -16,7 +16,7 @@ select * from agents where id = ?;
 -- name: ReplaceAgent :execrows
 -- Changes nothing if the agent does not exist or is deleted.
 update agents set name = sqlc.arg(name), description = sqlc.arg(description), instructions = sqlc.arg(instructions),
-       approval = sqlc.arg(approval), provider_id = sqlc.arg(provider_id), model = sqlc.arg(model), updated_at = now(6)
+       provider_id = sqlc.arg(provider_id), model = sqlc.arg(model), updated_at = now(6)
 where id = sqlc.arg(id) and deleted_at is null;
 
 -- name: LockAgent :one
@@ -360,7 +360,7 @@ update turns set state = 'running' where id = ? and state in ('dispatching', 'ru
 
 -- name: FollowedTurn :one
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
-       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox, sessions.sandbox_state,
+       providers.url as provider_url, agents.model, sessions.sandbox, sessions.sandbox_state,
        cast(timestampdiff(microsecond, coalesce(turns.dispatched_at, turns.created_at), now(6)) as signed) as dispatched
 from turns
 join sessions on sessions.id = turns.session_id

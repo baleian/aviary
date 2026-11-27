@@ -8,10 +8,6 @@
 //	               which leaves time to stop the turn in the middle of it
 //	run <command>  runs the command with the harness's shell tool, then
 //	               replies with the tool's output
-//	escalate <command>
-//	               like run, and asks for the command to run outside the
-//	               harness's sandbox if its shell tool supports that. A
-//	               harness that asks for approval before it acts asks then
 //	read <path>    reads the file with the harness's tool that reads files,
 //	               then replies with the tool's output
 //	use <server> <tool> [<arguments>]
@@ -264,26 +260,11 @@ type shellTool struct {
 	name string
 	// argument is the name of the parameter that takes the command.
 	argument string
-	// sandboxed is set for a tool that runs commands in a sandbox unless the
-	// model asks otherwise.
-	sandboxed bool
 }
 
-// outside holds the arguments that ask a sandboxed tool to run a command
-// outside its sandbox, as Codex's shell tool takes them.
-var outside = map[string]string{
-	"sandbox_permissions": "require_escalated",
-	"justification":       "the script says so",
-}
-
-// call returns the call that runs the command, outside the sandbox if
-// escalated is set.
-func (s shellTool) call(command string, escalated bool) *call {
-	arguments := map[string]string{s.argument: command}
-	if escalated && s.sandboxed {
-		maps.Copy(arguments, outside)
-	}
-	encoded, _ := json.Marshal(arguments)
+// call returns the call that runs the command.
+func (s shellTool) call(command string) *call {
+	encoded, _ := json.Marshal(map[string]string{s.argument: command})
 	return &call{name: s.name, arguments: string(encoded)}
 }
 
@@ -370,10 +351,10 @@ func (c conversation) next() answer {
 		return answer{failure: rest, status: http.StatusUnauthorized}
 	case word == "flaky":
 		return answer{text: rest, flaky: true}
-	case (word == "run" || word == "escalate") && c.shell == nil:
+	case word == "run" && c.shell == nil:
 		return answer{text: "mock: the harness offers no tool that runs a command"}
-	case word == "run" || word == "escalate":
-		return answer{call: c.shell.call(rest, word == "escalate")}
+	case word == "run":
+		return answer{call: c.shell.call(rest)}
 	case word == "read":
 		if reader := findReader(c.tools); reader != nil {
 			return answer{call: reader.call(rest)}
@@ -440,7 +421,7 @@ func (c conversation) use(rest string) answer {
 func instruction(message string) (word, rest string, found bool) {
 	word, rest, _ = strings.Cut(strings.TrimSpace(message), " ")
 	switch word {
-	case "say", "drawl", "run", "escalate", "read", "use", "attached", "pictures", "recall", "find", "fail", "flaky":
+	case "say", "drawl", "run", "read", "use", "attached", "pictures", "recall", "find", "fail", "flaky":
 		return word, strings.TrimSpace(rest), true
 	}
 	return "", "", false
@@ -500,8 +481,7 @@ func findShell(tools []tool) *shellTool {
 	for _, tool := range tools {
 		for _, argument := range []string{"command", "cmd"} {
 			if _, found := tool.Parameters.Properties[argument]; found {
-				_, sandboxed := tool.Parameters.Properties["sandbox_permissions"]
-				return &shellTool{name: tool.Name, argument: argument, sandboxed: sandboxed}
+				return &shellTool{name: tool.Name, argument: argument}
 			}
 		}
 	}

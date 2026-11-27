@@ -71,8 +71,8 @@ func RunnerAt(address string) *Runner {
 }
 
 // Turn is a turn as the runner receives it. A harness may have only the
-// instructions, approval mode, environment and MCP servers of its first turn,
-// so the runner starts a new one for a turn in which they differ.
+// instructions, environment and MCP servers of its first turn, so the runner
+// starts a new one for a turn in which they differ.
 type Turn struct {
 	Text string `json:"text"`
 	// Files are the files that the message carries, in its order: the paths
@@ -80,8 +80,6 @@ type Turn struct {
 	Files []string `json:"files,omitempty"`
 	// Instructions are given to the agent before every turn.
 	Instructions string `json:"instructions"`
-	// Approval is "ask" if the harness asks a person before it acts.
-	Approval string `json:"approval"`
 	// Environment holds environment variables of the harness, such as the
 	// agent's model.
 	Environment map[string]string `json:"environment"`

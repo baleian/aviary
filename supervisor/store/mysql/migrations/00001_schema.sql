@@ -142,9 +142,6 @@ create table agents (
     harness mediumtext not null,
     -- Given to the agent before every turn, if not empty.
     instructions mediumtext not null default (''),
-    -- 'ask' if the harness asks a person for approval before it acts, empty
-    -- if it does not ask.
-    approval varchar(64) not null default '',
     -- The agent's model: a provider of the project and the provider's name
     -- for the model.
     provider_id binary(16) not null,

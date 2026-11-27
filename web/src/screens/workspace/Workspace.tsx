@@ -125,9 +125,6 @@ function Sessions({
                 <div className="facts">
                   <span className="tag">{agent.harness}</span>
                   <span className="tag">{agent.model.name}</span>
-                  {agent.approval === "ask" && (
-                    <span className="tag y">asks before it acts</span>
-                  )}
                 </div>
               </div>
             </div>

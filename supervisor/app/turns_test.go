@@ -50,7 +50,7 @@ func TestTurn(t *testing.T) {
 	if harness := aviary.made(runner.Sandbox).Harness; harness != "codex" {
 		t.Errorf("sandbox harness = %s, want codex", harness)
 	}
-	if runner.Text != "hello" || runner.Instructions != "Be brief." || runner.Approval != "" {
+	if runner.Text != "hello" || runner.Instructions != "Be brief." {
 		t.Errorf("runner turn = %+v", runner.Turn)
 	}
 	if state := s.turn(accepted.ID).State; state != "running" {

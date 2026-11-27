@@ -5,9 +5,9 @@ insert into projects (id, slug, name) values (@id, @slug, @name) returning *;
 select * from projects where id = @id;
 
 -- name: CreateAgent :one
-insert into agents (id, project_id, slug, name, description, harness, instructions, approval, provider_id, model)
+insert into agents (id, project_id, slug, name, description, harness, instructions, provider_id, model)
 select @id::uuid, projects.id, @slug::text, @name::text, @description::text, @harness::text, @instructions::text,
-       @approval::text, @provider_id::uuid, @model::text
+       @provider_id::uuid, @model::text
 from projects where projects.id = @project_id
 returning *;
 
@@ -16,7 +16,7 @@ select * from agents where id = @id;
 
 -- name: ReplaceAgent :one
 -- Returns no row if the agent does not exist or is deleted.
-update agents set name = @name, description = @description, instructions = @instructions, approval = @approval,
+update agents set name = @name, description = @description, instructions = @instructions,
        provider_id = @provider_id, model = @model, updated_at = now()
 where id = @id and deleted_at is null
 returning *;
@@ -371,7 +371,7 @@ update turns set state = 'running' where id = @id and state in ('dispatching', '
 
 -- name: FollowedTurn :one
 select sqlc.embed(turns), agents.id as agent_id, agents.project_id, agents.harness, agents.instructions,
-       agents.approval, providers.url as provider_url, agents.model, sessions.sandbox, sessions.sandbox_state,
+       providers.url as provider_url, agents.model, sessions.sandbox, sessions.sandbox_state,
        extract(epoch from now() - coalesce(turns.dispatched_at, turns.created_at))::float8 as dispatched
 from turns
 join sessions on sessions.id = turns.session_id

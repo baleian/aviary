@@ -21,8 +21,8 @@ gateway puts it into the model requests of a turn on their way out. See
 ## Agent
 
 An agent is what a session talks to: a harness, a model at one of the
-project's providers and, if it needs them, instructions, MCP servers and the
-rule that it asks a person before it acts. See [Agents](../use/agents.md).
+project's providers and, if it needs them, instructions and MCP servers. See
+[Agents](../use/agents.md).
 
 ## Harness
 
@@ -55,8 +55,9 @@ next turn wakes it on a worker that has room. See
 
 ## Approval
 
-An agent can be made to ask a person before it acts. Its turn then waits
-until someone answers. See [Approvals](../use/approvals.md).
+An agent acts without asking. When its harness asks a person anyway, as for
+the approval of a plan, the turn waits until someone answers. See
+[Approvals](../use/approvals.md).
 
 ## MCP server
 

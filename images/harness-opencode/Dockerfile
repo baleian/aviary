@@ -6,6 +6,9 @@ RUN apt-get update && \
 ARG NPM_CONFIG_REGISTRY
 RUN --mount=type=cache,target=/root/.npm \
     npm install --global opencode-ai@1.19.5
+# The configuration allows what OpenCode asks about otherwise: files outside
+# the workspace, files of secrets such as .env, and a tool called the same way
+# again and again. So the agent acts without asking.
 COPY opencode.json /etc/xdg/opencode/opencode.json
 COPY --chmod=755 opencode-acp-aviary /usr/local/bin/opencode-acp-aviary
 COPY pictures.mjs /usr/local/lib/aviary/pictures.mjs

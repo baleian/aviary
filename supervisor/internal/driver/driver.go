@@ -170,10 +170,6 @@ func New(config Config, sandboxes Sandboxes, st store.Store, ev *events.Streams,
 	}
 }
 
-// Ask is the approval mode in which the harness asks a person before it
-// acts.
-const Ask = "ask"
-
 // HasHarness reports whether the named harness is configured.
 func (d *Driver) HasHarness(name string) bool {
 	_, found := d.config.Harnesses[name]
@@ -981,9 +977,6 @@ func (d *Driver) setUp(ctx context.Context, turn store.FollowedTurn) (setup, err
 		// The egress gateway puts the provider's key in its place.
 		"AVIARY_LLM_API_KEY": credentials.Placeholder,
 		"AVIARY_LLM_HEADERS": string(encoded),
-	}
-	if turn.Approval != "" {
-		set.environment["AVIARY_APPROVAL"] = turn.Approval
 	}
 	on, err := d.store.SessionMcpServers(ctx, []uuid.UUID{turn.SessionID})
 	if err != nil {

@@ -76,17 +76,6 @@ export function AgentCard({
             </span>
           </li>
         )}
-        {agent.approval === "ask" ? (
-          <li className="ask">
-            <Icon name="shield" />
-            <span>Asks before it acts</span>
-          </li>
-        ) : (
-          <li>
-            <Icon name="bolt" />
-            <span>Acts without asking</span>
-          </li>
-        )}
         {full && (
           <li>
             <Icon name="clock" />

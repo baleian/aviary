@@ -300,7 +300,7 @@ func (s *Store) CreateAgent(ctx context.Context, projectID uuid.UUID, agent stor
 	now := s.now()
 	created := store.Agent{
 		ID: id, ProjectID: projectID, Slug: agent.Slug, Name: agent.Name, Description: agent.Description, Harness: agent.Harness,
-		CreatedAt: now, UpdatedAt: now, Instructions: agent.Instructions, Approval: agent.Approval, Model: agent.Model,
+		CreatedAt: now, UpdatedAt: now, Instructions: agent.Instructions, Model: agent.Model,
 		McpServers: slices.Clone(agent.McpServers),
 	}
 	s.agents[id] = created
@@ -364,7 +364,7 @@ func (s *Store) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agen
 		return store.Agent{}, err
 	}
 	replaced.Name, replaced.Description = agent.Name, agent.Description
-	replaced.Instructions, replaced.Approval, replaced.Model = agent.Instructions, agent.Approval, agent.Model
+	replaced.Instructions, replaced.Model = agent.Instructions, agent.Model
 	replaced.McpServers = slices.Clone(agent.McpServers)
 	replaced.UpdatedAt = s.now()
 	s.agents[agent.ID] = replaced
@@ -1576,7 +1576,7 @@ func (s *Store) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Followe
 	agent := s.agents[session.AgentID]
 	followed := store.FollowedTurn{
 		Turn: turn.Turn, AgentID: agent.ID, ProjectID: agent.ProjectID,
-		Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
+		Harness: agent.Harness, Instructions: agent.Instructions,
 		ProviderURL: s.providers[agent.Model.Provider].URL, Model: agent.Model.Name,
 		Sandbox: session.Sandbox, SandboxState: session.SandboxState, Dispatched: now.Sub(turn.CreatedAt),
 	}

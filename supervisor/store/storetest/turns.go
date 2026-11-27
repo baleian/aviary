@@ -65,7 +65,7 @@ func (s supervisor) sessionOf(harness string) uuid.UUID {
 		s.t.Fatal(err)
 	}
 	agent, err := s.CreateAgent(ctx, project.ID, store.Agent{
-		Slug: unique("agent"), Harness: harness, Instructions: "Be brief.", Approval: "ask",
+		Slug: unique("agent"), Harness: harness, Instructions: "Be brief.",
 		Model: store.Model{Provider: provider.ID, Name: "a-model"},
 	})
 	if err != nil {
@@ -513,7 +513,7 @@ func (suite suite) testFollowTurn(t *testing.T) {
 	if followed.ID != dispatch.TurnID || followed.SessionID != session || followed.Seq != 1 || followed.Text != "hello" ||
 		followed.State != store.TurnRunning || followed.CancelRequestedAt != nil ||
 		followed.AgentID != agent.ID || followed.ProjectID != agent.ProjectID ||
-		followed.Harness != "opencode" || followed.Instructions != "Be brief." || followed.Approval != "ask" ||
+		followed.Harness != "opencode" || followed.Instructions != "Be brief." ||
 		followed.ProviderURL != "https://api.example.com/v1" || followed.Model != "a-model" || followed.Sandbox != "" ||
 		followed.Dispatched < 0 || followed.Dispatched > time.Minute {
 		t.Errorf("FollowTurn = %+v", followed)

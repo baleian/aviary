@@ -197,14 +197,6 @@ export function Details({
             </dd>
             <dt>Provider</dt>
             <dd>{provider ? provider.name : "Unknown"}</dd>
-            <dt>Approval</dt>
-            <dd>
-              {agent.approval === "ask" ? (
-                <span className="tag y">ask</span>
-              ) : (
-                <span className="sub">None</span>
-              )}
-            </dd>
           </dl>
           {agent.description && <p className="about">{agent.description}</p>}
         </div>

@@ -229,7 +229,6 @@ type agentRequest struct {
 	Description  string `json:"description"`
 	Harness      string `json:"harness"`
 	Instructions string `json:"instructions"`
-	Approval     string `json:"approval"`
 	Model        *struct {
 		Provider string `json:"provider"`
 		Name     string `json:"name"`
@@ -240,9 +239,6 @@ type agentRequest struct {
 // agentFrom returns the agent that the request describes, without its slug
 // and harness, which the caller checks. The agent is one of the project.
 func (a *api) agentFrom(r *http.Request, projectID uuid.UUID, request agentRequest) (store.Agent, error) {
-	if request.Approval != "" && request.Approval != driver.Ask {
-		return store.Agent{}, invalid(`approval must be "ask" or empty`)
-	}
 	if request.Model == nil {
 		return store.Agent{}, invalid("model is required")
 	}
@@ -265,7 +261,7 @@ func (a *api) agentFrom(r *http.Request, projectID uuid.UUID, request agentReque
 		return store.Agent{}, err
 	}
 	return store.Agent{
-		Name: request.Name, Description: request.Description, Instructions: request.Instructions, Approval: request.Approval,
+		Name: request.Name, Description: request.Description, Instructions: request.Instructions,
 		Model: store.Model{Provider: providerID, Name: request.Model.Name}, McpServers: servers,
 	}, nil
 }

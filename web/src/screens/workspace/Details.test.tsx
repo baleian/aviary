@@ -120,26 +120,24 @@ it("names no owner without an identity provider", () => {
   expect(rows.has("Started")).toBe(true);
 });
 
-it("tells of the agent: what runs it, and whether it asks", () => {
+it("tells of the agent: what runs it", () => {
   const plain = show();
   expect(plain.rows.get("Provider")).toBe("Gateway");
-  expect(plain.rows.get("Approval")).toBe("None");
+  expect(plain.rows.has("Approval")).toBe(false);
   expect(plain.pane.querySelector(".about")).toBeNull();
   expect(plain.pane.querySelector("h4 a")!.getAttribute("href")).toBe(
     "/p/shop/agents",
   );
   cleanup();
-  const asking = show({
+  const described = show({
     agent: {
       ...agent,
-      approval: "ask",
       description: "Helps.",
       model: { provider: "gone", name: "m" },
     },
   });
-  expect(asking.rows.get("Provider")).toBe("Unknown");
-  expect(asking.rows.get("Approval")).toBe("ask");
-  expect(asking.pane.querySelector(".about")!.textContent).toBe("Helps.");
+  expect(described.rows.get("Provider")).toBe("Unknown");
+  expect(described.pane.querySelector(".about")!.textContent).toBe("Helps.");
 });
 
 it("is empty while a session is read", () => {

@@ -98,8 +98,6 @@ export interface Agent {
   // A provider of the project, by ID, and its name for the model.
   model: { provider: string; name: string };
   instructions?: string;
-  // "ask" if the agent asks a person before it acts.
-  approval?: string;
   // The MCP servers of the project, by ID, that its sessions begin with.
   mcp_servers?: string[];
   created_at: string;

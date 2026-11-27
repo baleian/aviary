@@ -407,7 +407,7 @@ func (s *records) CreateAgent(ctx context.Context, projectID uuid.UUID, agent st
 	}
 	params := db.CreateAgentParams{
 		ID: key.ID(id), ProjectID: key.ID(projectID), Slug: agent.Slug, Name: agent.Name, Description: agent.Description,
-		Harness: agent.Harness, Instructions: agent.Instructions, Approval: agent.Approval,
+		Harness: agent.Harness, Instructions: agent.Instructions,
 		ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
 	}
 	err = s.within(ctx, func(queries *db.Queries) error {
@@ -436,7 +436,7 @@ func (s *records) Agent(ctx context.Context, id uuid.UUID) (store.Agent, error) 
 func (s *records) ReplaceAgent(ctx context.Context, agent store.Agent) (store.Agent, error) {
 	params := db.ReplaceAgentParams{
 		ID: key.ID(agent.ID), Name: agent.Name, Description: agent.Description, Instructions: agent.Instructions,
-		Approval: agent.Approval, ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
+		ProviderID: key.ID(agent.Model.Provider), Model: agent.Model.Name,
 	}
 	err := s.within(ctx, func(queries *db.Queries) error {
 		if err := created(queries.ReplaceAgent(ctx, params)); err != nil {
@@ -575,8 +575,8 @@ func agentFrom(row db.Agent) store.Agent {
 	return store.Agent{
 		ID: uuid.UUID(row.ID), ProjectID: uuid.UUID(row.ProjectID), Slug: row.Slug, Name: row.Name, Description: row.Description,
 		Harness: row.Harness, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, DeletedAt: row.DeletedAt,
-		Instructions: row.Instructions, Approval: row.Approval,
-		Model: store.Model{Provider: uuid.UUID(row.ProviderID), Name: row.Model},
+		Instructions: row.Instructions,
+		Model:        store.Model{Provider: uuid.UUID(row.ProviderID), Name: row.Model},
 	}
 }
 
@@ -1452,7 +1452,6 @@ func (s *records) FollowTurn(ctx context.Context, turnID uuid.UUID) (store.Follo
 		ProjectID:    uuid.UUID(row.ProjectID),
 		Harness:      row.Harness,
 		Instructions: row.Instructions,
-		Approval:     row.Approval,
 		ProviderURL:  row.ProviderUrl,
 		Model:        row.Model,
 		Dispatched:   since(row.Dispatched),

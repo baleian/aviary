@@ -473,22 +473,21 @@ async fn harness_starts_with_the_turn_environment() {
 async fn turn_with_other_settings_gets_a_new_harness() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
-    // Runs a turn with the model and the approval mode.
-    let run = async |id: &str, text: &str, model: &str, approval: &str| {
-        let start =
-            json!({"text": text, "approval": approval, "environment": {"AVIARY_LLM_MODEL": model}});
+    // Runs a turn with the model.
+    let run = async |id: &str, text: &str, model: &str| {
+        let start = json!({"text": text, "environment": {"AVIARY_LLM_MODEL": model}});
         assert_eq!(runner.turn_with(id, start).await, StatusCode::NO_CONTENT);
         runner.events(id).await
     };
     // The fake harness numbers tool calls per process.
-    let first = run("t1", "env AVIARY_LLM_MODEL ; tool a", "one", "").await;
+    let first = run("t1", "env AVIARY_LLM_MODEL ; tool a", "one").await;
     assert_eq!(said(&first), "one");
     assert_eq!(first[2].data["id"], "call-1");
-    let same = run("t2", "tool b", "one", "").await;
+    let same = run("t2", "tool b", "one").await;
     assert_eq!(same[1].data["id"], "call-2");
 
     // Another model: a new harness, which resumes the session.
-    let other = run("t3", "env AVIARY_LLM_MODEL ; tool c", "two", "").await;
+    let other = run("t3", "env AVIARY_LLM_MODEL ; tool c", "two").await;
     assert_eq!(said(&other), "two");
     assert_eq!(other[2].data["id"], "call-1");
     assert_eq!(
@@ -496,26 +495,11 @@ async fn turn_with_other_settings_gets_a_new_harness() {
         first[0].data["harness_session_id"]
     );
 
-    // Another approval mode: a new harness, which asks.
-    let start =
-        json!({"text": "ask", "approval": "ask", "environment": {"AVIARY_LLM_MODEL": "two"}});
-    assert_eq!(runner.turn_with("t4", start).await, StatusCode::NO_CONTENT);
-    let mut events = runner.follow("t4", 0).await;
-    assert_eq!(events.next().await.unwrap().name, "started");
-    assert_eq!(events.next().await.unwrap().name, "approval.requested");
-    assert_eq!(
-        runner.answer("t4", "1", "never").await,
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(events.next().await.unwrap().name, "approval.resolved");
-    assert_eq!(events.next().await.unwrap().data, json!({"text": "never"}));
-    assert_eq!(events.next().await.unwrap().name, "finished");
-
-    // And back: a new harness, which does not ask and has the whole session.
-    let back = run("t5", "ask ; recall", "two", "").await;
+    // And back: a new harness, which has the whole session.
+    let back = run("t4", "recall", "one").await;
     assert_eq!(
         said(&back),
-        "onceenv AVIARY_LLM_MODEL ; tool a\ntool b\nenv AVIARY_LLM_MODEL ; tool c\nask"
+        "env AVIARY_LLM_MODEL ; tool a\ntool b\nenv AVIARY_LLM_MODEL ; tool c"
     );
 }
 
@@ -639,21 +623,10 @@ async fn tool_output_is_cut_at_the_configured_limit() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn requests_are_allowed_once_by_default() {
-    let home = Home::new();
-    let runner = start(runner(&home)).await;
-    let events = runner.run("t1", "ask").await;
-    assert_eq!(names(&events), ["started", "message.delta", "finished"]);
-    assert_eq!(said(&events), "once");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn approval_requests_wait_for_an_answer() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
-    runner
-        .turn_with("t1", json!({"text": "ask ; ask", "approval": "ask"}))
-        .await;
+    runner.turn("t1", "ask ; ask").await;
     let mut events = runner.follow("t1", 0).await;
     assert_eq!(events.next().await.unwrap().name, "started");
     let asked = events.next().await.unwrap();
@@ -718,9 +691,7 @@ async fn approval_requests_wait_for_an_answer() {
 async fn concurrent_approval_requests_get_their_own_answers() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
-    runner
-        .turn_with("t1", json!({"text": "ask 3", "approval": "ask"}))
-        .await;
+    runner.turn("t1", "ask 3").await;
     let mut events = runner.follow("t1", 0).await;
     assert_eq!(events.next().await.unwrap().name, "started");
     for request in ["1", "2", "3"] {
@@ -743,9 +714,7 @@ async fn concurrent_approval_requests_get_their_own_answers() {
 async fn cancel_resolves_pending_approval_requests() {
     let home = Home::new();
     let runner = start(runner(&home)).await;
-    runner
-        .turn_with("t1", json!({"text": "ask 2 ; say on", "approval": "ask"}))
-        .await;
+    runner.turn("t1", "ask 2 ; say on").await;
     let mut events = runner.follow("t1", 0).await;
     for name in ["started", "approval.requested", "approval.requested"] {
         assert_eq!(events.next().await.unwrap().name, name);

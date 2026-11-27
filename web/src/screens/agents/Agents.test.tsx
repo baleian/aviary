@@ -50,9 +50,7 @@ it("lists the agents of a project", async () => {
   );
   expect(backend.textContent).toContain("Company gateway / coder-large");
   expect(backend.textContent).toContain("opencode harness");
-  expect(backend.textContent).toContain("Asks before it acts");
   const reviewer = screen.getByRole("link", { name: /Reviewer/ });
-  expect(reviewer.textContent).toContain("Acts without asking");
   expect(reviewer.textContent).toContain("Reviews a branch");
   // An agent without a name shows its slug, and one without a description
   // says so.
@@ -82,9 +80,6 @@ it("creates an agent", async () => {
     dialog.getByRole("combobox", { name: "Model provider" }),
     "Local model server",
   );
-  await user.click(
-    dialog.getByRole("checkbox", { name: "Ask before it acts" }),
-  );
 
   // The provider lists no models, so the model is entered.
   const model = await dialog.findByRole("textbox", { name: "Model" });
@@ -101,7 +96,7 @@ it("creates an agent", async () => {
   expect(screen.queryByRole("dialog")).toBeNull();
   await titled("Notes · Storefront · Aviary");
   expect(document.querySelector(".welcome")!.textContent).toBe(
-    "NotesWrites the release notes.codexcoder-smallasks before it acts",
+    "NotesWrites the release notes.codexcoder-small",
   );
   expect(screen.getByRole("status").textContent).toContain("Created Notes");
 
@@ -112,7 +107,6 @@ it("creates an agent", async () => {
   expect(created.textContent).toContain("Local model server / coder-small");
   expect(created.textContent).toContain("codex harness");
   expect(created.textContent).toContain("Writes the release notes.");
-  expect(created.textContent).toContain("Asks before it acts");
 });
 
 it("changes an agent, but for its slug and its harness", async () => {
@@ -130,14 +124,10 @@ it("changes an agent, but for its slug and its harness", async () => {
   const description = dialog.getByRole("textbox", { name: /Description/ });
   await user.clear(description);
   await user.type(description, "Reads every diff.");
-  await user.click(
-    dialog.getByRole("checkbox", { name: "Ask before it acts" }),
-  );
   await user.click(dialog.getByRole("button", { name: "Save agent" }));
 
   expect(await screen.findByText("Reads every diff.")).toBeTruthy();
   const changed = screen.getByRole("link", { name: /Reviewer/ });
-  expect(changed.textContent).toContain("Asks before it acts");
   expect(changed.textContent).toContain("codex harness");
   expect(changed.textContent).toContain("Company gateway / reasoner-mini");
   expect(screen.getByRole("status").textContent).toContain("Saved Reviewer");

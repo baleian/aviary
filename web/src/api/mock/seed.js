@@ -541,7 +541,6 @@ export function seed(now) {
     harness,
     providerID,
     model,
-    approval,
     instructions,
     ago,
   ) => {
@@ -557,7 +556,6 @@ export function seed(now) {
       model: { provider: providerID, name: model },
     };
     if (instructions) record.instructions = instructions;
-    if (approval) record.approval = "ask";
     db.agents.push(record);
     return record.id;
   };
@@ -569,7 +567,6 @@ export function seed(now) {
     "opencode",
     gateway,
     "coder-large",
-    true,
     "You work on the storefront backend: TypeScript on Node 22, tests with vitest.\nKeep changes small, and say which tests you ran.",
     9 * DAY - 4 * HOUR,
   );
@@ -581,7 +578,6 @@ export function seed(now) {
     "codex",
     gateway,
     "reasoner-mini",
-    false,
     "Review changes for correctness first, then for clarity. Quote the lines you mean.",
     8 * DAY - 2 * HOUR,
   );
@@ -593,7 +589,6 @@ export function seed(now) {
     "opencode",
     local,
     "coder-small",
-    false,
     "",
     6 * DAY,
   );
@@ -605,7 +600,6 @@ export function seed(now) {
     "codex",
     gateway,
     "coder-large",
-    true,
     "Prepare releases: changelog, version bump, tag. Never push without asking.",
     3 * DAY,
   );
@@ -617,7 +611,6 @@ export function seed(now) {
     "opencode",
     cluster,
     "qwen-coder-32b",
-    false,
     "Answer questions about the warehouse with SQL. Read only.",
     7 * DAY - 3 * HOUR,
   );
@@ -629,7 +622,6 @@ export function seed(now) {
     "opencode",
     cluster,
     "qwen-coder-32b",
-    true,
     "",
     5 * DAY,
   );
@@ -641,7 +633,6 @@ export function seed(now) {
     "opencode",
     toolsGateway,
     "coder-small",
-    false,
     "",
     4 * DAY - 3 * HOUR,
   );

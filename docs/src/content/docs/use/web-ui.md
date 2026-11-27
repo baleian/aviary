@@ -41,14 +41,14 @@ The tabs of a project are:
 
 ## Working with an agent
 
-![A session in which the agent asks before it runs a command](../../../assets/screens/session.png)
+![A session whose turn waits for an answer](../../../assets/screens/session.png)
 
 - **On the left** are the sessions of the agent, yours or everyone's, each
   with the state of its last turn. A dot marks a session whose sandbox is
   awake, and a moon one that sleeps. **New session** starts a conversation.
 - **In the middle** is the conversation: for each turn your message, what
-  the agent says, the tools that it calls, and what it asks you before it
-  acts. Under it you write the next message, attach files, and stop the turn
+  the agent says, the tools that it calls, and what its harness asks you.
+  Under it you write the next message, attach files, and stop the turn
   that runs. See [Sessions and turns](./sessions.md).
 - **On the right**, **Details** shows the session with its owner, its
   sandbox and the tokens that its turns used, the MCP servers that it has

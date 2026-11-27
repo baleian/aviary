@@ -203,7 +203,7 @@ func TestSessionLastTurn(t *testing.T) {
 	t.Parallel()
 	aviary := install(t)
 	s := aviary.supervisor()
-	agent := s.agent(s.project(), `{"harness": "opencode", "approval": "ask"}`)
+	agent := s.agent(s.project(), `{"harness": "opencode"}`)
 	session := s.create("/v1/agents/"+agent+"/sessions", "")
 	path := "/v1/sessions/" + session
 	// last returns the newest turn that a response of the API has for the

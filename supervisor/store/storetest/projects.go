@@ -150,7 +150,7 @@ func (suite suite) testAgents(t *testing.T) {
 	}
 	given := store.Agent{
 		Slug: "reviewer", Name: "Code reviewer", Description: "Reviews a branch before it is merged.", Harness: "opencode",
-		Instructions: "Be brief.", Approval: "ask", Model: store.Model{Provider: provider.ID, Name: "a-model"},
+		Instructions: "Be brief.", Model: store.Model{Provider: provider.ID, Name: "a-model"},
 	}
 	created, err := st.CreateAgent(ctx, project.ID, given)
 	if err != nil {
@@ -163,8 +163,7 @@ func (suite suite) testAgents(t *testing.T) {
 	for how, agent := range map[string]store.Agent{"created": created, "read": read} {
 		if agent.ID == uuid.Nil || agent.ID != created.ID || agent.ProjectID != project.ID || agent.Slug != "reviewer" ||
 			agent.Name != "Code reviewer" || agent.Description != "Reviews a branch before it is merged." || agent.Harness != "opencode" ||
-			agent.Instructions != "Be brief." || agent.Approval != "ask" ||
-			agent.Model != given.Model || agent.CreatedAt.IsZero() || !agent.CreatedAt.Equal(created.CreatedAt) ||
+			agent.Instructions != "Be brief." || agent.Model != given.Model || agent.CreatedAt.IsZero() || !agent.CreatedAt.Equal(created.CreatedAt) ||
 			!agent.UpdatedAt.Equal(created.CreatedAt) {
 			t.Errorf("%s agent = %+v, model %+v", how, agent, agent.Model)
 		}
@@ -175,7 +174,7 @@ func (suite suite) testAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	if read, err := st.Agent(ctx, plain.ID); err != nil || read.Slug != "plain" || read.Name != "" || read.Description != "" ||
-		read.Harness != "codex" || read.Instructions != "" || read.Approval != "" || read.Model != given.Model {
+		read.Harness != "codex" || read.Instructions != "" || read.Model != given.Model {
 		t.Errorf("agent with only a slug, a harness and a model = %+v: %v", read, err)
 	}
 
@@ -194,7 +193,7 @@ func (suite suite) testAgents(t *testing.T) {
 func sameAgent(one, other store.Agent) bool {
 	return one.ID == other.ID && one.ProjectID == other.ProjectID && one.Slug == other.Slug && one.Name == other.Name &&
 		one.Description == other.Description && one.Harness == other.Harness && one.Instructions == other.Instructions &&
-		one.Approval == other.Approval && one.Model == other.Model &&
+		one.Model == other.Model &&
 		one.CreatedAt.Equal(other.CreatedAt) && one.UpdatedAt.Equal(other.UpdatedAt)
 }
 
@@ -214,7 +213,7 @@ func (suite suite) testReplaceAgent(t *testing.T) {
 	}
 	created, err := st.CreateAgent(ctx, project.ID, store.Agent{
 		Slug: "reviewer", Name: "Code reviewer", Description: "Reviews a branch before it is merged.", Harness: "opencode",
-		Instructions: "Be brief.", Approval: "ask", Model: store.Model{Provider: providers[0].ID, Name: "a-model"},
+		Instructions: "Be brief.", Model: store.Model{Provider: providers[0].ID, Name: "a-model"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +238,7 @@ func (suite suite) testReplaceAgent(t *testing.T) {
 	}
 	for how, agent := range map[string]store.Agent{"replaced": replaced, "read": read} {
 		if agent.ID != created.ID || agent.ProjectID != project.ID || agent.Slug != "reviewer" || agent.Harness != "opencode" ||
-			agent.Name != "Reviewer" || agent.Description != "Reviews." || agent.Instructions != "Be thorough." || agent.Approval != "" ||
+			agent.Name != "Reviewer" || agent.Description != "Reviews." || agent.Instructions != "Be thorough." ||
 			agent.Model != given.Model || !agent.CreatedAt.Equal(created.CreatedAt) || !agent.UpdatedAt.After(created.UpdatedAt) ||
 			!agent.UpdatedAt.Equal(replaced.UpdatedAt) {
 			t.Errorf("%s agent = %+v, model %+v", how, agent, agent.Model)
@@ -286,7 +285,7 @@ func (suite suite) testListAgents(t *testing.T) {
 		project uuid.UUID
 		agent   store.Agent
 	}{
-		{project.ID, store.Agent{Slug: "first", Name: "First", Description: "The first of three.", Harness: "opencode", Instructions: "Be brief.", Approval: "ask", Model: model}},
+		{project.ID, store.Agent{Slug: "first", Name: "First", Description: "The first of three.", Harness: "opencode", Instructions: "Be brief.", Model: model}},
 		{other.ID, store.Agent{Slug: "first", Harness: "opencode", Model: store.Model{Provider: theirs.ID, Name: "a-model"}}},
 		{project.ID, store.Agent{Slug: "second", Harness: "codex", Model: store.Model{Provider: provider.ID, Name: "another-model"}}},
 		{project.ID, store.Agent{Slug: "third", Harness: "opencode", Model: model}},
@@ -316,7 +315,7 @@ func (suite suite) testListAgents(t *testing.T) {
 			}
 			if agent.ID != read.ID || agent.ProjectID != listed.project || agent.Slug != read.Slug || agent.Name != read.Name ||
 				agent.Description != read.Description || agent.Harness != read.Harness ||
-				agent.Instructions != read.Instructions || agent.Approval != read.Approval ||
+				agent.Instructions != read.Instructions ||
 				agent.Model != read.Model || !agent.CreatedAt.Equal(read.CreatedAt) {
 				t.Errorf("agent %d: listed %+v, read %+v", i, agent, read)
 			}

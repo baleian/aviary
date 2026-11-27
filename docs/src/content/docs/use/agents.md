@@ -11,12 +11,12 @@ An agent is what a session talks to. It names:
   project, and the provider's name for the model.
 - **Instructions**, if it needs them, which are given to the agent before
   every turn.
-- **Approval.** An agent that asks does so before it acts, and a person
-  answers: see [Approvals](./approvals.md). Any other agent asks
-  nobody.
 - **MCP servers**, if it needs them: the
   [servers](./mcp-servers.md) of the project that its sessions
   begin with.
+
+An agent acts without asking. What its harness may still ask a person is in
+[Approvals](./approvals.md).
 
 An agent also has a slug, which is unique in its project, and can have a
 name and a description, which says what the agent is for. The name and the
@@ -35,8 +35,8 @@ permission `agents.manage`.
 
 **Edit agent**, in the menu of an agent, changes all of it but its slug and
 its harness. The sessions of the agent run their next turn with the change.
-That turn gets a new harness, which resumes the session, if the model, the
-instructions or the approval changed.
+That turn gets a new harness, which resumes the session, if the model or the
+instructions changed.
 
 ## Deleting an agent
 

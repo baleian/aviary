@@ -65,20 +65,6 @@ export function Select({
   );
 }
 
-// Toggle is a switch with its text.
-export function Toggle({
-  children,
-  ...props
-}: { children: ReactNode } & InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <label className="swt">
-      <input type="checkbox" {...props} />
-      <i />
-      <span>{children}</span>
-    </label>
-  );
-}
-
 // Check is a box to tick, with its text.
 export function Check({
   children,

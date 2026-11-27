@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -28,19 +27,12 @@ type sent struct {
 	toolOutput string
 	// noTool is set for a harness that offers the model no tool.
 	noTool bool
-	// sandboxed is set for a harness whose tool runs commands in a sandbox
-	// unless the model asks otherwise, as Codex's does.
-	sandboxed bool
 }
 
 // parameters returns the parameters of the harness's tool, with command as
 // the name of the one that takes the command.
 func (s sent) parameters(command string) map[string]any {
-	properties := map[string]any{command: map[string]any{}}
-	if s.sandboxed {
-		properties["sandbox_permissions"], properties["justification"] = map[string]any{}, map[string]any{}
-	}
-	return map[string]any{"properties": properties}
+	return map[string]any{"properties": map[string]any{command: map[string]any{}}}
 }
 
 // reply is the model's answer: text, a tool call with a command, or a
@@ -265,10 +257,8 @@ func TestScript(t *testing.T) {
 			for _, test := range []struct {
 				name string
 				sent sent
-				// The expected text, or the command of the tool call and
-				// whether it asks to run outside the sandbox.
+				// The expected text, or the command of the tool call.
 				text, command string
-				outside       bool
 			}{
 				{name: "say", sent: sent{said: []string{"say hello there"}}, text: "hello there"},
 				{name: "no instruction", sent: sent{said: []string{"hello"}}, text: "mock"},
@@ -278,24 +268,11 @@ func TestScript(t *testing.T) {
 					text: "mock: the harness offers no tool that runs a command",
 				},
 				{name: "tool output", sent: sent{said: []string{"run ls -a"}, toolOutput: ". .. notes.txt"}, text: ". .. notes.txt"},
-				// Only a sandboxed tool is asked to run a command outside its
-				// sandbox, and only by escalate.
-				{name: "escalate", sent: sent{said: []string{"escalate ls -a"}, sandboxed: true}, command: "ls -a", outside: true},
-				{name: "escalate without a sandbox", sent: sent{said: []string{"escalate ls -a"}}, command: "ls -a"},
-				{name: "run in a sandbox", sent: sent{said: []string{"run ls -a"}, sandboxed: true}, command: "ls -a"},
-				{
-					name: "escalate without a tool", sent: sent{said: []string{"escalate ls -a"}, noTool: true},
-					text: "mock: the harness offers no tool that runs a command",
-				},
-				{
-					name: "tool output outside the sandbox",
-					sent: sent{said: []string{"escalate ls -a"}, toolOutput: ". .. notes.txt", sandboxed: true}, text: ". .. notes.txt",
-				},
 				{name: "recall with no history", sent: sent{said: []string{"recall"}}, text: "nothing"},
 				{
 					// Messages that the harness adds are not instructions.
-					name: "recall", sent: sent{said: []string{"say one", "<context>today</context>", "run ls", "escalate ls", "recall"}},
-					text: "say one\nrun ls\nescalate ls",
+					name: "recall", sent: sent{said: []string{"say one", "<context>today</context>", "run ls", "recall"}},
+					text: "say one\nrun ls",
 				},
 				{
 					name: "find in the instructions",
@@ -311,12 +288,8 @@ func TestScript(t *testing.T) {
 				},
 			} {
 				answer := ask(t, model.URL, test.sent)
-				others := map[string]string{}
-				if test.outside {
-					others = map[string]string{"sandbox_permissions": "require_escalated", "justification": "the script says so"}
-				}
 				if answer.status != http.StatusOK || answer.text != test.text || answer.command != test.command ||
-					(test.command != "") != (answer.tool != "") || !maps.Equal(answer.others, others) {
+					(test.command != "") != (answer.tool != "") || len(answer.others) != 0 {
 					t.Errorf("%s: got %+v", test.name, answer)
 				}
 				if answer.usage["input"] != 11 || answer.usage["output"] != 7 || answer.usage["total"] != 18 {

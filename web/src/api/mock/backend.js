@@ -11,8 +11,9 @@ import { bytesOf } from "./files.js";
 
 // What the mock is set to do.
 export const mock = {
-  // What the next turn plays: "auto", "queue", "queue_full", "expire" or a
-  // script of scripts.js. It goes back to "auto" once it is used.
+  // What the next turn plays: "auto", "queue", "queue_full", "expire",
+  // "approval", which works with a harness that asks a person before it acts,
+  // or a script of scripts.js. It goes back to "auto" once it is used.
   scenario: "auto",
   // How fast the agents work: 1 is their usual pace, 0 is at once.
   speed: 1,
@@ -855,8 +856,10 @@ const relative = (path) => path.replace(/^\/home\/workspace\//, "");
 const base = (path) => path.split("/").pop();
 
 // run plays a script as the turn. answers, by request ID, are the approvals
-// that a person has already given: the turn does not wait for those.
-function run(turn, play, { answers = {}, instant = false } = {}) {
+// that a person has already given: the turn does not wait for those. asks is
+// set for a harness that asks a person before the calls that the script
+// marks.
+function run(turn, play, { answers = {}, instant = false, asks = false } = {}) {
   const session = db.sessions.find((other) => other.id === turn.session_id);
   const agent = db.agents.find((other) => other.id === session.agent_id);
   const harness = agent.harness === "codex" ? "codex" : "opencode";
@@ -942,14 +945,10 @@ function run(turn, play, { answers = {}, instant = false } = {}) {
     return request.options.find((option) => option.id === asked.optionID);
   };
 
-  // needsApproval reports whether the harness asks before this tool call.
-  // OpenCode asks before a command or a change to a file, Codex before a
-  // command, and neither asks again after "always".
-  const needsApproval = (spec) => {
-    if (!spec.asks || agent.approval !== "ask") return false;
-    if (harness === "codex" && spec.kind !== "execute") return false;
-    return !(session.allowed || []).includes(spec.kind);
-  };
+  // needsApproval reports whether the harness asks before this tool call. It
+  // does not ask again after "always".
+  const needsApproval = (spec) =>
+    asks && spec.asks && !(session.allowed || []).includes(spec.kind);
   const approve = async (spec, call) => {
     if (!needsApproval(spec)) return true;
     const chosen = await ask(call);
@@ -1346,7 +1345,7 @@ function accept(session, who, words, scenario, files = []) {
       ),
     );
     changed();
-    run(turn, play);
+    run(turn, play, { asks: scenario === "approval" });
   };
 
   if (scenario !== "queue" && scenario !== "expire") {
@@ -1759,9 +1758,6 @@ route("POST", "/v1/mcp-servers/{id}/tools", ({ who }, id) => {
 // agentSettings checks what a request sets of an agent of the project,
 // besides its slug and its harness, and returns it.
 function agentSettings(request, pid) {
-  const approval = text(request.approval);
-  if (approval && approval !== "ask")
-    invalid('approval must be "ask" or empty');
   if (request.model == null) invalid("model is required");
   decode(request.model, ["provider", "name"]);
   const provider =
@@ -1778,7 +1774,6 @@ function agentSettings(request, pid) {
     description: text(request.description),
   };
   if (text(request.instructions)) settings.instructions = request.instructions;
-  if (approval) settings.approval = approval;
   settings.model = { provider: provider.id, name: request.model.name };
   const servers = mcpServersOf(request.mcp_servers, pid, "mcp_servers");
   if (servers.length) settings.mcp_servers = servers;
@@ -1809,7 +1804,6 @@ const AGENT = [
   "description",
   "harness",
   "instructions",
-  "approval",
   "model",
   "mcp_servers",
 ];
@@ -1858,7 +1852,6 @@ route("PUT", "/v1/agents/{aid}", ({ who, body }, aid) => {
   // The rest is replaced together: what the body leaves out is empty
   // afterwards.
   delete agent.instructions;
-  delete agent.approval;
   delete agent.mcp_servers;
   Object.assign(agent, settings, { updated_at: iso() });
   return [200, agent];
@@ -2392,6 +2385,7 @@ export function reset() {
     run(turn, script(left.script, turn.text), {
       answers: left.answers,
       instant: true,
+      asks: true,
     });
   }
   // The turns that the example data leaves running are played up to where
