@@ -1267,6 +1267,43 @@ func (q *Queries) IsSessionBusy(ctx context.Context, sessionID key.ID) (bool, er
 	return exists, err
 }
 
+const lastTurn = `-- name: LastTurn :one
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
+       coalesce(users.subject, '') as subject
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+left join users on users.id = turns.created_by
+where turns.session_id = ? and turns.dispatched_at is not null
+order by turns.seq desc
+limit 1
+`
+
+type LastTurnRow struct {
+	TurnID    key.ID
+	SessionID key.ID
+	AgentID   key.ID
+	ProjectID key.ID
+	CreatedBy *key.ID
+	Subject   string
+}
+
+// Returns the origin of the session's dispatched turn with the highest
+// number, which the unique key of the session's turns finds.
+func (q *Queries) LastTurn(ctx context.Context, sessionID key.ID) (LastTurnRow, error) {
+	row := q.db.QueryRowContext(ctx, lastTurn, sessionID)
+	var i LastTurnRow
+	err := row.Scan(
+		&i.TurnID,
+		&i.SessionID,
+		&i.AgentID,
+		&i.ProjectID,
+		&i.CreatedBy,
+		&i.Subject,
+	)
+	return i, err
+}
+
 const listAgentMcpServers = `-- name: ListAgentMcpServers :many
 select agent_mcp_servers.agent_id, agent_mcp_servers.mcp_server_id
 from agent_mcp_servers join mcp_servers on mcp_servers.id = agent_mcp_servers.mcp_server_id

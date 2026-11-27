@@ -631,3 +631,22 @@ func words(count int) (said, message string) {
 	said = strings.Join(all, " ")
 	return said, "drawl " + said
 }
+
+// egressLog returns the JSON lines of the access log of the egress gateway.
+func egressLog(t *testing.T) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for _, pod := range pods(t, "ate-system", "app=atenet-egress") {
+		raw, err := cluster.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: "envoy"}).DoRaw(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, text := range strings.Split(string(raw), "\n") {
+			var line map[string]any
+			if json.Unmarshal([]byte(text), &line) == nil {
+				lines = append(lines, line)
+			}
+		}
+	}
+	return lines
+}

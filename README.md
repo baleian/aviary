@@ -43,8 +43,8 @@ message from the API to the sandbox and back.
   sandbox holds a provider's API key: the key is put into a model request on
   its way out.
 - **Controlled egress.** An agent reaches only the hosts that the
-  installation and its turn allow, and every secret that is put into a
-  request is logged with the turn and the user that it came from.
+  installation and its turn allow, and every connection that leaves its
+  sandbox is logged with the turn and the user that it is for.
 - **A person in the loop.** An agent acts without asking. When its harness
   asks a person, as for the approval of a plan, the turn waits for the
   answer.

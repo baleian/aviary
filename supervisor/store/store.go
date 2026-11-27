@@ -838,6 +838,12 @@ type Store interface {
 	// ErrNotFound if no turn runs in it.
 	SessionTurn(ctx context.Context, sessionID uuid.UUID) (Origin, error)
 
+	// LastTurn returns the origin of the session's last turn: the one that
+	// runs in it or, between turns, the dispatched turn with the highest
+	// number. Its provider and secret store are not set. LastTurn returns
+	// ErrNotFound if no turn of the session has been dispatched.
+	LastTurn(ctx context.Context, sessionID uuid.UUID) (Origin, error)
+
 	// StartTurn records that the turn's harness has received the message, and
 	// returns the time since the turn's dispatch. It reports false, and
 	// changes nothing, if the turn had already started.

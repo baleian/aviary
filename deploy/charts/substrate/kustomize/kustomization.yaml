@@ -91,7 +91,8 @@ patches:
         path: /spec/template/spec/containers/1/args/-
         value: --credential-provider-client-cert=/run/podidentity.podcert.ate.dev/credential-bundle.pem
   # The gateway trusts the certificate authority of the actors, which it reads
-  # from the Secret of that authority without its key.
+  # from the Secret of that authority without its key, and starts again when
+  # what _attribution.tpl adds to its configuration changes.
   - patch: |-
       apiVersion: apps/v1
       kind: Deployment
@@ -100,6 +101,9 @@ patches:
         namespace: ate-system
       spec:
         template:
+          metadata:
+            annotations:
+              checksum/attribution: AVIARY_VALUE_attributionChecksum
           spec:
             volumes:
               - name: actor-id-ca-certs

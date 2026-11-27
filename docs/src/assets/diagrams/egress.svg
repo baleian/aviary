@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 394" role="img" aria-labelledby="title desc">
   <title id="title">What leaves a sandbox</title>
-  <desc id="desc">A sandbox sends its model and MCP requests to their URLs with a placeholder in place of each secret, and its other connections to the hosts that are allowed. All of them pass through the egress gateway of Agent Substrate, which reads the requests to the hosts of the turn's provider and MCP servers, asks the Supervisor for their secrets and puts them in, lets the connections to the other allowed hosts through unread, and refuses every other host.</desc>
+  <desc id="desc">A sandbox sends its model and MCP requests to their URLs with a placeholder in place of each secret, and its other connections to the hosts that are allowed. All of them pass through the egress gateway of Agent Substrate, which asks the Supervisor whom each connection is for and writes that in its log, reads the requests to the hosts of the turn's provider and MCP servers, asks the Supervisor for their secrets and puts them in, lets the connections to the other allowed hosts through unread, and refuses every other host.</desc>
   <style>
     svg {
       --bg: #ffffff; --frame: #d9e0ea;
@@ -63,11 +63,11 @@
   <rect class="hub" x="400" y="16" width="200" height="44" rx="10"/>
   <text class="t c" x="500" y="43">Supervisor</text>
   <path class="e" d="M470 104V62" marker-end="url(#a)"/>
-  <text class="l r" x="462" y="78">the secret,</text>
-  <text class="l r" x="462" y="92">for this sandbox?</text>
+  <text class="l r" x="462" y="78">whom is this connection for,</text>
+  <text class="l r" x="462" y="92">and the secret?</text>
   <path class="e ret" d="M530 60V102" marker-end="url(#a)"/>
-  <text class="l" x="538" y="78">only while a turn runs in its session, and only</text>
-  <text class="l" x="538" y="92">of the turn's provider or the session's servers</text>
+  <text class="l" x="538" y="78">the turn, session, agent, project and user; a secret</text>
+  <text class="l" x="538" y="92">only of the turn's provider or the session's servers</text>
 
   <!-- The sandbox -->
   <rect class="closed" x="20" y="104" width="250" height="270" rx="12"/>
@@ -99,8 +99,8 @@
   <text class="d" x="378" y="266">unread: of HTTPS it sees only</text>
   <text class="d" x="378" y="281">the host and the port</text>
   <text class="d" x="366" y="326">Refuses a host that the policy of the</text>
-  <text class="d" x="366" y="341">sandbox does not name. The Supervisor</text>
-  <text class="d" x="366" y="356">logs each secret that it gives.</text>
+  <text class="d" x="366" y="341">sandbox does not name. Its log says</text>
+  <text class="d" x="366" y="356">whom each connection is for.</text>
 
   <!-- Where the requests go -->
   <rect class="zone" x="706" y="104" width="174" height="270" rx="12"/>

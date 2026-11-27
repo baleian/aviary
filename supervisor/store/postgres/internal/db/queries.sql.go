@@ -1451,6 +1451,43 @@ func (q *Queries) IsMember(ctx context.Context, arg IsMemberParams) (bool, error
 	return exists, err
 }
 
+const lastTurn = `-- name: LastTurn :one
+select turns.id as turn_id, sessions.id as session_id, agents.id as agent_id, agents.project_id, turns.created_by,
+       coalesce(users.subject, '')::text as subject
+from turns
+join sessions on sessions.id = turns.session_id
+join agents on agents.id = sessions.agent_id
+left join users on users.id = turns.created_by
+where turns.session_id = $1 and turns.dispatched_at is not null
+order by turns.seq desc
+limit 1
+`
+
+type LastTurnRow struct {
+	TurnID    uuid.UUID
+	SessionID uuid.UUID
+	AgentID   uuid.UUID
+	ProjectID uuid.UUID
+	CreatedBy *uuid.UUID
+	Subject   string
+}
+
+// Returns the origin of the session's dispatched turn with the highest
+// number, which the unique key of the session's turns finds.
+func (q *Queries) LastTurn(ctx context.Context, sessionID uuid.UUID) (LastTurnRow, error) {
+	row := q.db.QueryRow(ctx, lastTurn, sessionID)
+	var i LastTurnRow
+	err := row.Scan(
+		&i.TurnID,
+		&i.SessionID,
+		&i.AgentID,
+		&i.ProjectID,
+		&i.CreatedBy,
+		&i.Subject,
+	)
+	return i, err
+}
+
 const listAgentMcpServers = `-- name: ListAgentMcpServers :many
 select agent_mcp_servers.agent_id, agent_mcp_servers.mcp_server_id
 from agent_mcp_servers join mcp_servers on mcp_servers.id = agent_mcp_servers.mcp_server_id

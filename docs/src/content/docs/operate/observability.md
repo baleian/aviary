@@ -27,10 +27,10 @@ http://localhost:3000.
 
 ## Requests that leave the sandboxes
 
-The egress gateway of Substrate logs every request that a sandbox sends out.
-A Supervisor logs every secret that it gives the gateway, as a line of JSON
-with the turn, the session, the agent, the project and the user that it came
-from: see [The log](./egress.md#the-log).
+The egress gateway of Substrate logs every connection that a sandbox opens
+and every request that it reads, with the turn, the session, the agent, the
+project and the user that it is for, and a Supervisor logs every secret
+that it gives the gateway: see [The log](./egress.md#the-log).
 
 ## Turns
 

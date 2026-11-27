@@ -386,6 +386,32 @@ func egress(t *testing.T) {
 			t.Errorf("fetch of an allowed host: said %q, want status 200", allowed.said())
 		}
 	})
+	t.Run("logged with whom it is for", func(t *testing.T) {
+		t.Parallel()
+		session := agent.session(t)
+		fetched := run(t, session, fetch+"http://"+mockHost+"/healthz")
+		// The access log of the egress gateway says, for each request that a
+		// sandbox sends, the turn, session, agent and project that it is for.
+		want := map[string]string{"turn": fetched.ID, "session": session, "agent": agent.id, "project": project}
+		var logged map[string]any
+		eventually(t, soon, "the egress gateway did not log the request of the turn to "+mockHost, func() bool {
+			for _, line := range egressLog(t) {
+				if line["turn"] == fetched.ID && line["authority"] == mockHost && line["path"] == "/healthz" {
+					logged = line
+					return true
+				}
+			}
+			return false
+		})
+		for name, value := range want {
+			if logged[name] != value {
+				t.Errorf("the log of the request has %s %v, want %s: %v", name, logged[name], value, logged)
+			}
+		}
+		if sender, _ := logged["user"].(string); identity && (sender == "" || sender == "-") {
+			t.Errorf("the log of the request names no user: %v", logged)
+		}
+	})
 	t.Run("to a disallowed host", func(t *testing.T) {
 		t.Parallel()
 		refused := run(t, agent.session(t), fetch+"http://example.com/")

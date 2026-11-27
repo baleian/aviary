@@ -16,8 +16,8 @@ Aviary is built for running agents for many users on infrastructure of your
 own:
 
 - **Controlled egress.** An agent reaches only the hosts that the
-  installation allows and those of its turn, and every secret that goes
-  into a request is logged with the turn and the user that it came from.
+  installation allows and those of its turn, and every connection that
+  leaves its sandbox is logged with the turn and the user that it is for.
 - **No keys in sandboxes.** Each agent names its model at a model provider
   that its project registers, and no sandbox holds the provider's API key.
 - **Persistent sessions.** Sessions continue across turns, and their

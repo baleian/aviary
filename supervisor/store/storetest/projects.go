@@ -1467,3 +1467,65 @@ func (suite suite) testAgentModel(t *testing.T) {
 		t.Errorf("SessionTurn after the turn ended = %v, want ErrNotFound", err)
 	}
 }
+
+// LastTurn returns the origin of the turn that runs in a session or, between
+// turns, of the last one that ran, but not of a turn that waits in the queue.
+func (suite suite) testLastTurn(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	project := st.project()
+	provider, err := st.CreateProvider(ctx, store.Provider{ID: uuid.New(), ProjectID: project.ID, Name: "a provider", URL: "https://api.example.com/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := st.CreateAgent(ctx, project.ID, store.Agent{Slug: unique("agent"), Harness: "opencode", Model: store.Model{Provider: provider.ID, Name: "a-model"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := st.UserOf(ctx, "subject-of-bea", "bea", "Bea")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := st.CreateSession(ctx, agent.ID, sender.ID, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := func(what string, want uuid.UUID) {
+		t.Helper()
+		origin, err := st.another().LastTurn(ctx, session.ID)
+		if want == uuid.Nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("%s: LastTurn = %+v, %v; want ErrNotFound", what, origin, err)
+			}
+			return
+		}
+		if err != nil || origin.TurnID != want || origin.SessionID != session.ID || origin.AgentID != agent.ID ||
+			origin.ProjectID != project.ID || origin.UserID != sender.ID || origin.Subject != "subject-of-bea" {
+			t.Errorf("%s: LastTurn = %+v, %v; want turn %s", what, origin, err, want)
+		}
+	}
+
+	last("no turn", uuid.Nil)
+	first, _, err := st.CreateTurn(ctx, session.ID, sender.ID, "hello", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last("queued turn", uuid.Nil)
+	st.dispatch()
+	last("dispatched turn", first.ID)
+	if _, err := st.FollowTurn(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	st.end(first.ID, true, store.Failure{})
+	last("between turns", first.ID)
+	second, _, err := st.CreateTurn(ctx, session.ID, sender.ID, "and then", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last("next turn queued", first.ID)
+	st.dispatch()
+	last("next turn dispatched", second.ID)
+	if _, err := st.LastTurn(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("LastTurn of a nonexistent session = %v, want ErrNotFound", err)
+	}
+}

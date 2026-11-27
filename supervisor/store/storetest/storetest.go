@@ -118,6 +118,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"UnsentAttachments":                   suite.testUnsentAttachments,
 		"LeftAttachments":                     suite.testLeftAttachments,
 		"SessionTurn":                         suite.testSessionTurn,
+		"LastTurn":                            suite.testLastTurn,
 		"SessionTitles":                       suite.testSessionTitles,
 		"EndSession":                          suite.testEndSession,
 		"Providers":                           suite.testProviders,

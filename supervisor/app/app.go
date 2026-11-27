@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/rs/cors"
 	credprovider "go.ate.dev/substrate/api/credprovider/v1"
 	"google.golang.org/grpc"
@@ -34,6 +35,7 @@ import (
 	"aviary/supervisor/events"
 	"aviary/supervisor/identity"
 	"aviary/supervisor/internal/api"
+	"aviary/supervisor/internal/attribution"
 	"aviary/supervisor/internal/credentials"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/metrics"
@@ -390,6 +392,8 @@ func serveOn(ctx context.Context, on ports, st store.Store, ev *events.Streams, 
 	}
 	credentialsServer := grpc.NewServer(options...)
 	credprovider.RegisterCredentialProviderServer(credentialsServer, credentials.New(&credentials.Resolver{Store: st, Keys: keys, Stores: stores}, atespace))
+	// It also tells the gateway whom each connection of a sandbox is for.
+	extprocv3.RegisterExternalProcessorServer(credentialsServer, attribution.New(st, atespace))
 	// Metrics have a port of their own, so that they are not exposed with the
 	// API. They are served until serveOn returns.
 	metricsMux := http.NewServeMux()

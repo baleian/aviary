@@ -1473,6 +1473,21 @@ func (s *records) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.O
 	return originOf(row)
 }
 
+func (s *records) LastTurn(ctx context.Context, sessionID uuid.UUID) (store.Origin, error) {
+	row, err := s.queries.LastTurn(ctx, key.ID(sessionID))
+	if err != nil {
+		return store.Origin{}, found(err)
+	}
+	origin := store.Origin{
+		TurnID: uuid.UUID(row.TurnID), SessionID: uuid.UUID(row.SessionID), AgentID: uuid.UUID(row.AgentID), ProjectID: uuid.UUID(row.ProjectID),
+		Subject: row.Subject,
+	}
+	if row.CreatedBy != nil {
+		origin.UserID = uuid.UUID(*row.CreatedBy)
+	}
+	return origin, nil
+}
+
 func originOf(row db.SessionTurnRow) (store.Origin, error) {
 	headers, err := headersFrom(row.ProviderHeaders)
 	if err != nil {

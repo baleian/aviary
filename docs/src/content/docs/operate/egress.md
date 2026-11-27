@@ -54,16 +54,29 @@ See [Configuration](../reference/configuration.md#sandboxes) for the values.
 
 ## The log
 
-A Supervisor logs every secret that it gives the gateway as a line of JSON on
-its standard output. The line identifies the origin of its request on its
-own:
+When a sandbox opens a connection, the gateway asks a Supervisor whom it is
+for, and writes the answer into each line of JSON that its access log writes
+for the connection:
 
-- `turn`, `session`, `agent` and `project`;
+- `turn`, `session`, `agent` and `project`: the turn that runs in the
+  session or, between turns, the one that ran last;
 - with an identity provider, `user` and `subject`: who sent the turn's
   message, as the user ID that `GET /v1/me` returns and as the identity
-  provider's subject;
-- `provider` or `mcp_server`: whose secret it is, and `header`.
+  provider's subject.
 
-The gateway of Substrate logs every request that a sandbox sends out, with
-the identity of the sandbox's actor, which ends in `session-<session ID>`.
+The connection fails if no Supervisor answers for it, after three retries.
+A request is logged with the turn that its connection was opened for, which
+is an earlier turn when the harness kept the connection open since then.
+
+The gateway logs every connection that passes through unread, with the name
+of its host as `sni`, and every request that it reads, with its
+`authority`, `method`, `path` and `status`. Each line has the `time` at
+which it started and its `duration_ms`. The lines are on the standard
+output of the `envoy` container of the Deployment `atenet-egress` in
+`ate-system`.
+
+A Supervisor logs every secret that it gives the gateway as a line of JSON
+on its standard output, with the same fields and with `provider` or
+`mcp_server`, whose secret it is, and `header`.
+
 How long the lines are kept depends on the cluster's log collection.

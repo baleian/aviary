@@ -17,8 +17,12 @@ AVIARY_INCLUDE_<name>.
 {{- printf "aviary-supervisor.%s.svc" .Release.Namespace -}}
 {{- end }}
 
+{{- define "substrate.credentialProviderPort" -}}
+50051
+{{- end }}
+
 {{- define "substrate.credentialProviderAddress" -}}
-{{- printf "%s:50051" (include "substrate.supervisor" .) -}}
+{{- printf "%s:%s" (include "substrate.supervisor" .) (include "substrate.credentialProviderPort" .) -}}
 {{- end }}
 
 {{- define "substrate.credentialProviderServerName" -}}

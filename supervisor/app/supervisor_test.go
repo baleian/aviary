@@ -18,16 +18,19 @@ import (
 	"testing"
 	"time"
 
+	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/google/uuid"
 	credprovider "go.ate.dev/substrate/api/credprovider/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"aviary/supervisor/events"
 	memorylog "aviary/supervisor/events/memory"
 	"aviary/supervisor/internal/api"
+	"aviary/supervisor/internal/attribution"
 	"aviary/supervisor/internal/driver"
 	"aviary/supervisor/internal/outbound"
 	"aviary/supervisor/internal/sandbox"
@@ -140,8 +143,10 @@ func (i *installation) stores() *secret.Stores {
 type supervisor struct {
 	*installation
 	api, metrics string
-	// gateway asks for secrets as the egress gateway does.
-	gateway credprovider.CredentialProviderClient
+	// gateway asks for secrets as the egress gateway does, and processor
+	// asks whom a connection of a sandbox is for.
+	gateway   credprovider.CredentialProviderClient
+	processor extprocv3.ExternalProcessorClient
 	// stop cancels the Supervisor's context, as SIGTERM does, and waits for
 	// it to return.
 	stop func()
@@ -171,6 +176,7 @@ func (i *installation) supervisor() *supervisor {
 		api:          "http://" + on.api.Addr().String(),
 		metrics:      "http://" + on.metrics.Addr().String(),
 		gateway:      credprovider.NewCredentialProviderClient(connection),
+		processor:    extprocv3.NewExternalProcessorClient(connection),
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
@@ -614,6 +620,42 @@ func (s *supervisor) fetch(sandbox, uri string) (string, codes.Code, string) {
 		return "", refused.Code(), refused.Message()
 	}
 	return string(answer.GetOpaqueBytes()), codes.OK, ""
+}
+
+// attribute asks, as the egress gateway does when the sandbox opens a
+// connection, whom the connection is for, and returns the answer or the code
+// with which it is refused.
+func (s *supervisor) attribute(sandbox string) (map[string]string, codes.Code) {
+	s.t.Helper()
+	stream, err := s.processor.Process(context.Background())
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	defer stream.CloseSend()
+	actor := "spiffe://substrate-actor.local/worker-for-actor/" + atespace + "/" + sandbox
+	attributes, err := structpb.NewStruct(map[string]any{"filter_state['dev.ate.actor.identity']": actor})
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	err = stream.Send(&extprocv3.ProcessingRequest{
+		Request:    &extprocv3.ProcessingRequest_RequestHeaders{RequestHeaders: &extprocv3.HttpHeaders{}},
+		Attributes: map[string]*structpb.Struct{"envoy.filters.http.ext_proc": attributes},
+	})
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	answer, err := stream.Recv()
+	if err != nil {
+		return nil, status.Code(err)
+	}
+	if answer.GetRequestHeaders() == nil {
+		s.t.Fatalf("answer to the headers of a request = %v", answer)
+	}
+	got := map[string]string{}
+	for name, value := range answer.GetDynamicMetadata().GetFields()[attribution.Namespace].GetStructValue().GetFields() {
+		got[name] = value.GetStringValue()
+	}
+	return got, codes.OK
 }
 
 // Model providers and MCP servers.

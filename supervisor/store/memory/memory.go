@@ -1599,7 +1599,26 @@ func (s *Store) SessionTurn(ctx context.Context, sessionID uuid.UUID) (store.Ori
 	return store.Origin{}, store.ErrNotFound
 }
 
-// originOf returns the origin of the running turn. The caller holds mu.
+func (s *Store) LastTurn(ctx context.Context, sessionID uuid.UUID) (store.Origin, error) {
+	if err := s.begin(ctx); err != nil {
+		return store.Origin{}, err
+	}
+	defer s.mu.Unlock()
+	var last *turn
+	for _, turn := range s.created {
+		if turn.SessionID == sessionID && turn.dispatchedAt != nil && (last == nil || turn.Seq > last.Seq) {
+			last = turn
+		}
+	}
+	if last == nil {
+		return store.Origin{}, store.ErrNotFound
+	}
+	origin := s.originOf(last)
+	origin.Provider, origin.SecretStore = store.Provider{}, nil
+	return origin, nil
+}
+
+// originOf returns the origin of the turn. The caller holds mu.
 func (s *Store) originOf(turn *turn) store.Origin {
 	agent := s.agents[s.sessions[turn.SessionID].AgentID]
 	origin := store.Origin{TurnID: turn.ID, SessionID: turn.SessionID, AgentID: agent.ID, ProjectID: agent.ProjectID, UserID: turn.CreatedBy}
