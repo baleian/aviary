@@ -34,6 +34,9 @@ type control struct {
 	updates int
 	// resume is the error of the next resume, if not nil.
 	resume error
+	// busy is the number of deletions that find another operation on their
+	// actor in progress.
+	busy int
 	// workers are the workers and the actors that each hosts.
 	workers map[string][]*ateapi.ObjectRef
 	// draining are the workers that are going away.
@@ -137,6 +140,9 @@ func (c *control) DeleteActor(_ context.Context, request *ateapi.DeleteActorRequ
 	defer c.mu.Unlock()
 	actor := c.actors[request.GetActor().GetName()]
 	switch {
+	case c.busy > 0:
+		c.busy--
+		return nil, status.Error(codes.Aborted, "another operation is in progress for this actor")
 	case actor == nil:
 		return nil, status.Error(codes.NotFound, "no actor")
 	case request.GetOptions().GetUid() != "" && request.GetOptions().GetUid() != actor.GetMetadata().GetUid():
@@ -432,6 +438,22 @@ func TestSandboxesAndDelete(t *testing.T) {
 	}
 	if err := c.Delete(ctx, name, ""); err != nil {
 		t.Errorf("Delete of no sandbox = %v", err)
+	}
+}
+
+// Delete waits for another operation on the sandbox, such as putting it to
+// sleep, to finish.
+func TestDeleteWhileBusy(t *testing.T) {
+	c, api := served(t)
+	ctx := context.Background()
+	session := uuid.New()
+	name := Name(session)
+	if err := c.Create(ctx, Request{Session: session, Harness: "opencode"}); err != nil {
+		t.Fatal(err)
+	}
+	api.busy = 1
+	if err := c.Delete(ctx, name, ""); err != nil || api.actors[name] != nil {
+		t.Errorf("Delete while another operation is in progress = %v, and the sandbox stays", err)
 	}
 }
 

@@ -162,9 +162,15 @@ func sandboxCount(t *testing.T) int {
 }
 
 // deleteSandbox deletes the sandbox of the session, as if something else had.
+// Substrate refuses it while another operation on the sandbox is in progress,
+// as when the Supervisors put it to sleep to make room for other turns.
 func deleteSandbox(t *testing.T, session string) {
 	t.Helper()
-	_, err := control(t).DeleteActor(ctx, &ateapi.DeleteActorRequest{Actor: &ateapi.ObjectRef{Atespace: atespace, Name: "session-" + session}})
+	var err error
+	eventually(t, soon, "the sandbox of session "+session+" is still busy", func() bool {
+		_, err = control(t).DeleteActor(ctx, &ateapi.DeleteActorRequest{Actor: &ateapi.ObjectRef{Atespace: atespace, Name: "session-" + session}})
+		return status.Code(err) != codes.Aborted
+	})
 	if err != nil {
 		t.Fatalf("delete the sandbox of session %s: %v", session, err)
 	}

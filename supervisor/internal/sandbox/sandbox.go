@@ -48,6 +48,9 @@ const (
 	prefix = "session-"
 	// pageSize is the number of resources that a list asks for at a time.
 	pageSize = 500
+	// busyWait is how long Delete waits for another operation on a sandbox
+	// to finish.
+	busyWait = 30 * time.Second
 )
 
 var (
@@ -489,18 +492,27 @@ func (c *Client) Revert(ctx context.Context, name string) error {
 
 // Delete deletes the sandbox and its snapshot. If uid is not empty, it
 // deletes only the sandbox with that UID: one that was made under the name
-// since stays. It is not an error if there is no sandbox to delete.
+// since stays. It is not an error if there is no sandbox to delete. Without a
+// UID, Delete waits a while for an operation on the sandbox that is in
+// progress, such as putting it to sleep: Substrate runs one at a time.
 func (c *Client) Delete(ctx context.Context, name, uid string) error {
-	_, err := c.control.DeleteActor(ctx, &ateapi.DeleteActorRequest{Actor: c.ref(name), Options: &ateapi.DeleteOptions{Uid: uid}})
-	switch status.Code(err) {
-	case codes.OK, codes.NotFound:
-		return nil
-	case codes.Aborted:
-		if uid != "" {
+	deadline := time.Now().Add(busyWait)
+	for {
+		_, err := c.control.DeleteActor(ctx, &ateapi.DeleteActorRequest{Actor: c.ref(name), Options: &ateapi.DeleteOptions{Uid: uid}})
+		switch code := status.Code(err); {
+		case code == codes.OK || code == codes.NotFound:
 			return nil
+		case code == codes.Aborted && uid != "":
+			return nil
+		case code != codes.Aborted || time.Now().After(deadline):
+			return found(name, err)
+		}
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
-	return found(name, err)
 }
 
 // Draining returns the sandboxes that run on workers that are going away.
