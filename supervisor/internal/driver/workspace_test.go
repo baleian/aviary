@@ -2,6 +2,7 @@ package driver
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -165,6 +166,30 @@ func TestASessionWithoutASandboxGetsOneForAFileThatIsWritten(t *testing.T) {
 	workspace.Close()
 	if home := i.service.Home(i.sandbox(session)); home == nil || len(home.Workspace()) != 0 {
 		t.Errorf("the session has no new sandbox, or one with the files of the old")
+	}
+}
+
+// The first turn of a session may make its sandbox while a file is written
+// into its workspace, with what the turn may reach.
+func TestAFileThatIsWrittenLeavesTheEgressOfTheSandbox(t *testing.T) {
+	i := install(t)
+	driver, _ := i.supervisor()
+	session := i.session(store.Agent{})
+	egress := sandbox.Egress{Hosts: []sandbox.Host{{TLS: true, Name: "api.example.com", Port: 443}}}
+	// As the Supervisor that follows the turn does, before the session
+	// records the sandbox.
+	if err := i.service.Create(ctx, sandbox.Request{Session: session.ID, Harness: "opencode", Egress: egress}); err != nil {
+		t.Fatal(err)
+	}
+
+	workspace, err := driver.Workspace(ctx, session.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace.Close()
+	name := i.sandbox(session)
+	if made := i.service.Made()[name]; name == "" || !slices.Equal(made.Egress.Hosts, egress.Hosts) {
+		t.Errorf("the sandbox %q may reach %v after a file was written, want %v as before", name, made.Egress.Hosts, egress.Hosts)
 	}
 }
 

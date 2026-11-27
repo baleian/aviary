@@ -82,8 +82,8 @@ func (s *Service) Create(_ context.Context, request sandbox.Request) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	name := sandbox.Name(request.Session)
-	if m := s.sandboxes[name]; m != nil {
-		m.request.Egress = request.Egress
+	// A sandbox that exists keeps its egress.
+	if s.sandboxes[name] != nil {
 		return nil
 	}
 	home := &runnertest.Home{}
