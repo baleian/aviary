@@ -391,6 +391,10 @@ func TestResume(t *testing.T) {
 	if err := c.Resume(ctx, name); !errors.Is(err, ErrNoWorker) {
 		t.Errorf("Resume without room = %v, want ErrNoWorker", err)
 	}
+	api.resume = status.Error(codes.Aborted, "another operation is in progress for this actor")
+	if err := c.Resume(ctx, name); !errors.Is(err, ErrOperating) {
+		t.Errorf("Resume during another operation = %v, want ErrOperating", err)
+	}
 	api.actors[name].Status = &ateapi.ActorStatus{State: ateapi.ActorState_ACTOR_STATE_CRASHED, Crash: &ateapi.ActorCrash{Message: "out of memory"}}
 	api.resume = status.Error(codes.FailedPrecondition, "the actor has crashed")
 	if err := c.Resume(ctx, name); !errors.Is(err, ErrCrashed) || !strings.Contains(err.Error(), "out of memory") {

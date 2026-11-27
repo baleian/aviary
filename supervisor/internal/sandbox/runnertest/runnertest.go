@@ -48,6 +48,8 @@ type Home struct {
 	// attachments of the home. full makes the home refuse more.
 	files map[string]string
 	full  bool
+	// workspace are the files of the workspace, by their paths in it.
+	workspace map[string]string
 }
 
 // Files returns the files that messages carried into the home, by their
@@ -209,6 +211,11 @@ func (rn *Runner) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	})
 	mux.HandleFunc("PUT /files/{path...}", rn.file)
+	mux.HandleFunc("GET /workspace", rn.list)
+	mux.HandleFunc("GET /workspace/content", rn.content)
+	mux.HandleFunc("PUT /workspace/content", rn.write)
+	mux.HandleFunc("GET /workspace/search", rn.search)
+	mux.HandleFunc("GET /workspace/archive", rn.archive)
 	mux.ServeHTTP(w, r)
 }
 

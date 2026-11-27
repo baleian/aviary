@@ -47,6 +47,9 @@ type made struct {
 	created time.Time
 	// woken counts the resumes, and durable the durable suspensions.
 	woken, durable int
+	// operating is the number of resumes that find another operation in
+	// progress.
+	operating int
 	// home outlives the runners.
 	home   *runnertest.Home
 	runner *runnertest.Runner
@@ -136,6 +139,9 @@ func (s *Service) Resume(_ context.Context, name string) error {
 		return fmt.Errorf("sandbox %s: %w", name, sandbox.ErrCrashed)
 	case m.state != sandbox.Asleep:
 		return nil
+	case m.operating > 0:
+		m.operating--
+		return fmt.Errorf("sandbox %s: %w", name, sandbox.ErrOperating)
 	case s.room > 0 && s.awake() >= s.room:
 		return fmt.Errorf("sandbox %s: %w", name, sandbox.ErrNoWorker)
 	}
@@ -145,6 +151,12 @@ func (s *Service) Resume(_ context.Context, name string) error {
 		m.state = sandbox.Starting
 	}
 	return nil
+}
+
+// Operate has the next attempts to wake the sandbox find another operation
+// on it in progress: so many of them.
+func (s *Service) Operate(name string, attempts int) {
+	s.change(name, func(m *made) { m.operating = attempts })
 }
 
 // Room makes the workers hold at most n sandboxes at once, or any number if n

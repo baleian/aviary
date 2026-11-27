@@ -63,6 +63,9 @@ var (
 	// ErrCrashed is returned when a sandbox that is woken up has crashed. It
 	// runs again once it is reverted to its last snapshot.
 	ErrCrashed = errors.New("the sandbox has crashed")
+	// ErrOperating is returned when a sandbox is not woken up because
+	// another operation on it is in progress, such as putting it to sleep.
+	ErrOperating = errors.New("another operation on the sandbox is in progress")
 )
 
 // State is the observed state of a sandbox.
@@ -454,8 +457,9 @@ func seen(actor *ateapi.Actor) Sandbox {
 }
 
 // Resume wakes the sandbox up on a worker of the pool, and returns once its
-// runner serves. It returns ErrNoWorker if no worker has room for it now, and
-// ErrCrashed if it has crashed.
+// runner serves. It returns ErrNoWorker if no worker has room for it now,
+// ErrCrashed if it has crashed, and ErrOperating if another operation on it
+// is in progress.
 func (c *Client) Resume(ctx context.Context, name string) error {
 	_, err := c.control.ResumeActor(ctx, &ateapi.ResumeActorRequest{Actor: c.ref(name)})
 	switch status.Code(err) {
@@ -463,6 +467,8 @@ func (c *Client) Resume(ctx context.Context, name string) error {
 		return nil
 	case codes.ResourceExhausted:
 		return fmt.Errorf("sandbox %s: %w", name, ErrNoWorker)
+	case codes.Aborted:
+		return fmt.Errorf("sandbox %s: %w", name, ErrOperating)
 	case codes.FailedPrecondition:
 		if seen, readErr := c.Sandbox(ctx, name); readErr == nil && seen.State == Crashed {
 			return fmt.Errorf("sandbox %s: %w: %s", name, ErrCrashed, seen.Message)
