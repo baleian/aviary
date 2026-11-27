@@ -158,12 +158,66 @@ impl Session {
         self.sent(self.client.put(url).body(content)).await
     }
 
+    /// Returns the address of a request about the workspace: `at` follows
+    /// /workspace, and the query has the pairs.
+    fn workspace(&self, at: &str, query: &[(&str, &str)]) -> reqwest::Url {
+        let mut url = reqwest::Url::parse(&format!("{}/workspace{at}", self.url)).unwrap();
+        url.query_pairs_mut().extend_pairs(query);
+        url
+    }
+
+    /// Asks for what the workspace has: a listing with at "", or what a
+    /// search finds with at "/search". Returns the status and the body.
+    pub async fn asked(&self, at: &str, query: &[(&str, &str)]) -> (StatusCode, Value) {
+        let answer = self
+            .answered(self.client.get(self.workspace(at, query)))
+            .await;
+        (answer.status(), answer.json().await.unwrap())
+    }
+
+    /// Reads the file of the workspace at the path, or the range of it.
+    /// Returns the status, the Content-Range header, and the body.
+    pub async fn content(&self, path: &str, range: Option<&str>) -> (StatusCode, String, Vec<u8>) {
+        let mut request = self
+            .client
+            .get(self.workspace("/content", &[("path", path)]));
+        if let Some(range) = range {
+            request = request.header("Range", range);
+        }
+        let answer = self.answered(request).await;
+        let told = answer
+            .headers()
+            .get("Content-Range")
+            .map(|told| told.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        (
+            answer.status(),
+            told,
+            answer.bytes().await.unwrap().to_vec(),
+        )
+    }
+
+    /// Writes the file of the workspace at the path. Returns the status and
+    /// the body.
+    pub async fn store(
+        &self,
+        path: &str,
+        content: impl Into<reqwest::Body>,
+    ) -> (StatusCode, Value) {
+        let url = self.workspace("/content", &[("path", path)]);
+        let answer = self.answered(self.client.put(url).body(content)).await;
+        (answer.status(), answer.json().await.unwrap())
+    }
+
     async fn sent(&self, request: reqwest::RequestBuilder) -> StatusCode {
+        self.answered(request).await.status()
+    }
+
+    async fn answered(&self, request: reqwest::RequestBuilder) -> reqwest::Response {
         time::timeout(PATIENCE, request.send())
             .await
             .expect("timed out waiting for the runner")
             .unwrap()
-            .status()
     }
 
     /// Opens the turn's event stream after event number `after`, or from the

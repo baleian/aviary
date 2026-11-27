@@ -125,7 +125,7 @@ pub fn below(path: &str) -> Option<&Path> {
 
 /// Writes what is read from `file` as the file at `to`. The file gets its
 /// name only when it is whole, so that the agent never reads a part of it.
-fn write(mut file: impl Read, to: &Path) -> io::Result<()> {
+pub fn write(mut file: impl Read, to: &Path) -> io::Result<()> {
     let (Some(directory), Some(name)) = (to.parent(), to.file_name()) else {
         return Err(io::Error::other("the path names no file"));
     };
