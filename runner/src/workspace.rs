@@ -5,6 +5,7 @@
 //!   GET /workspace/content?path=          reads a file, or a range of it
 //!   PUT /workspace/content?path=          writes a file
 //!   GET /workspace/search?query=&limit=   finds entries by their names
+//!   GET /workspace/archive?path=          sends a directory as a ZIP file
 //!
 //! A path is relative to the workspace, and empty for the workspace itself.
 //! What a link names is served only if it is in the workspace too.
@@ -15,24 +16,30 @@
 
 use std::cmp::Ordering;
 use std::env;
-use std::fs::{self, Metadata};
-use std::io::{self, Read};
+use std::fs::{self, File, Metadata};
+use std::io::{self, BufWriter, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Json;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Query, Request};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use futures::TryStreamExt;
+use futures::{TryStreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use time::{OffsetDateTime, PrimitiveDateTime};
+use tokio::sync::mpsc;
 use tokio::task;
 use tokio_util::io::{StreamReader, SyncIoBridge};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use walkdir::WalkDir;
+use zip::result::ZipResult;
+use zip::write::{FullFileOptions, SimpleFileOptions};
+use zip::{CompressionMethod, DateTime, ZipWriter};
 
 use crate::files;
 
@@ -48,6 +55,15 @@ const LOOKED: usize = 200_000;
 
 /// The number of entries that a search keeps to choose from.
 const KEPT: usize = 10_000;
+
+/// How much of an archive is passed on at a time, in bytes, and how many
+/// such parts wait for whoever reads the archive.
+const PART: usize = 64 << 10;
+const PARTS: usize = 8;
+
+/// A file of this size or more takes the form of a ZIP file that not every
+/// reader knows: ZIP64.
+const LARGE: u64 = u32::MAX as u64;
 
 /// Why a request is refused.
 #[derive(Debug)]
@@ -422,6 +438,113 @@ fn finding(asked: &Sought) -> Result<Finding, Refused> {
         })
         .collect();
     Ok(Finding { entries, truncated })
+}
+
+/// Sends a directory of the workspace as a ZIP file, written while it is
+/// sent. The paths in it begin with the name of the directory. A link is in
+/// it as a link, and what cannot be read is left out.
+pub async fn archive(Query(asked): Query<At>) -> Result<Response, Refused> {
+    let (directory, name) = blocking(move || {
+        let found = find(&root()?, &asked.path)?;
+        if !fs::metadata(&found)?.is_dir() {
+            return Err(Refused::NotADirectory);
+        }
+        let name = Path::new(&asked.path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(DIRECTORY);
+        Ok((found, name.to_owned()))
+    })
+    .await?;
+    let (parts, sent) = mpsc::channel(PARTS);
+    task::spawn_blocking(move || {
+        let to = BufWriter::with_capacity(PART, Pipe(parts.clone()));
+        if let Err(error) = pack(&directory, &name, to) {
+            let why = error.to_string();
+            // Whoever reads the archive is told that it is not whole, unless
+            // it ended because they went away.
+            if parts.blocking_send(Err(io::Error::other(error))).is_ok() {
+                eprintln!("archive {}: {why}", directory.display());
+            }
+        }
+    });
+    let body = stream::unfold(sent, |mut sent| async {
+        sent.recv().await.map(|part| (part, sent))
+    });
+    Ok((
+        [(header::CONTENT_TYPE, "application/zip")],
+        Body::from_stream(body),
+    )
+        .into_response())
+}
+
+/// Passes what is written on to whoever reads it, and waits while that
+/// falls behind.
+struct Pipe(mpsc::Sender<io::Result<Bytes>>);
+
+impl Write for Pipe {
+    fn write(&mut self, part: &[u8]) -> io::Result<usize> {
+        self.0
+            .blocking_send(Ok(Bytes::copy_from_slice(part)))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "the reader is gone"))?;
+        Ok(part.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Writes the directory as a ZIP file, under the name.
+fn pack(directory: &Path, name: &str, to: impl Write) -> ZipResult<()> {
+    let mut archive = ZipWriter::new_stream(to);
+    archive.add_directory(name, options(&fs::metadata(directory)?)?)?;
+    let walk = WalkDir::new(directory).min_depth(1).sort_by_file_name();
+    for entry in walk.into_iter().filter_map(Result::ok) {
+        let (Ok(of), Some(path)) = (
+            entry.metadata(),
+            entry
+                .path()
+                .strip_prefix(directory)
+                .ok()
+                .and_then(Path::to_str),
+        ) else {
+            continue;
+        };
+        let path = format!("{name}/{path}");
+        if of.is_dir() {
+            archive.add_directory(path, options(&of)?)?;
+        } else if of.is_symlink() {
+            if let Ok(target) = fs::read_link(entry.path()) {
+                archive.add_symlink(path, target.to_string_lossy(), options(&of)?)?;
+            }
+        } else if of.is_file() {
+            let Ok(mut file) = File::open(entry.path()) else {
+                continue;
+            };
+            archive.start_file(path, options(&of)?.large_file(of.len() >= LARGE))?;
+            io::copy(&mut file, &mut archive)?;
+        }
+    }
+    archive.finish()?.into_inner().flush()?;
+    Ok(())
+}
+
+/// Returns how an entry is written into a ZIP file: compressed, with its
+/// permissions, and with the time at which it was last changed. The date of
+/// a ZIP file names no time zone, and is that of UTC here: a reader that
+/// knows the other form of the time shows the right one.
+fn options(of: &Metadata) -> ZipResult<FullFileOptions<'static, 'static>> {
+    let changed = OffsetDateTime::from(of.modified().unwrap_or(SystemTime::now()));
+    let date = PrimitiveDateTime::new(changed.date(), changed.time());
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(of.permissions().mode())
+        .last_modified_time(DateTime::try_from(date).unwrap_or_default());
+    match u32::try_from(changed.unix_timestamp()) {
+        Ok(seconds) => options.with_extended_timestamp(Some(seconds), None, None),
+        Err(_) => Ok(options.into_full_options()),
+    }
 }
 
 /// Runs what reads or writes files, which may take long, off the thread that

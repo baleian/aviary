@@ -209,6 +209,22 @@ impl Session {
         (answer.status(), answer.json().await.unwrap())
     }
 
+    /// Reads the directory of the workspace at the path as an archive.
+    /// Returns the status, the Content-Type header, and the body.
+    pub async fn archive(&self, path: &str) -> (StatusCode, String, Vec<u8>) {
+        let url = self.workspace("/archive", &[("path", path)]);
+        let answer = self.answered(self.client.get(url)).await;
+        let told = answer.headers()["Content-Type"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        (
+            answer.status(),
+            told,
+            answer.bytes().await.unwrap().to_vec(),
+        )
+    }
+
     async fn sent(&self, request: reqwest::RequestBuilder) -> StatusCode {
         self.answered(request).await.status()
     }

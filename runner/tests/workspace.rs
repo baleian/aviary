@@ -3,12 +3,15 @@
 
 mod support;
 
-use std::fs;
-use std::os::unix::fs::symlink;
+use std::fs::{self, File, Permissions};
+use std::io::{Cursor, Read};
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
+use std::time::{Duration, UNIX_EPOCH};
 
 use reqwest::StatusCode;
 use serde_json::{Value, json};
+use zip::{DateTime, ZipArchive};
 
 use support::{Home, runner, start};
 
@@ -332,4 +335,116 @@ async fn search_finds_entries_by_their_names() {
     assert_eq!(none, json!({"entries": [], "truncated": false}));
     let (status, _) = runner.asked("/search", &[("query", "")]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn directory_is_sent_as_a_zip_file() {
+    let home = Home::new();
+    let workspace = home.path().join("workspace");
+    let reports = workspace.join("reports");
+    make(
+        &workspace,
+        &[
+            "reports/summary.md",
+            "reports/보고서 (2).txt",
+            "reports/run.sh",
+            "README.md",
+        ],
+    );
+    make(home.path(), &["outside/secret"]);
+    fs::create_dir(reports.join("empty")).unwrap();
+    fs::create_dir(reports.join("charts")).unwrap();
+    // More than is passed on at a time, and nothing that gets smaller.
+    let chart: Vec<u8> = (0..3_000_000u32)
+        .map(|n| (n.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    fs::write(reports.join("charts/a.png"), &chart).unwrap();
+    fs::set_permissions(reports.join("run.sh"), Permissions::from_mode(0o755)).unwrap();
+    symlink("summary.md", reports.join("latest")).unwrap();
+    symlink("../../outside", reports.join("out")).unwrap();
+    // 2026-01-02 03:04:06 UTC.
+    let changed = UNIX_EPOCH + Duration::from_secs(1_767_323_046);
+    File::options()
+        .write(true)
+        .open(reports.join("summary.md"))
+        .unwrap()
+        .set_modified(changed)
+        .unwrap();
+    let runner = start(runner(&home)).await;
+
+    let (status, told, body) = runner.archive("reports").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(told, "application/zip");
+    let mut archive = ZipArchive::new(Cursor::new(body)).unwrap();
+    let names: Vec<String> = archive
+        .file_names()
+        .map(|name| name.unwrap().into_owned())
+        .collect();
+    // The paths begin with the name of the directory. A directory that is
+    // empty is there too, and a link is a link.
+    assert_eq!(
+        names,
+        [
+            "reports/",
+            "reports/charts/",
+            "reports/charts/a.png",
+            "reports/empty/",
+            "reports/latest",
+            "reports/out",
+            "reports/run.sh",
+            "reports/summary.md",
+            "reports/보고서 (2).txt",
+        ]
+    );
+    let mut read = |name: &str| {
+        let mut file = archive.by_name(name).unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+        (
+            content,
+            file.unix_mode().unwrap(),
+            file.is_symlink(),
+            file.last_modified(),
+        )
+    };
+    assert_eq!(read("reports/charts/a.png").0, chart);
+    assert_eq!(
+        read("reports/보고서 (2).txt").0,
+        "reports/보고서 (2).txt".as_bytes()
+    );
+    let (content, mode, _, at) = read("reports/summary.md");
+    assert_eq!(content, b"reports/summary.md");
+    assert_eq!(mode & 0o111, 0);
+    assert_eq!(
+        at,
+        Some(DateTime::from_date_and_time(2026, 1, 2, 3, 4, 6).unwrap())
+    );
+    assert_eq!(read("reports/run.sh").1 & 0o777, 0o755);
+    // What a link names is not in the archive, wherever it is.
+    let (names, _, link, _) = read("reports/latest");
+    assert_eq!((names.as_slice(), link), (&b"summary.md"[..], true));
+    assert_eq!(read("reports/out").0, b"../../outside");
+
+    // The workspace itself goes by its own name.
+    let (status, _, body) = runner.archive("").await;
+    assert_eq!(status, StatusCode::OK);
+    let archive = ZipArchive::new(Cursor::new(body)).unwrap();
+    let names: Vec<String> = archive
+        .file_names()
+        .map(|name| name.unwrap().into_owned())
+        .collect();
+    assert_eq!(&names[..2], ["workspace/", "workspace/README.md"]);
+    assert_eq!(names.len(), 11);
+
+    for (path, status, code) in [
+        ("README.md", StatusCode::CONFLICT, "not_a_directory"),
+        ("missing", StatusCode::NOT_FOUND, "not_found"),
+        ("reports/out", StatusCode::NOT_FOUND, "not_found"),
+        ("..", StatusCode::BAD_REQUEST, "invalid_path"),
+    ] {
+        let (answered, _, refused) = runner.archive(path).await;
+        assert_eq!(answered, status, "{path}");
+        let refused: Value = serde_json::from_slice(&refused).unwrap();
+        assert_eq!(refused, json!({"code": code}), "{path}");
+    }
 }

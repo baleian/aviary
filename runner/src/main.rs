@@ -11,6 +11,7 @@
 //!   GET  /workspace/content                  reads a file of the workspace
 //!   PUT  /workspace/content                  writes a file of the workspace
 //!   GET  /workspace/search                   finds files of the workspace by name
+//!   GET  /workspace/archive                  sends a directory of the workspace as a ZIP file
 //!   GET  /healthz                            answers once the runner serves
 //!
 //! The prompt of a turn is the text of its message, and after it a link to
@@ -160,6 +161,7 @@ async fn serve() -> Result<(), Box<dyn Error>> {
                 .layer(DefaultBodyLimit::disable()),
         )
         .route("/workspace/search", get(workspace::search))
+        .route("/workspace/archive", get(workspace::archive))
         .route("/healthz", get(healthy))
         .with_state(runner.clone());
     // On a loopback address, as in the tests, every caller is local.
