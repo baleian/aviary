@@ -166,7 +166,7 @@ Finds the files and directories whose names contain `query`, whatever the case o
 GET /v1/sessions/{id}/files/content?path=...
 ```
 
-Returns the file, as a download. With a `Range` header that names one range, it returns that part of the file with 206, or 416 `range_not_satisfiable` if the file has no such part. Returns 404 if there is no such file, 400 `is_a_directory` if the path names a directory, and 403 `not_permitted` if the sandbox may not read the file.
+Returns the file, as a download. With a `Range` header that names one range, it returns that part of the file with 206, or 416 `range_not_satisfiable` if the file has no such part. Returns 404 if there is no such file, 400 `is_a_directory` if the path names a directory, and 403 `not_permitted` if the sandbox may not read the file, or if the path names what is neither a file nor a directory, such as a pipe.
 
 ### Write a file
 

@@ -306,12 +306,17 @@ pub struct At {
 }
 
 /// Sends a file of the workspace, or the range of it that the request asks
-/// for.
+/// for. What is neither a file nor a directory, such as a pipe, is not read:
+/// opening it may never return.
 pub async fn read(Query(asked): Query<At>, request: Request) -> Result<Response, Refused> {
     let file = blocking(move || {
         let found = find(&root()?, &asked.path)?;
-        if fs::metadata(&found)?.is_dir() {
+        let of = fs::metadata(&found)?;
+        if of.is_dir() {
             return Err(Refused::IsADirectory);
+        }
+        if !of.is_file() {
+            return Err(Refused::NotPermitted);
         }
         Ok(found)
     })

@@ -6,6 +6,7 @@ mod support;
 use std::fs::{self, File, Permissions};
 use std::io::{Cursor, Read};
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -178,11 +179,14 @@ async fn file_is_read_whole_or_a_range_of_it() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(read, "docs/보고서 (2).txt".as_bytes());
 
+    // What is not a file is not opened.
+    let _socket = UnixListener::bind(workspace.join("agent.sock")).unwrap();
     for (path, status, code) in [
         ("docs", StatusCode::CONFLICT, "is_a_directory"),
         ("", StatusCode::CONFLICT, "is_a_directory"),
         ("missing.txt", StatusCode::NOT_FOUND, "not_found"),
         ("data.bin/more", StatusCode::CONFLICT, "not_a_directory"),
+        ("agent.sock", StatusCode::FORBIDDEN, "not_permitted"),
         (
             "../.aviary/harness-session",
             StatusCode::BAD_REQUEST,
