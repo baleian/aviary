@@ -455,6 +455,77 @@ func (suite suite) testIdleSandboxes(t *testing.T) {
 	}
 }
 
+// UseSandbox makes a sandbox idle only since its use, which then counts as
+// that of the sandbox that the session has.
+func (suite suite) testUseSandbox(t *testing.T) {
+	t.Parallel()
+	st := suite.open(t)
+	// Two sessions whose turns ended, one after the other, and one whose
+	// turn waits for a person since before that.
+	var sessions []uuid.UUID
+	for i := range 3 {
+		session := st.session()
+		name := fmt.Sprintf("sandbox-%d", i)
+		if _, err := st.SetSandbox(ctx, session, "", name); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetSandboxState(ctx, session, name, store.SandboxAwake); err != nil {
+			t.Fatal(err)
+		}
+		sessions = append(sessions, session)
+	}
+	waits := st.running(sessions[0]).TurnID
+	if err := st.AddApproval(ctx, waits, "1", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range sessions[1:] {
+		st.queue(session)
+		st.end(st.dispatch().TurnID, true, store.Failure{})
+	}
+	mine := func() []uuid.UUID {
+		t.Helper()
+		idle, err := st.IdleSandboxes(ctx, 1000, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The stores of the other tests have idle sandboxes too.
+		var ids []uuid.UUID
+		for _, each := range idle {
+			if slices.Contains(sessions, each.SessionID) {
+				ids = append(ids, each.SessionID)
+			}
+		}
+		return ids
+	}
+	if ids := mine(); !slices.Equal(ids, sessions) {
+		t.Fatalf("IdleSandboxes = %v, want %v, the longest idle first", ids, sessions)
+	}
+	// The sandbox that was idle the longest is used: it is the last to be
+	// idle, though its turn has waited the longest.
+	if err := st.UseSandbox(ctx, sessions[0], "sandbox-0"); err != nil {
+		t.Fatal(err)
+	}
+	// A use of a sandbox that the session does not have is none.
+	if err := st.UseSandbox(ctx, sessions[1], "sandbox-0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UseSandbox(ctx, uuid.New(), "sandbox-0"); err != nil {
+		t.Fatal(err)
+	}
+	want := []uuid.UUID{sessions[1], sessions[2], sessions[0]}
+	if ids := mine(); !slices.Equal(ids, want) {
+		t.Errorf("IdleSandboxes after a sandbox was used = %v, want %v", ids, want)
+	}
+	// And then the one that is used after it.
+	if err := st.UseSandbox(ctx, sessions[1], "sandbox-1"); err != nil {
+		t.Fatal(err)
+	}
+	want = []uuid.UUID{sessions[2], sessions[0], sessions[1]}
+	if ids := mine(); !slices.Equal(ids, want) {
+		t.Errorf("IdleSandboxes after another was used = %v, want %v", ids, want)
+	}
+}
+
 func (suite suite) testAnnounceQueue(t *testing.T) {
 	t.Parallel()
 	st := suite.open(t)

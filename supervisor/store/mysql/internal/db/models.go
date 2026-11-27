@@ -120,6 +120,7 @@ type Session struct {
 	EndedAt        *time.Time
 	EndReason      *string
 	HasAttachments bool
+	SandboxUsedAt  *time.Time
 }
 
 type Turn struct {

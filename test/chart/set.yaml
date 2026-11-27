@@ -51,6 +51,7 @@ runtime:
   maxToolOutputBytes: 23
   maxAttachmentBytes: 29
   maxAttachments: 0
+  maxFileBytes: 31
   harnesses:
     opencode:
       image: registry.example.com/aviary-harness-opencode@sha256:2222222222222222222222222222222222222222222222222222222222222222

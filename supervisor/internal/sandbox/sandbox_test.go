@@ -256,7 +256,8 @@ func served(t *testing.T) (*Client, *control) {
 }
 
 // A sandbox is made asleep from the template of its harness, with the egress
-// of its session, which a later Create or SetEgress replaces.
+// of its session, which a later SetEgress replaces. Created again, it stays
+// as it is.
 func TestCreate(t *testing.T) {
 	c, api := served(t)
 	ctx := context.Background()
@@ -266,11 +267,17 @@ func TestCreate(t *testing.T) {
 	if err := c.Create(ctx, Request{Session: session, Harness: "opencode", Egress: egress}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Create(ctx, Request{Session: session, Harness: "opencode", Egress: egress}); err != nil {
+	// As for a file that is written into its workspace while a turn runs
+	// there with that egress.
+	if err := c.Create(ctx, Request{Session: session, Harness: "opencode"}); err != nil {
 		t.Fatalf("create again: %v", err)
 	}
 	if len(api.templates) != 1 || len(api.actors) != 1 || !api.atespaces["aviary"] || api.updates != 0 {
 		t.Errorf("made %d templates, %d actors, atespaces %v, %d policy updates", len(api.templates), len(api.actors), api.atespaces, api.updates)
+	}
+	first, _ := egress.rules()
+	if rules := api.policies[name].GetRules(); len(rules) != 1 || !proto.Equal(rules[0], first[0]) {
+		t.Errorf("policy of a sandbox that was created again: %v, want that of its creation", rules)
 	}
 	template := c.templates["opencode"]
 	if !strings.HasPrefix(template.GetMetadata().GetName(), "opencode-") || api.actors[name].GetActorTemplate().GetName() != template.GetMetadata().GetName() ||
@@ -390,6 +397,10 @@ func TestResume(t *testing.T) {
 	api.resume = status.Error(codes.ResourceExhausted, "no worker has room")
 	if err := c.Resume(ctx, name); !errors.Is(err, ErrNoWorker) {
 		t.Errorf("Resume without room = %v, want ErrNoWorker", err)
+	}
+	api.resume = status.Error(codes.Aborted, "another operation is in progress for this actor")
+	if err := c.Resume(ctx, name); !errors.Is(err, ErrOperating) {
+		t.Errorf("Resume during another operation = %v, want ErrOperating", err)
 	}
 	api.actors[name].Status = &ateapi.ActorStatus{State: ateapi.ActorState_ACTOR_STATE_CRASHED, Crash: &ateapi.ActorCrash{Message: "out of memory"}}
 	api.resume = status.Error(codes.FailedPrecondition, "the actor has crashed")

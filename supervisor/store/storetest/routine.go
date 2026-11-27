@@ -59,6 +59,7 @@ func Routine(t *testing.T, st store.Store) {
 	must("SessionTurn", err)
 	_, err = s.LastTurn(ctx, session)
 	must("LastTurn", err)
+	must("UseSandbox", s.UseSandbox(ctx, session, "sandbox-1"))
 	_, err = s.IdleSandboxes(ctx, 10, true)
 	must("IdleSandboxes", err)
 

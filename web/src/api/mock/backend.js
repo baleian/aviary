@@ -8,6 +8,7 @@ import { seed, PERMISSIONS, IDLE, TOOLS } from "./seed.js";
 import { script } from "./scripts.js";
 import { assemble } from "./items.js";
 import { bytesOf } from "./files.js";
+import * as workspace from "./workspace.js";
 
 // What the mock is set to do.
 export const mock = {
@@ -17,6 +18,8 @@ export const mock = {
   scenario: "auto",
   // How fast the agents work: 1 is their usual pace, 0 is at once.
   speed: 1,
+  // Whether a worker has room for a sandbox that is woken for its files.
+  room: true,
 };
 
 let db;
@@ -29,6 +32,9 @@ let feeds;
 let told;
 // The files that were uploaded, by the ID of their attachment.
 let uploads;
+// When the files of a session's sandbox were last read or written, by the
+// ID of the session.
+let used;
 let telling = 0;
 let serial = 0;
 
@@ -855,6 +861,53 @@ const callID = () =>
 const relative = (path) => path.replace(/^\/home\/workspace\//, "");
 const base = (path) => path.split("/").pop();
 
+// rootOf returns the workspace of a session: the files of its sandbox. That
+// of a session whose agent has not worked yet has only what was put there.
+function rootOf(session) {
+  const agent = db.agents.find((other) => other.id === session.agent_id);
+  const worked = db.turns.some(
+    (turn) => turn.session_id === session.id && turn.started_at,
+  );
+  return workspace.workspaceOf(session, agent, Date.now(), worked);
+}
+
+// did changes the files of the workspace as a tool call of an agent does:
+// an edit changes its file, and the tests leave their coverage.
+async function did(session, _agent, spec) {
+  const root = rootOf(session);
+  const now = Date.now();
+  if (spec.kind === "edit" && spec.path) {
+    await workspace.edit(
+      root,
+      relative(spec.path),
+      spec.before,
+      spec.after,
+      now,
+    );
+  }
+  if (spec.command === "npm test") {
+    const summary = JSON.stringify(
+      { total: { lines: { pct: 91.4 }, branches: { pct: 84.2 } } },
+      null,
+      2,
+    );
+    workspace.write(
+      root,
+      "coverage/coverage-summary.json",
+      new Blob([summary + "\n"], { type: "application/json" }),
+      now,
+    );
+    workspace.write(
+      root,
+      "coverage/lcov.info",
+      new Blob([
+        "TN:\nSF:src/checkout/total.ts\nLF:38\nLH:35\nend_of_record\n",
+      ]),
+      now,
+    );
+  }
+}
+
 // run plays a script as the turn. answers, by request ID, are the approvals
 // that a person has already given: the turn does not wait for those. asks is
 // set for a harness that asks a person before the calls that the script
@@ -1148,8 +1201,14 @@ function run(turn, play, { answers = {}, instant = false, asks = false } = {}) {
       });
       await pause(200);
     },
-    tool: (spec) =>
-      harness === "codex" ? codexTool(spec) : opencodeTool(spec),
+    tool: async (spec) => {
+      const done = await (harness === "codex"
+        ? codexTool(spec)
+        : opencodeTool(spec));
+      // What the call did to the files of the workspace.
+      if (done) await did(session, agent, spec);
+      return done;
+    },
     // hang starts a tool call and leaves it unfinished.
     hang: (spec) => {
       const title = spec.command || relative(spec.path);
@@ -1257,7 +1316,11 @@ function lull() {
     if (session.sandbox !== "awake") continue;
     const turns = db.turns.filter((turn) => turn.session_id === session.id);
     if (turns.some((turn) => !turn.ended_at)) continue;
-    const last = Math.max(...turns.map((turn) => Date.parse(turn.ended_at)));
+    // Reading and writing its files is a use of the sandbox too.
+    const last = Math.max(
+      used.get(session.id) ?? 0,
+      ...turns.map((turn) => Date.parse(turn.ended_at)),
+    );
     if (Date.now() - last >= IDLE * mock.speed) session.sandbox = "asleep";
   }
   changed();
@@ -2028,17 +2091,146 @@ route("DELETE", "/v1/sessions/{sid}/mcp-servers", ({ who }, sid) => {
   delete session.mcp;
   return [200, sessionRecord(session)];
 });
-// What the installation sets for the files that messages carry.
+// What the installation sets for the files that messages carry, and for a
+// file that is put into a workspace.
 route("GET", "/v1/limits", () => {
-  const { maxAttachmentBytes, maxAttachments } = db.config;
+  const { maxAttachmentBytes, maxAttachments, maxFileBytes } = db.config;
   return [
     200,
     {
       max_attachment_bytes: maxAttachments ? maxAttachmentBytes : 0,
       max_attachments: maxAttachments,
+      max_file_bytes: maxFileBytes,
     },
   ];
 });
+
+// ---- The files of a workspace -----------------------------------------------
+
+// The most entries of a directory that one answer lists, and the most that a
+// search returns.
+const LISTED = 200;
+const FOUND = 100;
+
+// How long a sandbox takes to wake up, and to be created, in ms.
+const WAKES = 900;
+const BEGINS = 1600;
+
+// filesOf returns the workspace of the session for a caller who may do the
+// act, and how long the answer waits for its sandbox. A sandbox that sleeps
+// is woken, if a worker has room for it. A session that has had no turn has
+// no sandbox, and nothing in its workspace: writing to it makes one. A
+// session that has ended has no files.
+function filesOf(who, sid, act) {
+  const session = withSession(who, sid, act);
+  if (session.ended_at) refuse(409, "session_ended", "the session has ended");
+  let wait = 0;
+  if (session.sandbox !== "awake") {
+    const none = !session.sandbox || session.sandbox === "lost";
+    if (!none || act !== "reads") {
+      if (!mock.room)
+        refuse(
+          503,
+          "no_room",
+          "no worker has room for the sandbox of the session; retry later",
+          { "Retry-After": "5" },
+        );
+      session.sandbox = "awake";
+      wait = none ? BEGINS : WAKES;
+    }
+  }
+  used.set(sid, Date.now());
+  return {
+    root: rootOf(session),
+    waits: { "X-Mock-Wait": String(wait) },
+    // Whether the session has no sandbox, and so no files.
+    none: !session.sandbox || session.sandbox === "lost",
+  };
+}
+
+// within runs what reads or writes a workspace, and refuses as the API does
+// what it finds wrong with the path.
+function within(work) {
+  try {
+    return work();
+  } catch (error) {
+    if (error instanceof workspace.NoSuchFile) notFound();
+    if (error instanceof workspace.NotADirectory)
+      refuse(400, "not_a_directory", "the path does not name a directory");
+    if (error instanceof workspace.IsADirectory)
+      refuse(400, "is_a_directory", "the path names a directory");
+    throw error;
+  }
+}
+
+// pathOf returns the path that a request names, which stays below the
+// workspace: names with slashes between them.
+function pathOf(query) {
+  const path = query.get("path") ?? "";
+  const names = path === "" ? [] : path.split("/");
+  if (names.some((name) => name === "" || name === "." || name === ".."))
+    invalid(
+      "path must be a relative path below the workspace, such as src/main.go",
+    );
+  return path;
+}
+
+// A directory of the workspace lists its entries, a page at a time.
+route("GET", "/v1/sessions/{sid}/files", ({ who, query }, sid) => {
+  const { root, waits } = filesOf(who, sid, "reads");
+  const limit = page(query, "limit", LISTED, 1000);
+  const listed = within(() =>
+    workspace.list(root, pathOf(query), query.get("after") ?? "", limit),
+  );
+  return [200, listed, waits];
+});
+// The files and directories whose names have the words of the query.
+route("GET", "/v1/sessions/{sid}/files/search", ({ who, query }, sid) => {
+  const { root, waits } = filesOf(who, sid, "reads");
+  const wanted = text(query.get("query")).trim();
+  if (!wanted) invalid("query is required");
+  const limit = page(query, "limit", FOUND, 1000);
+  return [200, workspace.search(root, wanted, limit), waits];
+});
+// The bytes of a file are a download: see download().
+route("GET", "/v1/sessions/{sid}/files/content", ({ who, query }, sid) => {
+  const { root, waits } = filesOf(who, sid, "reads");
+  const entry = within(() => workspace.stat(root, pathOf(query)));
+  if (entry.type !== "file")
+    refuse(400, "is_a_directory", "the path names a directory");
+  return [200, entry, waits];
+});
+// So is a directory as an archive.
+route("GET", "/v1/sessions/{sid}/files/archive", ({ who, query }, sid) => {
+  const { root, waits, none } = filesOf(who, sid, "reads");
+  if (none) notFound();
+  const entry = within(() => workspace.stat(root, pathOf(query)));
+  if (entry.type !== "directory")
+    refuse(400, "not_a_directory", "the path does not name a directory");
+  return [200, entry, waits];
+});
+// The body of the request is the file, which replaces the one at the path.
+// Only who may send the session messages may write to its workspace.
+route(
+  "PUT",
+  "/v1/sessions/{sid}/files/content",
+  ({ who, body: file, query }, sid) => {
+    const path = pathOf(query);
+    if (!path) invalid("path must name a file");
+    if (file.size > db.config.maxFileBytes)
+      refuse(
+        413,
+        "file_too_large",
+        "the file is larger than a file of a workspace may be",
+      );
+    const { root, waits } = filesOf(who, sid, "sends");
+    const { entry, replaced } = within(() =>
+      workspace.write(root, path, file, Date.now()),
+    );
+    return [replaced ? 200 : 201, entry, waits];
+  },
+);
+
 // The body of an upload is the file, and the query names it.
 route(
   "POST",
@@ -2210,12 +2402,13 @@ export function request(method, path, { token = "", body = null } = {}) {
       .find((each) => each.match);
     if (plain !== "/v1/me") allowed(who);
     if (!found) notFound();
-    const [status, answer] = found.candidate.handler(
+    const [status, answer, headers = {}] = found.candidate.handler(
       { who, body, query: new URLSearchParams(search) },
       ...found.match.slice(1).map(decodeURIComponent),
     );
-    if (method !== "GET") changed();
-    return { status, headers: {}, body: answer == null ? null : copy(answer) };
+    // A sandbox that was woken for its files shows as awake.
+    if (method !== "GET" || Number(headers["X-Mock-Wait"]) > 0) changed();
+    return { status, headers, body: answer == null ? null : copy(answer) };
   } catch (error) {
     if (error instanceof Refusal) return copy(error.response);
     console.error("mock: request failed", method, path, error);
@@ -2233,12 +2426,31 @@ export function request(method, path, { token = "", body = null } = {}) {
 export async function download(path, { token = "" } = {}) {
   const response = request("GET", path, { token });
   if (response.status !== 200) return { response };
-  const { id, name, media_type } = response.body;
-  const file = uploads.get(id) ?? (await bytesOf(response.body));
+  const [plain, search = ""] = path.split("?");
+  const of = plain.match(/^\/v1\/sessions\/([^/]+)\/files\/(content|archive)$/);
+  let { id, name, media_type } = response.body;
+  let file;
+  if (!of) {
+    file = uploads.get(id) ?? (await bytesOf(response.body));
+  } else {
+    // A file of a workspace, or a directory of it as an archive.
+    const root = rootOf(one(db.sessions, of[1]));
+    const at = new URLSearchParams(search).get("path") ?? "";
+    if (of[2] === "content") {
+      file = await workspace.read(root, at);
+      media_type = file.type || "application/octet-stream";
+    } else {
+      name ||= "workspace";
+      file = await workspace.archive(root, at, name);
+      name += ".zip";
+      media_type = "application/zip";
+    }
+  }
   return {
     response: {
       status: 200,
       headers: {
+        ...response.headers,
         "Content-Type": media_type,
         "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
       },
@@ -2379,6 +2591,9 @@ export function reset() {
   feeds = new Set();
   told = null;
   uploads = new Map();
+  used = new Map();
+  mock.room = true;
+  workspace.forget();
   for (const left of db.live) {
     const turn = db.turns.find((other) => other.id === left.turn);
     emit(turn.id, "turn.started", {});
@@ -2415,10 +2630,13 @@ export function setIdentityProvider(on) {
 
 // setLimits sets how large a file of a message may be, in bytes, and how
 // many files a message may carry: 0 for an installation that takes none.
-export function setLimits(bytes, files) {
+// fileBytes, if it is given, is how large a file that is put into a workspace
+// may be.
+export function setLimits(bytes, files, fileBytes = db.config.maxFileBytes) {
   Object.assign(db.config, {
     maxAttachmentBytes: bytes,
     maxAttachments: files,
+    maxFileBytes: fileBytes,
   });
 }
 

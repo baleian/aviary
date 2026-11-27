@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Preview</title>
+    <script>
+      // The web UI shows a page that an agent wrote in a frame of this page.
+      // The server sends this page without an origin, so the scripts of what
+      // it shows reach nothing of the web UI's. The web UI passes a page on,
+      // which then takes the place of this one.
+      addEventListener("message", function (event) {
+        // Only the web UI that frames this page is listened to.
+        if (event.source !== parent || event.origin !== location.origin) return;
+        if (!event.data || typeof event.data.page !== "string") return;
+        document.open();
+        document.write(event.data.page);
+        document.close();
+      });
+    </script>
+  </head>
+  <body></body>
+</html>

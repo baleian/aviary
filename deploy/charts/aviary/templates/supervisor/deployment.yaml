@@ -115,6 +115,8 @@ spec:
               value: {{ .Values.runtime.maxAttachmentBytes | int64 | quote }}
             - name: AVIARY_MAX_ATTACHMENTS
               value: {{ .Values.runtime.maxAttachments | int64 | quote }}
+            - name: AVIARY_MAX_FILE_BYTES
+              value: {{ .Values.runtime.maxFileBytes | int64 | quote }}
             - name: AVIARY_MAX_STARTUP_SECONDS
               value: {{ .Values.runtime.maxStartupSeconds | int64 | quote }}
             - name: AVIARY_MAX_TURN_SECONDS

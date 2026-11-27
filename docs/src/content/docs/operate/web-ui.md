@@ -25,12 +25,20 @@ There are three ways for the browser to find the API:
 - **A proxy in front of both.** Leave `AVIARY_API` empty, and have a proxy or
   an ingress route `/v1/` to the Supervisor and every other path to the web
   server, at one address. The proxy must not buffer the responses of `/v1/`,
-  which include event streams, and must take the files that messages carry:
-  request bodies of up to `runtime.maxAttachmentBytes`.
+  which include event streams, and must take the files that are uploaded:
+  request bodies of up to `runtime.maxAttachmentBytes` and
+  `runtime.maxFileBytes`.
 - **Two addresses.** Set `AVIARY_PUBLIC_API` to the address of the API, and
   list the origin of the web UI in `supervisor.allowedOrigins` (see
   [Configuration](../reference/configuration.md)), so that browsers let its pages call the
   API there.
+
+The web UI shows a web page that an agent wrote in a frame of
+`/sandbox.html`, which the server sends with a `Content-Security-Policy` of
+its own in place of that of the web UI, `sandbox allow-scripts;
+frame-ancestors 'self'`: the page has no origin, and only the web UI frames
+it. Whatever is in front of the server must leave the headers of that path
+as they are, or the pages of agents do not show.
 
 The server listens on port 8080 as a user that is not root. When it starts
 it writes its configuration to `/etc/nginx/conf.d` and uses `/tmp`, so with

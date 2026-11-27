@@ -14,8 +14,9 @@ export interface Account {
 interface Backend {
   // What the mock is set to do. speed is how fast it works: 1 is its usual
   // pace, and 0 is at once. scenario is what the next turn plays, such as
-  // "queue" for a turn that waits in the queue first.
-  mock: { speed: number; scenario: string };
+  // "queue" for a turn that waits in the queue first. room is whether a
+  // worker has room for a sandbox that is woken for its files.
+  mock: { speed: number; scenario: string; room: boolean };
   request(
     method: string,
     path: string,
@@ -45,8 +46,9 @@ interface Backend {
   accounts(): Account[];
   setIdentityProvider(on: boolean): void;
   // setLimits sets how large a file of a message may be, in bytes, and how
-  // many files a message may carry.
-  setLimits(bytes: number, files: number): void;
+  // many files a message may carry. fileBytes, if it is given, is how large
+  // a file that is put into a workspace may be.
+  setLimits(bytes: number, files: number, fileBytes?: number): void;
   // reset puts the example data back as it began.
   reset(): void;
 }
@@ -121,17 +123,24 @@ export async function fake(): Promise<Transport> {
     },
 
     // The file is the body as it is: the backend keeps it.
-    async upload(path, { token, file, onProgress }) {
+    async upload(path, { token, file, method = "POST", onProgress, signal }) {
+      const given = () => {
+        if (signal?.aborted)
+          throw new DOMException("the upload was given up", "AbortError");
+      };
       await answering();
       // At its usual pace the mock takes the file in a few steps, so that
       // its progress shows.
       if (mock.speed > 0) {
         for (const part of [0.3, 0.7]) {
+          given();
           onProgress?.(Math.round(file.size * part));
           await new Promise((resolve) => setTimeout(resolve, 280 * mock.speed));
         }
       }
-      const reply = lowercased(request("POST", path, { token, body: file }));
+      given();
+      const reply = lowercased(request(method, path, { token, body: file }));
+      await woken(reply);
       if (reply.status < 300) onProgress?.(file.size);
       return reply;
     },
@@ -139,19 +148,26 @@ export async function fake(): Promise<Transport> {
     async download(path, { token, first }) {
       await answering();
       const { response, file } = await download(path, { token });
-      return {
-        ...lowercased(response),
-        file: file?.slice(0, first, file.type),
-      };
+      const reply = lowercased(response);
+      await woken(reply);
+      return { ...reply, file: file?.slice(0, first, file.type) };
     },
 
     async send(method, path, { token, body }) {
       await answering();
       // The body crosses as JSON, as it would over HTTP.
       const sent = body === undefined ? null : JSON.parse(JSON.stringify(body));
-      return lowercased(request(method, path, { token, body: sent }));
+      const reply = lowercased(request(method, path, { token, body: sent }));
+      await woken(reply);
+      return reply;
     },
   };
+
+  // An answer that had to wake a sandbox comes when the sandbox is awake.
+  async function woken(reply: Reply) {
+    const ms = Number(reply.headers["x-mock-wait"] ?? 0) * mock.speed;
+    if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+  }
 }
 
 // lowercased returns an answer of the backend with the names of its headers

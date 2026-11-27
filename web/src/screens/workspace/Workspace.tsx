@@ -15,9 +15,10 @@ import { AgentMenu } from "../agents/AgentMenu.tsx";
 import { barred, useCompose } from "./compose.ts";
 import { Composer, Gate } from "./Composer.tsx";
 import { Conversation } from "./Conversation.tsx";
-import { Details, DetailsButton } from "./Details.tsx";
+import { Details } from "./Details.tsx";
 import { mcpOf } from "./servers.ts";
 import { SessionList } from "./SessionList.tsx";
+import { type Pane, PaneButtons, Split } from "./Split.tsx";
 
 // Workspace is the screen of an agent: its sessions on the left, and beside
 // them the conversation of the session in view, or the start of a new one.
@@ -29,6 +30,14 @@ export function Workspace() {
   useTitle(agent && label(agent), label(context.project));
   if (!agent) return <Missing />;
   return <Sessions context={context} agent={agent} me={me} />;
+}
+
+// paneKept returns the pane that the caller had beside the conversations:
+// the details, unless the caller chose otherwise.
+function paneKept(): Pane {
+  const kept = prefs.get("pane");
+  if (kept === "files") return kept;
+  return kept === "none" ? null : "details";
 }
 
 function Sessions({
@@ -49,52 +58,69 @@ function Sessions({
   const base = `${project}/agents/${agent.slug}`;
   const why = barred(context, me);
   const mcp = mcpOf({ context, agent, me, compose });
-  // The details show unless the caller has hidden them, here or before.
-  const [details, setDetails] = useState(() => prefs.get("details") !== "0");
-  const toggle = () => {
-    prefs.set("details", details ? "0" : "1");
-    setDetails(!details);
+  const [pane, setPane] = useState(paneKept);
+  const choose = (next: Pane) => {
+    prefs.set("pane", next ?? "none");
+    setPane(next);
   };
+  // The sessions show unless the caller has hidden them, here or before.
+  const [list, setList] = useState(() => prefs.get("list") !== "0");
+  const lead = (
+    <button
+      className="ib lst"
+      type="button"
+      title={list ? "Hide the sessions" : "Show the sessions"}
+      aria-pressed={list}
+      onClick={() => {
+        prefs.set("list", list ? "0" : "1");
+        setList(!list);
+      }}
+    >
+      <Icon name="panel" className="lg flip" />
+    </button>
+  );
   return (
-    <section className={cls("sess", !details && "no-details")}>
-      <aside className="pane list">
-        <div className="l-h">
-          <div className="l-top">
-            <Link
-              className="l-ag"
-              to={`${project}/agents`}
-              title={"All agents of " + label(context.project)}
-            >
-              <AgentTile agent={agent} />
-              <div>
-                <b>{label(agent)}</b>
-                <small>
-                  {agent.harness} · {agent.model.name}
-                </small>
-              </div>
-            </Link>
-            <AgentMenu
-              context={context}
-              agent={agent}
-              size="sm"
-              onDeleted={() => void navigate(`${project}/agents`)}
-            />
+    <section className={cls("sess", !list && "no-list")}>
+      {list && (
+        <aside className="pane list">
+          <div className="l-h">
+            <div className="l-top">
+              <Link
+                className="l-ag"
+                to={`${project}/agents`}
+                title={"All agents of " + label(context.project)}
+              >
+                <AgentTile agent={agent} />
+                <div>
+                  <b>{label(agent)}</b>
+                  <small>
+                    {agent.harness} · {agent.model.name}
+                  </small>
+                </div>
+              </Link>
+              <AgentMenu
+                context={context}
+                agent={agent}
+                size="sm"
+                onDeleted={() => void navigate(`${project}/agents`)}
+              />
+            </div>
+            {can(context, "sessions.run") && (
+              <Link className="btn pri wide" to={base}>
+                <Icon name="plus" />
+                New session
+              </Link>
+            )}
           </div>
-          {can(context, "sessions.run") && (
-            <Link className="btn pri wide" to={base}>
-              <Icon name="plus" />
-              New session
-            </Link>
-          )}
-        </div>
-        <SessionList
-          key={agent.id}
-          context={context}
-          agent={agent}
-          me={me}
-          current={sid}
-        />
-      </aside>
+          <SessionList
+            key={agent.id}
+            context={context}
+            agent={agent}
+            me={me}
+            current={sid}
+          />
+        </aside>
+      )}
       {sid ? (
         <Conversation
           key={sid}
@@ -103,19 +129,34 @@ function Sessions({
           me={me}
           id={sid}
           compose={compose}
-          details={details}
-          onDetails={toggle}
+          pane={pane}
+          onPane={choose}
+          lead={lead}
         />
       ) : (
-        <>
+        <Split
+          beside={pane === "details" ? "details" : undefined}
+          side={
+            pane === "details" && (
+              <Details
+                context={context}
+                agent={agent}
+                me={me}
+                mcp={mcp}
+                onClose={() => choose(null)}
+              />
+            )
+          }
+        >
           <main className="conv">
             <div className="conv-h">
+              {lead}
               <div className="tx">
                 <h1>
                   <span>New session</span>
                 </h1>
               </div>
-              <DetailsButton shown={details} onToggle={toggle} />
+              <PaneButtons pane={pane} files={false} onPane={choose} />
             </div>
             <div className="welcome">
               <div className="box">
@@ -140,16 +181,7 @@ function Sessions({
               />
             )}
           </main>
-          {details && (
-            <Details
-              context={context}
-              agent={agent}
-              me={me}
-              mcp={mcp}
-              onClose={toggle}
-            />
-          )}
-        </>
+        </Split>
       )}
     </section>
   );

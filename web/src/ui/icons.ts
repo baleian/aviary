@@ -52,6 +52,12 @@ export const ICONS = [
   "box",
   "clip",
   "download",
+  "upload",
+  "file",
+  "image",
+  "code",
+  "wide",
+  "wrap",
 ] as const;
 
 export type IconName = (typeof ICONS)[number];

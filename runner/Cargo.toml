@@ -6,12 +6,17 @@ publish = false
 
 [dependencies]
 agent-client-protocol = { version = "5.2.0", features = ["process", "unstable_end_turn_token_usage"] }
-axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
 futures = { version = "0.3.34", default-features = false, features = ["async-await", "std"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+time = { version = "0.3.55", default-features = false, features = ["std"] }
 tokio = { version = "1.54.1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { version = "0.7.20", features = ["compat", "io", "io-util"] }
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+tower-http = { version = "0.7.1", default-features = false, features = ["fs"] }
+walkdir = "2.5.1"
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs", "time"] }
 
 [dev-dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream"] }

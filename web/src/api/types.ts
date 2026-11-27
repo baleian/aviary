@@ -185,6 +185,34 @@ export type TurnState =
 export interface Limits {
   max_attachment_bytes: number;
   max_attachments: number;
+  // How large a file that is put into a workspace may be, in bytes.
+  max_file_bytes: number;
+}
+
+// An entry of a directory of a workspace.
+export interface Entry {
+  name: string;
+  // A link is of the type of what it names, or a "symlink" if it names
+  // nothing in the workspace. What is neither a file nor a directory, such
+  // as a pipe, is "other".
+  type: "file" | "directory" | "symlink" | "other";
+  // In bytes, of a file.
+  size?: number;
+  modified_at: string;
+  // The path that a link names.
+  target?: string;
+}
+
+// The entries of a directory of a workspace, the directories first and each
+// kind by name. next is set if there are more: it names the last of these.
+export interface Listing {
+  entries: Entry[];
+  next?: string;
+}
+
+// An entry that a search of a workspace found, with its path there.
+export interface Found extends Entry {
+  path: string;
 }
 
 // A file that a message carries.

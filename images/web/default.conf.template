@@ -21,6 +21,16 @@ server {
         return 204;
     }
 
+    # The page in which the web UI shows a web page that an agent wrote. It
+    # has no origin, so the scripts of what it shows have nothing of the web
+    # UI's, and it loads only into a frame of the web UI.
+    location = /sandbox.html {
+        add_header Content-Security-Policy "sandbox allow-scripts; frame-ancestors 'self'" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        expires -1;
+    }
+
     # What the installation sets for the web UI, from the environment.
     location = /config.json {
         alias /etc/nginx/conf.d/config.json;

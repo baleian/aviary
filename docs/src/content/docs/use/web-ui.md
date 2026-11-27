@@ -8,7 +8,8 @@ projects with their members, model providers, MCP servers, secret stores and
 agents, and the sessions of an agent with their conversations and the MCP
 servers that each has on: it attaches files to a message, opens the
 pictures, PDFs and texts among the files of the messages, follows a turn as
-the agent works, and answers its requests for approval.
+the agent works, answers its requests for approval, and shows the files
+that the agent works on.
 
 ![The overview of a project](../../../assets/screens/overview.png)
 
@@ -46,13 +47,19 @@ The tabs of a project are:
 - **On the left** are the sessions of the agent, yours or everyone's, each
   with the state of its last turn. A dot marks a session whose sandbox is
   awake, and a moon one that sleeps. **New session** starts a conversation.
+  The button at the top left of the conversation hides the sessions, and
+  shows them again.
 - **In the middle** is the conversation: for each turn your message, what
   the agent says, the tools that it calls, and what its harness asks you.
   Under it you write the next message, attach files, and stop the turn
   that runs. See [Sessions and turns](./sessions.md).
-- **On the right**, **Details** shows the session with its owner, its
-  sandbox and the tokens that its turns used, the MCP servers that it has
-  on, and the agent.
+- **On the right**, **Files** shows the
+  [workspace](./sessions.md#the-workspace) of the session: the tree of its
+  files, and the files that you open, each in a tab. **Details** shows the
+  session with its owner, its sandbox and the tokens that its turns used,
+  the MCP servers that it has on, and the agent. The line between the
+  conversation and what is beside it moves, to give each its share of the
+  window.
 
 ## Themes
 

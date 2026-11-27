@@ -106,6 +106,7 @@ func install(t *testing.T, changes ...func(*driver.Config)) *installation {
 		MaxTurn:        30 * time.Minute,
 		MaxQueueWait:   2 * time.Minute,
 		MaxQueuedTurns: 500,
+		MaxFileBytes:   1 << 20,
 	}
 	for _, change := range changes {
 		change(&config)

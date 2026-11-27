@@ -566,7 +566,7 @@ insert into sessions (id, agent_id, title, created_by)
 select $1::uuid, agents.id, $2::text, $3::uuid from agents
 where agents.id = $4 and agents.deleted_at is null
 for key share
-returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments
+returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments, sandbox_used_at
 `
 
 type CreateSessionParams struct {
@@ -598,6 +598,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.EndedAt,
 		&i.EndReason,
 		&i.HasAttachments,
+		&i.SandboxUsedAt,
 	)
 	return i, err
 }
@@ -762,7 +763,7 @@ func (q *Queries) DropMembersBeforeClaim(ctx context.Context, username string) e
 const endAgentSessions = `-- name: EndAgentSessions :many
 update sessions set ended_at = now(), end_reason = 'agent_deleted'
 where agent_id = $1 and ended_at is null
-returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments
+returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments, sandbox_used_at
 `
 
 func (q *Queries) EndAgentSessions(ctx context.Context, agentID uuid.UUID) ([]Session, error) {
@@ -785,6 +786,7 @@ func (q *Queries) EndAgentSessions(ctx context.Context, agentID uuid.UUID) ([]Se
 			&i.EndedAt,
 			&i.EndReason,
 			&i.HasAttachments,
+			&i.SandboxUsedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -800,7 +802,7 @@ const endSession = `-- name: EndSession :one
 update sessions set ended_at = now(), end_reason = nullif($1::text, '')
 where sessions.id = $2
   and not exists (select 1 from turns where turns.session_id = sessions.id and turns.ended_at is null)
-returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments
+returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments, sandbox_used_at
 `
 
 type EndSessionParams struct {
@@ -824,6 +826,7 @@ func (q *Queries) EndSession(ctx context.Context, arg EndSessionParams) (Session
 		&i.EndedAt,
 		&i.EndReason,
 		&i.HasAttachments,
+		&i.SandboxUsedAt,
 	)
 	return i, err
 }
@@ -1244,7 +1247,7 @@ func (q *Queries) GetSecretStore(ctx context.Context, id uuid.UUID) (SecretStore
 }
 
 const getSession = `-- name: GetSession :one
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments from sessions where id = $1
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments, sandbox_used_at from sessions where id = $1
 `
 
 func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error) {
@@ -1261,6 +1264,7 @@ func (q *Queries) GetSession(ctx context.Context, id uuid.UUID) (Session, error)
 		&i.EndedAt,
 		&i.EndReason,
 		&i.HasAttachments,
+		&i.SandboxUsedAt,
 	)
 	return i, err
 }
@@ -1345,7 +1349,8 @@ func (q *Queries) HoldSession(ctx context.Context, id uuid.UUID) (uuid.UUID, err
 
 const idleSandboxes = `-- name: IdleSandboxes :many
 select sessions.id, coalesce(sessions.sandbox, '') as sandbox,
-       extract(epoch from now() - coalesce(last.ended_at, asked.at, sessions.created_at))::float8 as idle
+       extract(epoch from now() - greatest(coalesce(last.ended_at, asked.at, sessions.created_at),
+                                           sessions.sandbox_used_at))::float8 as idle
 from sessions
 left join lateral (select turns.id, turns.ended_at, turns.cancel_requested_at from turns
                    where turns.session_id = sessions.id order by turns.seq desc limit 1) as last on true
@@ -1374,8 +1379,9 @@ type IdleSandboxesRow struct {
 // unfinished turn, the longest idle first: idle is the seconds since the
 // session's last turn ended. With @waiting, a session whose unfinished turn
 // waits for a person and is not asked to stop is idle too, since the oldest
-// of the turn's requests that wait for an answer was made. A session's
-// unfinished turn is its last.
+// of the turn's requests that wait for an answer was made. A sandbox that
+// was used since is idle only since then. A session's unfinished turn is its
+// last.
 func (q *Queries) IdleSandboxes(ctx context.Context, arg IdleSandboxesParams) ([]IdleSandboxesRow, error) {
 	rows, err := q.db.Query(ctx, idleSandboxes, arg.Waiting, arg.Max)
 	if err != nil {
@@ -1973,7 +1979,7 @@ func (q *Queries) ListSessionMcpServers(ctx context.Context, sessionIds []uuid.U
 }
 
 const listSessions = `-- name: ListSessions :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments from sessions where agent_id = $1 and id < $2 order by id desc limit $3
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments, sandbox_used_at from sessions where agent_id = $1 and id < $2 order by id desc limit $3
 `
 
 type ListSessionsParams struct {
@@ -2004,6 +2010,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.EndedAt,
 			&i.EndReason,
 			&i.HasAttachments,
+			&i.SandboxUsedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2016,7 +2023,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsOf = `-- name: ListSessionsOf :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments, sandbox_used_at from sessions where agent_id = $1 and created_by = $2::uuid and id < $3
 order by id desc limit $4
 `
 
@@ -2053,6 +2060,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 			&i.EndedAt,
 			&i.EndReason,
 			&i.HasAttachments,
+			&i.SandboxUsedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2065,7 +2073,7 @@ func (q *Queries) ListSessionsOf(ctx context.Context, arg ListSessionsOfParams) 
 }
 
 const listSessionsWithSandbox = `-- name: ListSessionsWithSandbox :many
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments from sessions where sandbox is not null
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments, sandbox_used_at from sessions where sandbox is not null
 `
 
 func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error) {
@@ -2088,6 +2096,7 @@ func (q *Queries) ListSessionsWithSandbox(ctx context.Context) ([]Session, error
 			&i.EndedAt,
 			&i.EndReason,
 			&i.HasAttachments,
+			&i.SandboxUsedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2364,7 +2373,7 @@ func (q *Queries) LockAgentSessions(ctx context.Context, agentID uuid.UUID) ([]u
 }
 
 const lockSession = `-- name: LockSession :one
-select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments from sessions where id = $1 for update
+select id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments, sandbox_used_at from sessions where id = $1 for update
 `
 
 // Locks the session until the transaction ends, so that no message is
@@ -2383,6 +2392,7 @@ func (q *Queries) LockSession(ctx context.Context, id uuid.UUID) (Session, error
 		&i.EndedAt,
 		&i.EndReason,
 		&i.HasAttachments,
+		&i.SandboxUsedAt,
 	)
 	return i, err
 }
@@ -2962,7 +2972,7 @@ func (q *Queries) SetSandboxState(ctx context.Context, arg SetSandboxStateParams
 }
 
 const setSessionTitle = `-- name: SetSessionTitle :one
-update sessions set title = $1 where id = $2 returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments
+update sessions set title = $1 where id = $2 returning id, agent_id, title, created_by, sandbox, sandbox_state, created_at, ended_at, end_reason, has_attachments, sandbox_used_at
 `
 
 type SetSessionTitleParams struct {
@@ -2984,6 +2994,7 @@ func (q *Queries) SetSessionTitle(ctx context.Context, arg SetSessionTitleParams
 		&i.EndedAt,
 		&i.EndReason,
 		&i.HasAttachments,
+		&i.SandboxUsedAt,
 	)
 	return i, err
 }
@@ -3001,6 +3012,22 @@ func (q *Queries) StartTurn(ctx context.Context, turnID uuid.UUID) (float64, err
 	var startup float64
 	err := row.Scan(&startup)
 	return startup, err
+}
+
+const useSandbox = `-- name: UseSandbox :exec
+update sessions set sandbox_used_at = now()
+where id = $1 and sandbox = $2::text
+`
+
+type UseSandboxParams struct {
+	ID      uuid.UUID
+	Sandbox string
+}
+
+// Records the use only while the session has the sandbox.
+func (q *Queries) UseSandbox(ctx context.Context, arg UseSandboxParams) error {
+	_, err := q.db.Exec(ctx, useSandbox, arg.ID, arg.Sandbox)
+	return err
 }
 
 const waitedForAnswers = `-- name: WaitedForAnswers :one

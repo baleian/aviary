@@ -75,6 +75,11 @@ empty.
 | `POST /v1/sessions/{id}/attachments` | [Upload a file](./sessions.md#upload-a-file) |
 | `GET /v1/attachments/{id}` | [Download a file](./sessions.md#download-a-file) |
 | `GET /v1/limits` | [Read the limits](./sessions.md#read-the-limits) |
+| `GET /v1/sessions/{id}/files` | [List a directory](./sessions.md#list-a-directory) |
+| `GET /v1/sessions/{id}/files/search` | [Search the workspace](./sessions.md#search-the-workspace) |
+| `GET /v1/sessions/{id}/files/content` | [Read a file](./sessions.md#read-a-file) |
+| `PUT /v1/sessions/{id}/files/content` | [Write a file](./sessions.md#write-a-file) |
+| `GET /v1/sessions/{id}/files/archive` | [Download a directory](./sessions.md#download-a-directory) |
 | `GET /v1/sessions/{id}/turns` | [List the turns of a session](./turns.md#list-the-turns-of-a-session) |
 | `GET /v1/turns/{id}` | [Read a turn](./turns.md#read-a-turn) |
 | `POST /v1/turns/{id}/cancel` | [Cancel a turn](./turns.md#cancel-a-turn) |

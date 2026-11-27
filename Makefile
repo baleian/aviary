@@ -211,6 +211,7 @@ test-web-server: TESTS ?= ./web/...
 test-web-server:
 	mkdir -p .out/web/assets
 	echo '<!doctype html><title>the web UI</title>' > .out/web/index.html
+	echo '<!doctype html><title>a frame</title>' > .out/web/sandbox.html
 	printf '%4096s' '' > .out/web/assets/app.js
 	$(WEB_SERVERS) up --detach --force-recreate
 	$(call GO,test,$(AMONG_WEB_SERVERS)) $(GO_TEST) $(TESTS); \

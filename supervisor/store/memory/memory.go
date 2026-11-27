@@ -59,6 +59,9 @@ type session struct {
 	// attachments is whether the object storage may have attachments of the
 	// session.
 	attachments bool
+	// sandboxUsedAt is when the sandbox was last used apart from the turns,
+	// or zero.
+	sandboxUsedAt time.Time
 }
 
 type turn struct {
@@ -824,6 +827,19 @@ func (s *Store) SetSandboxState(ctx context.Context, sessionID uuid.UUID, sandbo
 	return nil
 }
 
+func (s *Store) UseSandbox(ctx context.Context, sessionID uuid.UUID, sandbox string) error {
+	if err := s.begin(ctx); err != nil {
+		return err
+	}
+	defer s.mu.Unlock()
+	session, found := s.sessions[sessionID]
+	if !found || sandbox == "" || session.Sandbox != sandbox {
+		return nil
+	}
+	session.sandboxUsedAt = s.now()
+	return nil
+}
+
 func (s *Store) SessionsWithSandbox(ctx context.Context) ([]store.Session, error) {
 	if err := s.begin(ctx); err != nil {
 		return nil, err
@@ -1463,6 +1479,9 @@ func (s *Store) IdleSandboxes(ctx context.Context, limit int, waiting bool) ([]s
 			default:
 				continue
 			}
+		}
+		if session.sandboxUsedAt.After(since) {
+			since = session.sandboxUsedAt
 		}
 		idle = append(idle, store.IdleSandbox{SessionID: session.ID, Sandbox: session.Sandbox, Idle: now.Sub(since)})
 	}

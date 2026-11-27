@@ -1,6 +1,6 @@
 ---
 title: Sessions and messages
-description: The requests for sessions, their MCP servers, messages and the files that messages carry.
+description: The requests for sessions, their MCP servers, messages, the files that messages carry and the files of their workspaces.
 ---
 
 ## Sessions
@@ -59,7 +59,8 @@ A session, as these requests return it, has:
   it was deleted in Agent Substrate: everything that the agent had in it is
   gone, and the next turn gets a new sandbox. What happens to a sandbox
   outside Aviary shows after a short delay. A session has no `sandbox`
-  before its first turn and after it has ended.
+  before its first turn, unless a file was written into its
+  [workspace](#workspace), and after it has ended.
 - **`last_turn`.** A session with turns carries the newest as `last_turn`:
   the turn as in [Turn records](./turns.md#turn-records),
   without its `text` and `items`.
@@ -121,4 +122,68 @@ Returns the file of an attachment, as a download, to those who may read its sess
 GET /v1/limits
 ```
 
-Returns what the installation sets for the files that messages carry: `{"max_attachment_bytes": 67108864, "max_attachments": 10}`, its `runtime.maxAttachmentBytes` and `runtime.maxAttachments`. Both are 0 if it takes no attachments.
+Returns what the installation sets for the files that messages carry and for a file that is written into a [workspace](#workspace): `{"max_attachment_bytes": 67108864, "max_attachments": 10, "max_file_bytes": 268435456}`, its `runtime.maxAttachmentBytes`, `runtime.maxAttachments` and `runtime.maxFileBytes`. The first two are 0 if it takes no attachments.
+
+## Workspace
+
+The workspace of a session is the directory in which its agent works:
+`/home/workspace` of its sandbox. These requests read and write its files
+until the session ends, whether a turn runs or not.
+
+- **Paths.** A `path` is relative to the workspace, with `/` between its
+  names and without `.` and `..`, as `src/main.go`. An empty path is the
+  workspace itself. A link is followed as long as it leads to something in
+  the workspace.
+- **The sandbox.** A request wakes a sandbox that sleeps, which is in use
+  while its files are read or written: see `sandboxes.idleSeconds` in
+  [Configuration](../configuration.md#sandboxes). A session without a
+  sandbox, as before its first turn or after its sandbox was lost, lists
+  nothing, and the first file that is written creates a sandbox for it.
+- **Who.** Those who may read the session may read its files. Besides
+  admins, only the creator of the session may write them.
+- **Long answers.** Agent Substrate gives a sandbox five minutes to answer
+  a request, so a file or an archive that takes longer to download is cut
+  off. Over a slow connection, read a large file in ranges. A file may take
+  longer than that to upload.
+
+Each of them returns 400 `invalid_request` for a path that is not one below the workspace, 409 `session_ended` if the session has ended, 503 `no_room` with `Retry-After` if no worker has room for the sandbox, and 503 `sandbox_unavailable` with `Retry-After` if the sandbox cannot be woken for the moment, as while it is put to sleep, or after it crashed and before it is restored.
+
+### List a directory
+
+```http
+GET /v1/sessions/{id}/files?path=...
+```
+
+Lists a directory, its directories first and each kind by name: `{"entries": [{"name": "main.go", "type": "file", "size": 1024, "modified_at": "..."}], "next": "..."}`. `?limit=` is the page size, 200 by default and at most 1000. A listing has `next` if the directory has more entries, and `?after=` takes it and returns the entries after them. The `type` of an entry is `file`, `directory`, or `other` for what is neither, and only a file has a `size`, in bytes. A link has its `target`, and the type and the size of what it names; its type is `symlink` if it names nothing in the workspace. Returns 404 if there is no such directory, and 400 `not_a_directory` if the path names something else.
+
+### Search the workspace
+
+```http
+GET /v1/sessions/{id}/files/search?query=...
+```
+
+Finds the files and directories whose names contain `query`, whatever the case of the letters: `{"entries": [...], "truncated": false}`, where an entry is as in a listing and has its `path` in the workspace. Those whose names begin with the query come first, and then those nearest to the workspace. `?limit=` is the most entries to return, 100 by default and at most 1000. `truncated` says that the workspace has, or may have, more of them. The directories that links name are not searched.
+
+### Read a file
+
+```http
+GET /v1/sessions/{id}/files/content?path=...
+```
+
+Returns the file, as a download. With a `Range` header that names one range, it returns that part of the file with 206, or 416 `range_not_satisfiable` if the file has no such part. Returns 404 if there is no such file, 400 `is_a_directory` if the path names a directory, and 403 `not_permitted` if the sandbox may not read the file, or if the path names what is neither a file nor a directory, such as a pipe.
+
+### Write a file
+
+```http
+PUT /v1/sessions/{id}/files/content?path=...
+```
+
+Writes the body as the file at the path, with `Content-Length` its size, in place of a file that is there, and creates the directories above it that are missing. The agent finds the file there once all of it is written. Returns 201 with the entry of the file, as in a listing, or 200 if the file replaced one. Returns 411 `length_required` without the size of the file, 413 `file_too_large` if the file is larger than `runtime.maxFileBytes`, 507 `storage_full` if the sandbox has no room for it, 400 `is_a_directory` if the path names a directory, 400 `not_a_directory` if a name above the file is not that of a directory, and 403 `not_permitted` if the sandbox may not write there.
+
+### Download a directory
+
+```http
+GET /v1/sessions/{id}/files/archive?path=...
+```
+
+Returns the directory as a ZIP file, as a download. The file is written while it is sent, so a response that is cut off is not all of it. The paths in it begin with the name of the directory, or with `workspace` for the workspace itself. A link is in it as a link, and what the sandbox cannot read is left out. Returns 404 if there is no such directory, and 400 `not_a_directory` if the path names something else.

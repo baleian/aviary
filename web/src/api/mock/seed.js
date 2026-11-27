@@ -239,6 +239,8 @@ export function seed(now) {
       // carry.
       maxAttachmentBytes: 64 * 1024 * 1024,
       maxAttachments: 10,
+      // How large a file that is put into a workspace may be.
+      maxFileBytes: 256 * 1024 * 1024,
     },
     // The accounts of the identity provider. A token of the mock is the key
     // of an account.

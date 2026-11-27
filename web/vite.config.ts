@@ -1,6 +1,12 @@
 /// <reference types="vitest/config" />
 import react from "@vitejs/plugin-react";
-import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from "vite";
+import {
+  type Connect,
+  defineConfig,
+  loadEnv,
+  type Plugin,
+  type ProxyOptions,
+} from "vite";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 
 // AVIARY_API names an API for the development server to pass the requests
@@ -22,7 +28,7 @@ export default defineConfig(({ command, mode }) => {
   const fake =
     mode === "test" || (command === "serve" && !api && !env.AVIARY_PUBLIC_API);
   return {
-    plugins: [react(), settings(env), pdfData()],
+    plugins: [react(), settings(env), framed(), pdfData()],
     define: { __FAKE_API__: JSON.stringify(fake) },
     // A build carries the licenses of the packages that it bundles, fonts
     // included: most of them have to accompany every copy.
@@ -73,6 +79,30 @@ function settings(env: Record<string, string>): Plugin {
         response.setHeader("Content-Type", "application/json");
         response.end(body);
       });
+    },
+  };
+}
+
+// framed has the development server send the page in which a page of a
+// workspace shows as the server of the image sends it: without an origin,
+// and only into a frame of the web UI.
+function framed(): Plugin {
+  const confine: Connect.NextHandleFunction = (request, response, next) => {
+    if (request.url?.split("?")[0] === "/sandbox.html") {
+      response.setHeader(
+        "Content-Security-Policy",
+        "sandbox allow-scripts; frame-ancestors 'self'",
+      );
+    }
+    next();
+  };
+  return {
+    name: "aviary-frame",
+    configureServer(server) {
+      server.middlewares.use(confine);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(confine);
     },
   };
 }

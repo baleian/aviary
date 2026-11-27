@@ -63,6 +63,9 @@ var (
 	// ErrCrashed is returned when a sandbox that is woken up has crashed. It
 	// runs again once it is reverted to its last snapshot.
 	ErrCrashed = errors.New("the sandbox has crashed")
+	// ErrOperating is returned when a sandbox is not woken up because
+	// another operation on it is in progress, such as putting it to sleep.
+	ErrOperating = errors.New("another operation on the sandbox is in progress")
 )
 
 // State is the observed state of a sandbox.
@@ -344,7 +347,8 @@ func (c *Client) ref(name string) *ateapi.ObjectRef {
 }
 
 // Create creates the sandbox of the session, asleep, with its egress. It is
-// not an error if the sandbox exists: its egress is then replaced.
+// not an error if the sandbox exists: it then keeps the egress that it has,
+// which may be that of a turn that runs in it.
 func (c *Client) Create(ctx context.Context, request Request) error {
 	template, err := c.prepare(ctx, request.Harness)
 	if err != nil {
@@ -358,12 +362,18 @@ func (c *Client) Create(ctx context.Context, request Request) error {
 	if err != nil && status.Code(err) != codes.AlreadyExists {
 		return fmt.Errorf("create actor %s: %w", name, err)
 	}
-	return c.SetEgress(ctx, name, request.Egress)
+	return c.setEgress(ctx, name, request.Egress, false)
 }
 
 // SetEgress sets where the sandbox may connect. The egress gateway applies a
 // change to new connections within seconds.
 func (c *Client) SetEgress(ctx context.Context, name string, egress Egress) error {
+	return c.setEgress(ctx, name, egress, true)
+}
+
+// setEgress gives the sandbox the egress. An egress that the sandbox has is
+// replaced only with replace.
+func (c *Client) setEgress(ctx context.Context, name string, egress Egress, replace bool) error {
 	rules, err := egress.rules()
 	if err != nil {
 		return err
@@ -372,6 +382,9 @@ func (c *Client) SetEgress(ctx context.Context, name string, egress Egress) erro
 	_, err = c.control.CreateActorEgressPolicy(ctx, &ateapi.CreateActorEgressPolicyRequest{Actor: c.ref(name), EgressPolicy: policy})
 	if status.Code(err) != codes.AlreadyExists {
 		return found(name, err)
+	}
+	if !replace {
+		return nil
 	}
 	current, err := c.control.GetActorEgressPolicy(ctx, &ateapi.GetActorEgressPolicyRequest{Actor: c.ref(name), Name: "default"})
 	if err != nil {
@@ -454,8 +467,9 @@ func seen(actor *ateapi.Actor) Sandbox {
 }
 
 // Resume wakes the sandbox up on a worker of the pool, and returns once its
-// runner serves. It returns ErrNoWorker if no worker has room for it now, and
-// ErrCrashed if it has crashed.
+// runner serves. It returns ErrNoWorker if no worker has room for it now,
+// ErrCrashed if it has crashed, and ErrOperating if another operation on it
+// is in progress.
 func (c *Client) Resume(ctx context.Context, name string) error {
 	_, err := c.control.ResumeActor(ctx, &ateapi.ResumeActorRequest{Actor: c.ref(name)})
 	switch status.Code(err) {
@@ -463,6 +477,8 @@ func (c *Client) Resume(ctx context.Context, name string) error {
 		return nil
 	case codes.ResourceExhausted:
 		return fmt.Errorf("sandbox %s: %w", name, ErrNoWorker)
+	case codes.Aborted:
+		return fmt.Errorf("sandbox %s: %w", name, ErrOperating)
 	case codes.FailedPrecondition:
 		if seen, readErr := c.Sandbox(ctx, name); readErr == nil && seen.State == Crashed {
 			return fmt.Errorf("sandbox %s: %w: %s", name, ErrCrashed, seen.Message)
