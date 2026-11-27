@@ -139,6 +139,7 @@ func Run(t *testing.T, create func(t *testing.T) Database) {
 		"ConcurrentDispatchTurn":              suite.testConcurrentDispatchTurn,
 		"ConcurrentDispatchTurnAndCancelTurn": suite.testConcurrentDispatchTurnAndCancelTurn,
 		"IdleSandboxes":                       suite.testIdleSandboxes,
+		"UseSandbox":                          suite.testUseSandbox,
 		"AnnounceQueue":                       suite.testAnnounceQueue,
 		"FollowTurn":                          suite.testFollowTurn,
 		"ConcurrentEndTurn":                   suite.testConcurrentEndTurn,

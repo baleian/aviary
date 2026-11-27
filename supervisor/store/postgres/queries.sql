@@ -76,6 +76,11 @@ where id = @id and coalesce(sandbox, '') = sqlc.arg(was)::text;
 update sessions set sandbox_state = sqlc.arg(state)::text
 where id = @id and sandbox = sqlc.arg(sandbox)::text;
 
+-- name: UseSandbox :exec
+-- Records the use only while the session has the sandbox.
+update sessions set sandbox_used_at = now()
+where id = @id and sandbox = sqlc.arg(sandbox)::text;
+
 -- name: ListSessionsWithSandbox :many
 select * from sessions where sandbox is not null;
 
@@ -327,10 +332,12 @@ limit @max;
 -- unfinished turn, the longest idle first: idle is the seconds since the
 -- session's last turn ended. With @waiting, a session whose unfinished turn
 -- waits for a person and is not asked to stop is idle too, since the oldest
--- of the turn's requests that wait for an answer was made. A session's
--- unfinished turn is its last.
+-- of the turn's requests that wait for an answer was made. A sandbox that
+-- was used since is idle only since then. A session's unfinished turn is its
+-- last.
 select sessions.id, coalesce(sessions.sandbox, '') as sandbox,
-       extract(epoch from now() - coalesce(last.ended_at, asked.at, sessions.created_at))::float8 as idle
+       extract(epoch from now() - greatest(coalesce(last.ended_at, asked.at, sessions.created_at),
+                                           sessions.sandbox_used_at))::float8 as idle
 from sessions
 left join lateral (select turns.id, turns.ended_at, turns.cancel_requested_at from turns
                    where turns.session_id = sessions.id order by turns.seq desc limit 1) as last on true

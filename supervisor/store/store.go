@@ -460,7 +460,8 @@ type IdleSandbox struct {
 	SessionID uuid.UUID
 	Sandbox   string
 	// Idle is how long ago the session's last turn ended, or its unfinished
-	// turn began to wait for a person.
+	// turn began to wait for a person, or the sandbox was last used, if that
+	// was later.
 	Idle time.Duration
 }
 
@@ -655,6 +656,11 @@ type Store interface {
 	// as when the sandbox was deleted meanwhile.
 	SetSandboxState(ctx context.Context, sessionID uuid.UUID, sandbox, state string) error
 
+	// UseSandbox records that the session's sandbox is used now, apart from
+	// its turns, as when its files are read: it is idle only since then. It
+	// changes nothing if the session's sandbox is not the named one.
+	UseSandbox(ctx context.Context, sessionID uuid.UUID, sandbox string) error
+
 	// SessionsWithSandbox returns the sessions that have a sandbox, in no
 	// particular order. Sessions that have ended are among them.
 	SessionsWithSandbox(ctx context.Context) ([]Session, error)
@@ -811,7 +817,8 @@ type Store interface {
 	// recorded awake and that have no unfinished turn, the longest idle
 	// first. With waiting, a session whose unfinished turn waits for a person
 	// is idle too, since the oldest of the turn's approval requests that wait
-	// for an answer was made, unless the turn is asked to stop.
+	// for an answer was made, unless the turn is asked to stop. A sandbox
+	// that UseSandbox recorded as used since then is idle only since that.
 	IdleSandboxes(ctx context.Context, limit int, waiting bool) ([]IdleSandbox, error)
 
 	// CancelTurn cancels the turn. A queued turn ends at once; a dispatched

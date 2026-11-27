@@ -630,6 +630,10 @@ func (s *records) SetSandboxState(ctx context.Context, sessionID uuid.UUID, sand
 	return s.queries.SetSandboxState(ctx, db.SetSandboxStateParams{ID: sessionID, Sandbox: sandbox, State: state})
 }
 
+func (s *records) UseSandbox(ctx context.Context, sessionID uuid.UUID, sandbox string) error {
+	return s.queries.UseSandbox(ctx, db.UseSandboxParams{ID: sessionID, Sandbox: sandbox})
+}
+
 func (s *records) SessionsWithSandbox(ctx context.Context) ([]store.Session, error) {
 	rows, err := s.queries.ListSessionsWithSandbox(ctx)
 	if err != nil {

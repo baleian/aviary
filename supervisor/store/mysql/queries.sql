@@ -73,6 +73,11 @@ where id = sqlc.arg(id);
 update sessions set sandbox_state = sqlc.arg(state)
 where id = sqlc.arg(id) and sandbox = sqlc.arg(sandbox);
 
+-- name: UseSandbox :exec
+-- Records the use only while the session has the sandbox.
+update sessions set sandbox_used_at = now(6)
+where id = sqlc.arg(id) and sandbox = sqlc.arg(sandbox);
+
 -- name: ListSessionsWithSandbox :many
 select * from sessions where sandbox is not null;
 
@@ -309,16 +314,19 @@ limit ?;
 -- unfinished turn, the longest idle first: idle is the microseconds since
 -- the session's last turn ended. With waiting, a session whose unfinished
 -- turn waits for a person and is not asked to stop is idle too, since the
--- oldest of the turn's requests that wait for an answer was made.
+-- oldest of the turn's requests that wait for an answer was made. A sandbox
+-- that was used since is idle only since then.
 select sessions.id, coalesce(sessions.sandbox, '') as sandbox,
        cast(timestampdiff(microsecond,
-                          coalesce((select last.ended_at from turns as last
-                                    where last.session_id = sessions.id order by last.seq desc limit 1),
-                                   (select min(approvals.requested_at) from turns
-                                    join approvals on approvals.turn_id = turns.id
-                                    where turns.session_id = sessions.id and turns.state = 'running'
-                                      and approvals.answered_at is null and approvals.resolved_at is null),
-                                   sessions.created_at),
+                          greatest(coalesce((select last.ended_at from turns as last
+                                             where last.session_id = sessions.id order by last.seq desc limit 1),
+                                            (select min(approvals.requested_at) from turns
+                                             join approvals on approvals.turn_id = turns.id
+                                             where turns.session_id = sessions.id and turns.state = 'running'
+                                               and approvals.answered_at is null and approvals.resolved_at is null),
+                                            sessions.created_at),
+                                   -- Never later than the other, if it was never used.
+                                   coalesce(sessions.sandbox_used_at, sessions.created_at)),
                           now(6)) as signed) as idle
 from sessions
 where sessions.sandbox is not null and sessions.sandbox_state = 'awake'
