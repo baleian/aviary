@@ -392,16 +392,19 @@ headlamp:
 	@echo "Headlamp is at http://localhost:4466"
 
 # Installs Prometheus, which scrapes the metrics of Aviary and of Agent
-# Substrate, and Grafana with the dashboards in deploy/grafana, at
-# http://localhost:3000.
+# Substrate, Loki with Alloy, which collects the logs of their pods, and
+# Grafana with the dashboards in deploy/grafana, at http://localhost:3000.
+# Grafana restarts, since it reads its data sources when it starts.
 grafana:
 	$(KUBECTL) create namespace monitoring --dry-run=client --output yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) create configmap grafana-dashboards --namespace monitoring \
 		--from-file deploy/grafana/aviary.json --from-file deploy/grafana/substrate.json --dry-run=client --output yaml | \
 		$(KUBECTL) apply --server-side -f -
-	$(KUBECTL) apply -f hack/kind/prometheus.yaml -f hack/kind/grafana.yaml
-	$(KUBECTL) --namespace monitoring rollout status deployment/prometheus --timeout 300s
-	$(KUBECTL) --namespace monitoring rollout status deployment/grafana --timeout 300s
+	$(KUBECTL) apply -f hack/kind/prometheus.yaml -f hack/kind/loki.yaml -f hack/kind/alloy.yaml -f hack/kind/grafana.yaml
+	$(KUBECTL) --namespace monitoring rollout restart deployment/grafana
+	for app in prometheus loki alloy grafana; do \
+		$(KUBECTL) --namespace monitoring rollout status deployment/$$app --timeout 300s || exit 1; \
+	done
 	@echo "Grafana is at http://localhost:3000"
 
 # Builds the web UI and installs it in the local cluster, after make deploy,

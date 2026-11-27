@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "Sandboxes, turns, latency, tokens and secret stores of an Aviary installation, from its metrics.",
+  "description": "Sandboxes, turns, latency, tokens and secret stores of an Aviary installation, from its metrics, and what its sandboxes sent out, from the log of the egress gateway.",
   "editable": true,
   "graphTooltip": 1,
   "links": [],
@@ -1509,9 +1509,64 @@
     },
     {
       "type": "row",
+      "title": "Egress",
+      "id": 90,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 86},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Requests that leave the sandboxes",
+      "description": "What the sandboxes sent out, from the log of the egress gateway: each connection that it passed on unread, to its host, and each request that it read, to its host and path. The user is the identity provider's subject of who sent the turn's message.",
+      "id": 91,
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 87},
+      "datasource": {"type": "loki", "uid": "${logs}"},
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": "${logs}"},
+          "expr": "{app=\"atenet-egress\", container=\"envoy\"} | json | leg=~\"passthrough|mitm|cleartext\" | label_format destination=`{{ if .authority }}{{ .authority }}{{ .path }}{{ else }}{{ .sni }}{{ end }}`",
+          "queryType": "range",
+          "maxLines": 1000,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "labels", "format": "json"}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["time", "destination", "status", "duration_ms", "project", "agent", "session", "turn", "subject"]}}},
+        {"id": "convertFieldType", "options": {"conversions": [{"targetField": "time", "destinationType": "time"}, {"targetField": "duration_ms", "destinationType": "number"}]}},
+        {"id": "sortBy", "options": {"sort": [{"field": "time", "desc": true}]}},
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {"time": 0, "subject": 1, "destination": 2, "status": 3, "duration_ms": 4, "project": 5, "agent": 6, "session": 7, "turn": 8},
+            "renameByName": {"duration_ms": "duration", "subject": "user"}
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "auto", "minWidth": 60, "filterable": true, "cellOptions": {"type": "auto"}}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "time"}, "properties": [{"id": "custom.width", "value": 170}]},
+          {"matcher": {"id": "byName", "options": "destination"}, "properties": [{"id": "custom.width", "value": 400}]},
+          {"matcher": {"id": "byName", "options": "status"}, "properties": [{"id": "custom.width", "value": 70}]},
+          {"matcher": {"id": "byName", "options": "duration"}, "properties": [{"id": "unit", "value": "ms"}, {"id": "custom.width", "value": 90}]},
+          {"matcher": {"id": "byRegexp", "options": "user|project|agent|session|turn"}, "properties": [{"id": "custom.width", "value": 300}]}
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "footer": {"show": false, "reducer": ["sum"], "fields": ""}
+      }
+    },
+    {
+      "type": "row",
       "title": "Supervisor runtime",
       "id": 80,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 86},
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 99},
       "collapsed": false,
       "panels": []
     },
@@ -1520,7 +1575,7 @@
       "title": "Supervisor pods",
       "description": "The Supervisor pods now: how long they have run, and their CPU, memory, goroutines and open files.",
       "id": 81,
-      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 87},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 100},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1594,7 +1649,7 @@
       "title": "Supervisor pods up",
       "description": "Whether each Supervisor pod answered its scrapes. Replaced pods end and new pods begin.",
       "id": 82,
-      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 87},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 100},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1627,7 +1682,7 @@
       "title": "CPU",
       "description": "CPU used by each Supervisor, in cores.",
       "id": 83,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 93},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 106},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1656,7 +1711,7 @@
       "title": "Memory",
       "description": "Resident memory of each Supervisor, and the part of it that its Go heap uses.",
       "id": 84,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 93},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 106},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1693,7 +1748,7 @@
       "title": "Goroutines",
       "description": "Goroutines of each Supervisor. They grow with the turns that it follows and the event streams that it serves.",
       "id": 85,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 93},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 106},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1723,7 +1778,7 @@
       "title": "Garbage collection",
       "description": "Garbage collections per minute of each Supervisor, and the longest of its recent stop-the-world pauses (dashed, right axis).",
       "id": 86,
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 101},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 114},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1767,7 +1822,7 @@
       "title": "Open files",
       "description": "File descriptors that each Supervisor has open, its network connections included.",
       "id": 87,
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 101},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 114},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1797,7 +1852,7 @@
       "title": "Network",
       "description": "Bytes per second that each Supervisor received and sent over the network.",
       "id": 88,
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 101},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 114},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [
         {
@@ -1840,6 +1895,19 @@
         "name": "datasource",
         "label": "Data source",
         "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "options": [],
+        "refresh": 1,
+        "regex": ""
+      },
+      {
+        "type": "datasource",
+        "name": "logs",
+        "label": "Logs",
+        "query": "loki",
         "current": {},
         "hide": 0,
         "includeAll": false,

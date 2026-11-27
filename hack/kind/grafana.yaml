@@ -27,6 +27,10 @@ data:
         jsonData:
           # The scrape interval, from which $__rate_interval is derived.
           timeInterval: 15s
+      - name: Loki
+        type: loki
+        uid: loki
+        url: http://loki:3100
   dashboards.yaml: |
     apiVersion: 1
     providers:

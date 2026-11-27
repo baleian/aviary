@@ -60,7 +60,7 @@ The cluster can have more:
 | `make web` | The [web UI](../use/web-ui.md), built from `web/`, at http://localhost:8082. |
 | `make keycloak` | Keycloak as an identity provider: see [Authentication](../operate/authentication.md#try-it-locally). |
 | `make openbao`, `make vault` | A secret store: see [Secret stores](../use/secret-stores.md#try-it-locally). |
-| `make grafana` | [Prometheus](https://prometheus.io), which scrapes the metrics of Aviary, and [Grafana](https://grafana.com) with the Aviary dashboard, at http://localhost:3000. |
+| `make grafana` | [Prometheus](https://prometheus.io), which scrapes the metrics of Aviary, [Loki](https://grafana.com/oss/loki/) with [Alloy](https://grafana.com/oss/alloy/), which collects its logs, and [Grafana](https://grafana.com) with the Aviary dashboard, at http://localhost:3000. |
 | `make headlamp` | [Headlamp](https://headlamp.dev), a web UI for the resources, logs and events of the cluster, at http://localhost:4466. |
 
 ## Keep the data of the cluster

@@ -21,8 +21,10 @@ Agent Substrate serve: its workers and their placement, actors and their
 snapshots, the store, the resources of the sandboxes, the caches of the
 nodes, the router and the egress gateway, and the calls between them. In the
 local cluster, `make grafana` installs [Prometheus](https://prometheus.io),
-which scrapes the metrics of Aviary and of Substrate, and
-[Grafana](https://grafana.com) with the two dashboards, at
+which scrapes the metrics of Aviary and of Substrate,
+[Loki](https://grafana.com/oss/loki/) with
+[Alloy](https://grafana.com/oss/alloy/), which collects the logs of their
+pods, and [Grafana](https://grafana.com) with the two dashboards, at
 http://localhost:3000.
 
 ## Requests that leave the sandboxes
@@ -30,7 +32,10 @@ http://localhost:3000.
 The egress gateway of Substrate logs every connection that a sandbox opens
 and every request that it reads, with the turn, the session, the agent, the
 project and the user that it is for, and a Supervisor logs every secret
-that it gives the gateway: see [The log](./egress.md#the-log).
+that it gives the gateway: see [The log](./egress.md#the-log). The Aviary
+dashboard lists what the gateway logs in a table, from a Loki data source
+whose lines have the `app` label of their pod and the name of their
+`container`, as Alloy labels them in the local cluster.
 
 ## Turns
 
